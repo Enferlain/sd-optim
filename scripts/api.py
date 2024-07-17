@@ -58,7 +58,6 @@ def on_app_started(_gui: Optional[gr.Blocks], api: fastapi.FastAPI):
             description="Number of keys to merge simultaneously. Only useful with device='cpu'",
         ),
         cache: bool = fastapi.Body(False, title="Cache intermediate merge values"),
-        save_iterations: bool = fastapi.Body(False, title="Save Iterations"),
     ):
         logger.info("API - SDXL Flag: %s", sdxl)
         logger.info("Received merge request with parameters: %s", locals())

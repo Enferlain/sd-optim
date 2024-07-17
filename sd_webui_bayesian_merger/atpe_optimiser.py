@@ -44,6 +44,7 @@ class ATPEOptimiser(Optimiser):
             self.cfg.optimisation_guide.groups
             if self.cfg.guided_optimisation
             else None,
+            sdxl=self.cfg.sdxl
         )
 
         self.plot_and_save(

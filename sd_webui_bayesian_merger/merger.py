@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Dict
 
 import requests
-from omegaconf import DictConfig
+from omegaconf import DictConfig, open_dict
 from sd_meh import merge_methods
 
 BETA_METHODS = [
@@ -111,6 +111,14 @@ class Merger:
         logging.debug(f"Device configuration: {self.cfg.device}")
         logging.debug(f"Work device configuration: {self.cfg.work_device}")
         bases = {f"base_{k}": v for k, v in bases.items()}
+
+        if save_best:
+            with open_dict(self.cfg):
+                self.cfg.destination = str(self.best_output_file)
+        else:
+            with open_dict(self.cfg):
+                self.cfg.destination = "memory"
+
         option_payload = {
             "merge_method": self.cfg.merge_mode,
             **{k: str(v) for k, v in self.models.items()},
@@ -121,7 +129,7 @@ class Merger:
             "work_device": self.cfg.work_device,
             "prune": self.cfg.prune,
             "threads": self.cfg.threads,
-            "destination": str(self.best_output_file) if save_best else "memory",
+            "destination": self.cfg.destination,
             "unload_before": self.cfg.unload_before,  # Adjusted to use config
             "re_basin": self.cfg.rebasin,
             "re_basin_iterations": self.cfg.rebasin_iterations,

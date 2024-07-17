@@ -37,7 +37,7 @@ class Optimiser:
         self.scorer = AestheticScorer(self.cfg, {}, {}, {})
         self.prompter = Prompter(self.cfg)
         self.iteration = 0
-        self.sdxl = self.cfg.sdxl 
+        self.sdxl = self.cfg.sdxl
 
     def start_logging(self) -> None:
         run_name = "-".join(self.merger.output_file.stem.split("-")[:-1])
@@ -94,12 +94,17 @@ class Optimiser:
             else None,
             sdxl=self.sdxl
         )
-        self.merger.merge(weights, bases)
+
+        # Merge the model in memory
+        self.merger.merge(weights, bases) 
 
         images, gen_paths, payloads = self.generate_images()
         scores, norm = self.score_images(images, gen_paths, payloads)
         avg_score = self.scorer.average_calc(scores, norm, self.cfg.img_average_type)
-        self.update_best_score(bases, weights, avg_score)
+        
+        # Update and save only if it's the best score so far
+        self.update_best_score(bases, weights, avg_score)  
+        
         logger.info(f"Average Score for Iteration: {avg_score}")
         return avg_score
 
@@ -131,6 +136,10 @@ class Optimiser:
         if avg_score > self.best_rolling_score:
             logger.info("\n NEW BEST!")
             self.best_rolling_score = avg_score
+            
+            # Save the best model
+            self.merger.merge(weights, bases, save_best=True)  
+            
             Optimiser.save_best_log(bases, weights_strings)
 
     @abstractmethod

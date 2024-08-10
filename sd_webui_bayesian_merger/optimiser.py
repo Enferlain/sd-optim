@@ -96,14 +96,14 @@ class Optimiser:
         )
 
         # Merge the model in memory
-        self.merger.merge(weights, bases) 
+        self.merger.merge(weights, bases)
 
         images, gen_paths, payloads = self.generate_images()
         scores, norm = self.score_images(images, gen_paths, payloads)
         avg_score = self.scorer.average_calc(scores, norm, self.cfg.img_average_type)
         
         # Update and save only if it's the best score so far
-        self.update_best_score(bases, weights, avg_score)  
+        self.update_best_score(bases, weights, avg_score)
         
         logger.info(f"Average Score for Iteration: {avg_score}")
         return avg_score

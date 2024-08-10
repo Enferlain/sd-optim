@@ -1,48 +1,32 @@
 import inspect
 import sys
 import logging
+import requests
+import inspect
+
+import sd_mecha
+
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict
 
-import requests
-from omegaconf import DictConfig, open_dict
-from sd_meh import merge_methods
 
-BETA_METHODS = [
-    name
-    for name, fn in dict(inspect.getmembers(merge_methods, inspect.isfunction)).items()
-    if "beta" in inspect.getfullargspec(fn)[0]
-]
+from omegaconf import DictConfig, open_dict
+from mecha_recipe_generator import generate_mecha_recipe, translate_optimiser_parameters
 
 logging.basicConfig(level=logging.INFO)
-
-#NUM_INPUT_BLOCKS = 12
-#NUM_MID_BLOCK = 1
-#NUM_OUTPUT_BLOCKS = 12
-#NUM_TOTAL_BLOCKS = NUM_INPUT_BLOCKS + NUM_MID_BLOCK + NUM_OUTPUT_BLOCKS
-
-#NUM_INPUT_BLOCKS_XL = 9
-#NUM_OUTPUT_BLOCKS_XL = 9
-#NUM_TOTAL_BLOCKS_XL = NUM_INPUT_BLOCKS_XL + NUM_MID_BLOCK + NUM_OUTPUT_BLOCKS_XL
-
-MERGE_METHODS = dict(inspect.getmembers(merge_methods, inspect.isfunction))
-NUM_MODELS_NEEDED = {
-    name: 3 if "c" in inspect.getfullargspec(fn)[0] else 2
-    for name, fn in MERGE_METHODS.items()
-}
 
 
 @dataclass
 class Merger:
     cfg: DictConfig
 
-    def __post_init__(self):
+    def __post_init__(self) -> None:
         self.validate_config()
         self.parse_models()
         self.create_model_out_name()
         self.create_best_model_out_name()
-        
+
     def validate_config(self):
         required_fields = ['model_a', 'model_b', 'merge_mode']
         for field in required_fields:
@@ -61,8 +45,6 @@ class Merger:
         self.greek_letters = ["alpha"]
         seen_models = 2
         for m in ["model_c", "model_d", "model_e"]:
-            if seen_models == NUM_MODELS_NEEDED[self.cfg.merge_mode]:
-                break
             if m in self.cfg:
                 p = Path(self.cfg[m])
             else:
@@ -74,17 +56,13 @@ class Merger:
             else:
                 break
             seen_models += 1
-        if self.cfg.merge_mode in BETA_METHODS:
-            self.greek_letters.append("beta")
-        self.model_name_suffix = f"bbwm-{'-'.join(self.model_real_names)}"
 
-        try:
-            assert len(self.model_keys) == NUM_MODELS_NEEDED[self.cfg.merge_mode]
-        except AssertionError:
-            print(
-                "number of models defined not compatible with merge mode, aborting optimisation"
-            )
-            sys.exit()
+        # Dynamically check for beta parameter
+        merge_method = sd_mecha.extensions.merge_method.resolve(self.cfg.merge_mode)
+        if "beta" in inspect.signature(merge_method.__call__).parameters:
+            self.greek_letters.append("beta")
+
+        self.model_name_suffix = f"bbwm-{'-'.join(self.model_real_names)}"
 
     def create_model_out_name(self, it: int = 0) -> None:
         model_out_name = self.model_name_suffix
@@ -101,13 +79,11 @@ class Merger:
         self.best_output_file = Path(self.model_a.parent, model_out_name)
 
     def merge(
-        self,
-        weights: Dict,
-        bases: Dict,
-        save_best: bool = False,
-        #sdxl: bool = False,
+            self,
+            weights: Dict,
+            bases: Dict,
+            save_best: bool = False,
     ) -> None:
-        #print("Merger - SDXL Flag:", self.cfg.sdxl)
         logging.debug(f"Device configuration: {self.cfg.device}")
         logging.debug(f"Work device configuration: {self.cfg.work_device}")
         bases = {f"base_{k}": v for k, v in bases.items()}
@@ -119,33 +95,26 @@ class Merger:
             with open_dict(self.cfg):
                 self.cfg.destination = "memory"
 
-        option_payload = {
-            "merge_method": self.cfg.merge_mode,
-            **{k: str(v) for k, v in self.models.items()},
-            **bases,
-            **weights,
-            "precision": self.cfg.best_precision,
-            "device": self.cfg.device,
-            "work_device": self.cfg.work_device,
-            "prune": self.cfg.prune,
-            "threads": self.cfg.threads,
-            "destination": self.cfg.destination,
-            "unload_before": self.cfg.unload_before,  # Adjusted to use config
-            "re_basin": self.cfg.rebasin,
-            "re_basin_iterations": self.cfg.rebasin_iterations,
-            "sdxl": self.cfg.sdxl,  # include the sdxl flag
-            "cache": self.cfg.cache_merge,
-        }
-        logging.info(f"Sending merge request with payload: {option_payload}")
+        # Translate parameters using the new function
+        base_values, weights_list = translate_optimiser_parameters(bases, weights)
 
-        logging.info("Merging models")
-        try:
-            r = requests.post(url=f"{self.cfg.url}/bbwm/merge-models", json=option_payload)
-            r.raise_for_status()
-        except requests.exceptions.RequestException as e:
-            logging.error(f"Error during API request: {e}")
-            logging.error(f"Request payload: {option_payload}")
-            logging.error(f"Response content: {r.content}")
-            raise
-        logging.info(f"Merge request successful, response received")   
-     
+        # Generate sd-mecha recipe using the updated function
+        recipe_text = generate_mecha_recipe(
+            base_values,  # Pass base_values
+            weights_list,  # Pass weights_list
+            self.cfg.merge_mode,
+            self.cfg,
+        )
+
+        # Deserialize the recipe
+        recipe = sd_mecha.recipe_serializer.deserialize(recipe_text)
+
+        # Execute the recipe using sd-mecha
+        recipe_merger = sd_mecha.RecipeMerger()
+        recipe_merger.merge_and_save(recipe, output=self.cfg.destination)
+
+        # Remove A1111 API request:
+        # r = requests.post(url=f"{self.cfg.url}/bbwm/merge-models", json=option_payload)
+        # ... (remove remaining API request code)
+
+        logging.info(f"Merged model using sd-mecha.")  # Update log message

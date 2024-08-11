@@ -33,9 +33,6 @@ def generate_mecha_recipe(base_values, weights_list, merge_method, cfg):
     mecha_merge_method = sd_mecha.extensions.merge_method.resolve(merge_method)
     input_merge_spaces, _ = mecha_merge_method.get_input_merge_spaces()
 
-    # Create volatile_hypers dictionary
-    volatile_hypers = {}
-
     # Create a delta recipe node if the second argument needs to be a delta
     if len(input_merge_spaces) > 1 and input_merge_spaces[1] == sd_mecha.recipe_nodes.MergeSpace.DELTA:
         delta_node = sd_mecha.recipe_nodes.MergeRecipeNode(
@@ -46,23 +43,26 @@ def generate_mecha_recipe(base_values, weights_list, merge_method, cfg):
             volatile_hypers={},
         )
 
-        # Create a final recipe with the delta as the second argument, passing hypers to the merging method
+        # Create a final recipe with the delta as the second argument
         final_recipe = sd_mecha.recipe_nodes.MergeRecipeNode(
             mecha_merge_method,
             models[0],
             delta_node,
             *models[2:],
-            hypers=hypers,
+            hypers={},  # Pass empty hypers here
             volatile_hypers={},
         )
     else:
-        # Create a final recipe without a delta, passing hypers to the merging method
+        # Create a final recipe without a delta
         final_recipe = sd_mecha.recipe_nodes.MergeRecipeNode(
             mecha_merge_method,
             *models,
-            hypers=hypers,
+            hypers={},  # Pass empty hypers here
             volatile_hypers={},
         )
+
+    # Simply assign the hypers dictionary to the MergeRecipeNode
+    final_recipe.hypers = {list(base_values.keys())[0]: hypers}
 
     # Serialize the recipe to text format
     recipe_text = sd_mecha.recipe_serializer.serialize(final_recipe)

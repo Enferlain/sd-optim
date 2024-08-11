@@ -1,33 +1,15 @@
 import re
 import sd_mecha
-import inspect
-
-
-# Define a dictionary mapping generic greek letters to sd-mecha hyperparameter names
-GREEK_LETTER_MAPPING = {
-    "alpha": [],
-    "beta": [],
-    # Add more greek letters as needed
-}
-
-# Populate GREEK_LETTER_MAPPING once, outside the function
-for merge_method_name in sd_mecha.extensions.merge_method._merge_methods_registry:
-    mecha_merge_method = sd_mecha.extensions.merge_method.resolve(merge_method_name)
-    params = inspect.signature(mecha_merge_method.__call__).parameters
-    greek_letter_index = 0
-    for name, param in params.items():
-        if param.kind == inspect.Parameter.KEYWORD_ONLY:
-            if greek_letter_index < len(GREEK_LETTER_MAPPING):
-                current_greek_letter = list(GREEK_LETTER_MAPPING.keys())[greek_letter_index]
-                GREEK_LETTER_MAPPING[current_greek_letter].append(name)
-                greek_letter_index += 1
 
 def generate_mecha_recipe(base_values, weights_list, merge_method, cfg):
     """Generates an sd-mecha recipe from Bayesian Merger parameters."""
 
-    # Create ModelRecipeNodes for the models being merged, using model_arch from cfg
-    model_a = sd_mecha.recipe_nodes.ModelRecipeNode(state_dict=cfg.model_a, model_arch=cfg.model_arch)
-    model_b = sd_mecha.recipe_nodes.ModelRecipeNode(state_dict=cfg.model_b, model_arch=cfg.model_arch)
+    # Dynamically create ModelRecipeNodes for all models in cfg
+    models = []
+    for model_key in ["model_a", "model_b", "model_c"]:
+        if model_key in cfg:
+            model = sd_mecha.recipe_nodes.ModelRecipeNode(state_dict=cfg[model_key], model_arch=cfg.model_arch)
+            models.append(model)
 
     # Retrieve and filter block identifiers for the UNet component
     model_arch = sd_mecha.extensions.model_arch.resolve(cfg.model_arch)
@@ -47,8 +29,9 @@ def generate_mecha_recipe(base_values, weights_list, merge_method, cfg):
         base_value = base_values.get(greek_letter, 0)
         hypers.update({f"{cfg.model_arch}_{component}_default": base_value for component in ["txt", "txt2"]})
 
-    # Create the merging operation, but don't call it yet
+    # Get the expected merging spaces for the merging method
     mecha_merge_method = sd_mecha.extensions.merge_method.resolve(merge_method)
+    input_merge_spaces, _ = mecha_merge_method.get_input_merge_spaces()
 
     # Create the initial MergeRecipeNode
     merge_node = sd_mecha.recipe_nodes.MergeRecipeNode(
@@ -58,6 +41,22 @@ def generate_mecha_recipe(base_values, weights_list, merge_method, cfg):
         hypers={},  # Initially empty hyperparameters
         volatile_hypers={},
     )
+
+    # Dynamically create deltas based on merging space requirements
+    models = [model_a]
+    for i, model_or_delta in enumerate(merge_node.models[1:], start=1):  # Skip model_a
+        if input_merge_spaces[i] == sd_mecha.recipe_nodes.MergeSpace.DELTA:
+            # Create a delta using the subtract method
+            delta = sd_mecha.recipe_nodes.MergeRecipeNode(
+                sd_mecha.extensions.merge_method.resolve("subtract"),
+                model_or_delta,  # The model to subtract from
+                model_a,           # The base model
+            )
+            models.append(delta)
+        else:
+            models.append(model_or_delta)  # Use the model directly if not a delta
+
+    merge_node.models = models  # Update the merge node with the models and deltas
 
     # Update the hyperparameters of the merge_node
     merge_node.hypers = {list(base_values.keys())[0]: hypers}

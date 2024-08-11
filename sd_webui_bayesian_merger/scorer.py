@@ -5,7 +5,6 @@ from pathlib import Path
 from typing import Dict, List
 
 import requests
-import torch
 from hydra.core.hydra_config import HydraConfig
 from omegaconf import DictConfig, open_dict
 from PIL import Image, PngImagePlugin

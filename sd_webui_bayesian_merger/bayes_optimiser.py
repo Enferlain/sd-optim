@@ -54,17 +54,10 @@ class BayesOptimiser(Optimiser):
             logger.info(f"Iteration {i}: \n\t{res}")
 
         scores = parse_scores(self.optimizer.res)
-        best_weights, best_bases = self.bounds_initialiser.assemble_params(
-            self.optimizer.max["params"],
-            self.merger.greek_letters,
-            self.cfg.optimisation_guide.frozen_params
-            if self.cfg.guided_optimisation
-            else None,
-            self.cfg.optimisation_guide.groups
-            if self.cfg.guided_optimisation
-            else None,
-            sdxl=self.cfg.sdxl
-        )
+
+        # Directly assign the optimized parameters
+        best_weights = self.optimizer.max["params"]
+        best_bases = self.optimizer.max["params"]
 
         self.plot_and_save(
             scores,

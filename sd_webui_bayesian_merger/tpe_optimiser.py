@@ -4,7 +4,6 @@ from hyperopt import STATUS_OK, Trials, fmin, hp, tpe
 
 from sd_webui_bayesian_merger.optimiser import Optimiser
 
-
 class TPEOptimiser(Optimiser):
     def _target_function(self, params):
         res = self.sd_target_function(**params)
@@ -37,16 +36,9 @@ class TPEOptimiser(Optimiser):
             scores.append(res)
         best = self.trials.best_trial
 
-        best_weights, best_bases = self.bounds_initialiser.assemble_params(
-            best["result"]["params"],
-            self.merger.greek_letters,
-            self.cfg.optimisation_guide.frozen_params
-            if self.cfg.guided_optimisation
-            else None,
-            self.cfg.optimisation_guide.groups
-            if self.cfg.guided_optimisation
-            else None,
-        )
+        # Directly assign the optimized parameters
+        best_weights = best["result"]["params"]
+        best_bases = best["result"]["params"]
 
         self.plot_and_save(
             scores,

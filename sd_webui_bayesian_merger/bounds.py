@@ -2,9 +2,7 @@ import warnings
 from typing import Dict, List, Tuple
 
 from omegaconf import DictConfig, OmegaConf
-
-#from sd_webui_bayesian_merger.merger import NUM_TOTAL_BLOCKS, NUM_TOTAL_BLOCKS_XL
-from sd_meh.merge import NUM_TOTAL_BLOCKS, NUM_TOTAL_BLOCKS_XL
+import sd_mecha
 
 class Bounds:
     @staticmethod
@@ -15,24 +13,21 @@ class Bounds:
 
     @staticmethod
     def default_bounds(
-        greek_letters: List[str],
         custom_ranges: Dict[str, Tuple[float, float]] = None,
-        sdxl: bool = False,
+        cfg=None,  # Add cfg as argument
     ) -> Dict:
-        if sdxl:
-            block_count = NUM_TOTAL_BLOCKS_XL
-        else:
-            block_count = NUM_TOTAL_BLOCKS
-        print(f"Default bounds - sdxl: {sdxl}, block_count: {block_count}")
-        block_names = []
-        ranges = {}
-        for greek_letter in greek_letters:
-            block_names += [
-                f"block_{i}_{greek_letter}" for i in range(block_count)
-            ] + [f"base_{greek_letter}"]
-            ranges |= {b: (0.0, 1.0) for b in block_names} | OmegaConf.to_object(
-                custom_ranges
-            )
+        model_arch = sd_mecha.extensions.model_arch.resolve(cfg.model_arch)
+        unet_block_identifiers = [
+            key for key in model_arch.user_keys()
+            if "_unet_block_" in key
+        ]
+        block_count = len(unet_block_identifiers)
+        print(f"Default bounds - model_arch: {cfg.model_arch}, block_count: {block_count}")
+
+        block_names = unet_block_identifiers + ["base_alpha", "base_beta"]  # Include base parameters
+        ranges = {b: (0.0, 1.0) for b in block_names} | OmegaConf.to_object(
+            custom_ranges
+        )
 
         return {b: Bounds.set_block_bounds(b, *ranges[b]) for b in block_names}
 
@@ -68,11 +63,10 @@ class Bounds:
 
     @staticmethod
     def get_bounds(
-        greek_letters: List[str],
         frozen_params: Dict[str, float] = None,
         custom_ranges: Dict[str, Tuple[float, float]] = None,
         groups: List[List[str]] = None,
-        sdxl: bool = False
+        cfg=None,  # Add cfg as argument
     ) -> Dict:
         if frozen_params is None:
             frozen_params = {}
@@ -82,12 +76,11 @@ class Bounds:
             groups = []
 
         print("Input Parameters:")
-        print("Greek Letters:", greek_letters)
         print("Frozen Params:", frozen_params)
         print("Custom Ranges:", custom_ranges)
         print("Groups:", groups)
 
-        bounds = Bounds.default_bounds(greek_letters, custom_ranges, sdxl)
+        bounds = Bounds.default_bounds(custom_ranges, cfg)  # Pass cfg to default_bounds
         not_frozen_bounds = Bounds.freeze_bounds(bounds, frozen_params)
         grouped_bounds = Bounds.group_bounds(not_frozen_bounds, groups)
         print("Bounds After Default Bounds:")
@@ -103,7 +96,7 @@ class Bounds:
         return bounds
 
     @staticmethod
-    def get_value(params, block_name, frozen, groups, sdxl=False) -> float:
+    def get_value(params, block_name, frozen, groups, model_arch="sd1") -> float:  # Replace sdxl with model_arch
         if block_name in params:
             return params[block_name]
         if groups is not None:
@@ -121,40 +114,39 @@ class Bounds:
     @staticmethod
     def assemble_params(
         params: Dict,
-        greek_letters: List[str],
         frozen: Dict,
         groups: List[List[str]],
-        sdxl: bool = False,
+        cfg=None,  # Add cfg as argument
     ) -> Tuple[Dict[str, List[float]], Dict[str, List[float]]]:
-        if sdxl:
-            block_count = NUM_TOTAL_BLOCKS_XL
-        else:
-            block_count = NUM_TOTAL_BLOCKS
+        model_arch = sd_mecha.extensions.model_arch.resolve(cfg.model_arch)
+        unet_block_identifiers = [
+            key for key in model_arch.user_keys()
+            if "_unet_block_" in key
+        ]
+        block_count = len(unet_block_identifiers)
         if frozen is None:
             frozen = {}
         if groups is None:
             groups = []
 
-        print(f"Assemble params - sdxl: {sdxl}, block_count: {block_count}")
-        weights = {}
-        bases = {}
+        print(f"Assemble params - model_arch: {cfg.model_arch}, block_count: {block_count}")
+        weights_list = {}  # Use weights_list instead of weights
+        base_values = {}    # Use base_values instead of bases
 
-        for greek_letter in greek_letters:
-            w = []
-            for i in range(block_count):
-                block_name = f"block_{i}_{greek_letter}"
-                value = Bounds.get_value(params, block_name, frozen, groups, sdxl)
-                w.append(value)
+        for greek_letter in ["alpha", "beta"]:  # Iterate over alpha and beta
+            weights_list[greek_letter] = []
+            for block_id in unet_block_identifiers:
+                value = Bounds.get_value(params, block_id, frozen, groups)
+                weights_list[greek_letter].append(value)
 
-            assert len(w) == block_count
-            print(f"Assemble params - sdxl: {sdxl}, greek_letter: {greek_letter}, num_weights: {len(w)}")
-            weights[greek_letter] = w
+            assert len(weights_list[greek_letter]) == block_count
+            print(f"Assemble params - model_arch: {cfg.model_arch}, greek_letter: {greek_letter}, num_weights: {len(weights_list[greek_letter])}")
 
             base_name = f"base_{greek_letter}"
-            bases[greek_letter] = Bounds.get_value(params, base_name, frozen, groups)
+            base_values[greek_letter] = Bounds.get_value(params, base_name, frozen, groups)
 
-        assert len(weights) == len(greek_letters)
-        assert len(bases) == len(greek_letters)
-        print(f"Assembled Weights: {weights}")
-        print(f"Assembled Bases: {bases}")
-        return weights, bases
+        assert len(weights_list) == 2  # Assert 2 greek letters (alpha, beta)
+        assert len(base_values) == 2
+        print(f"Assembled Weights List: {weights_list}")
+        print(f"Assembled Base Values: {base_values}")
+        return weights_list, base_values  # Return weights_list and base_values

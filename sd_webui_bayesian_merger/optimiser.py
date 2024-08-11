@@ -4,7 +4,6 @@ from abc import abstractmethod
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Tuple
-import torch
 import logging
 
 from bayes_opt.logger import JSONLogger
@@ -18,6 +17,7 @@ from sd_webui_bayesian_merger.generator import Generator
 from sd_webui_bayesian_merger.merger import Merger
 from sd_webui_bayesian_merger.prompter import Prompter
 from sd_webui_bayesian_merger.scorer import AestheticScorer
+from mecha_recipe_generator import translate_optimiser_parameters
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.DEBUG)
@@ -57,7 +57,8 @@ class Optimiser:
                 with open_dict(self.cfg):
                     self.cfg["optimisation_guide"][guide] = None
         return self.bounds_initialiser.get_bounds(
-            self.merger.greek_letters,
+            # Pass the greek letters from the config instead
+            self.cfg.get("greek_letters", ["alpha"]),
             self.cfg.optimisation_guide.frozen_params
             if self.cfg.guided_optimisation
             else None,
@@ -83,17 +84,9 @@ class Optimiser:
 
         logger.info(f"\n{iteration_type} - Iteration: {self.iteration}")
 
-        weights, bases = self.bounds_initialiser.assemble_params(
-            params,
-            self.merger.greek_letters,
-            self.cfg.optimisation_guide.frozen_params
-            if self.cfg.guided_optimisation
-            else None,
-            self.cfg.optimisation_guide.groups
-            if self.cfg.guided_optimisation
-            else None,
-            sdxl=self.sdxl
-        )
+        # Directly use the params dictionary
+        weights = params
+        bases = params
 
         # Merge the model in memory
         self.merger.merge(weights, bases)
@@ -101,10 +94,10 @@ class Optimiser:
         images, gen_paths, payloads = self.generate_images()
         scores, norm = self.score_images(images, gen_paths, payloads)
         avg_score = self.scorer.average_calc(scores, norm, self.cfg.img_average_type)
-        
+
         # Update and save only if it's the best score so far
         self.update_best_score(bases, weights, avg_score)
-        
+
         logger.info(f"Average Score for Iteration: {avg_score}")
         return avg_score
 
@@ -116,7 +109,7 @@ class Optimiser:
             generated_images = self.generator.generate(payload)
             images.extend(generated_images)
             gen_paths.extend([paths[i]] * len(generated_images))
-            payloads[i : i + 1] = [payloads[i]] * len(generated_images)
+            payloads[i: i + 1] = [payloads[i]] * len(generated_images)
         return images, gen_paths, payloads
 
     def score_images(self, images, gen_paths, payloads) -> List[float]:
@@ -124,23 +117,23 @@ class Optimiser:
         return self.scorer.batch_score(images, gen_paths, payloads, self.iteration)
 
     def update_best_score(self, bases, weights, avg_score):
-        logger.info(f"{'-'*10}\nRun score: {avg_score}")
-        weights_strings = {
-            gl: ",".join(map(str, weights[gl])) for gl in self.merger.greek_letters
-        }
+        logger.info(f"{'-' * 10}\nRun score: {avg_score}")
 
-        for gl in self.merger.greek_letters:
-            logger.info(f"\nrun base_{gl}: {bases[gl]}")
-            logger.info(f"run weights_{gl}: {weights_strings[gl]}")
+        # Translate parameters to the new format
+        base_values, weights_list = translate_optimiser_parameters(bases, weights)
+
+        for greek_letter in base_values:
+            logger.info(f"\nrun base_{greek_letter}: {base_values[greek_letter]}")
+            logger.info(f"run weights_{greek_letter}: {weights_list[greek_letter]}")
 
         if avg_score > self.best_rolling_score:
             logger.info("\n NEW BEST!")
             self.best_rolling_score = avg_score
-            
+
             # Save the best model
-            self.merger.merge(weights, bases, save_best=True)  
-            
-            Optimiser.save_best_log(bases, weights_strings)
+            self.merger.merge(weights, bases, save_best=True)
+
+            Optimiser.save_best_log(base_values, weights_list)  # Pass the translated parameters
 
     @abstractmethod
     def optimise(self) -> None:
@@ -157,6 +150,9 @@ class Optimiser:
         best_weights: Dict,
         minimise: bool,
     ) -> None:
+        # Translate parameters to the new format
+        best_base_values, best_weights_list = translate_optimiser_parameters(best_bases, best_weights)
+
         img_path = Path(
             HydraConfig.get().runtime.output_dir,
             f"{self.log_name}.png",
@@ -170,18 +166,14 @@ class Optimiser:
         logger.info("\n" + "-" * 10 + "> Done!")
         logger.info("\nBest run:")
 
-        best_weights_strings = {}
-        for gl in self.merger.greek_letters:
-            logger.info(f"\nbest base_{gl}: {best_bases[gl]}")
-            logger.info(f"best weights_{gl}:")
-            w_str = ",".join(list(map(str, best_weights[gl])))
-            logger.info(w_str)
-            best_weights_strings[gl] = w_str
+        for gl in best_base_values:
+            logger.info(f"\nbest base_{gl}: {best_base_values[gl]}")
+            logger.info(f"best weights_{gl}: {best_weights_list[gl]}")
 
-        Optimiser.save_best_log(best_bases, best_weights_strings)
+        Optimiser.save_best_log(best_base_values, best_weights_list)  # Pass the translated parameters
         draw_unet(
-            best_bases["alpha"],
-            best_weights["alpha"],
+            best_base_values["alpha"],
+            best_weights_list["alpha"],
             model_a=Path(self.cfg.model_a).stem,
             model_b=Path(self.cfg.model_b).stem,
             figname=unet_path,
@@ -192,15 +184,15 @@ class Optimiser:
             self.merger.merge(best_weights, best_bases, save_best=True)
 
     @staticmethod
-    def save_best_log(bases: Dict, weights_strings: Dict) -> None:
+    def save_best_log(bases: Dict, weights: Dict) -> None:
         logger.info("Saving best.log")
         with open(
             Path(HydraConfig.get().runtime.output_dir, "best.log"),
             "w",
             encoding="utf-8",
         ) as f:
-            for m, b in bases.items():
-                f.write(f"{bases[m]}\n\n{weights_strings[m]}\n\n")
+            for greek_letter in bases:
+                f.write(f"{bases[greek_letter]}\n\n{weights[greek_letter]}\n\n")
 
     @staticmethod
     def load_log(log: PathT) -> List[Dict]:

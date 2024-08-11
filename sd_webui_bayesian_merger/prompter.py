@@ -36,14 +36,12 @@ class CardDealer:
     def replace_wildcards(self, prompt: str) -> str:
         chunks = re.split("(__\w+__)", prompt)
         replacements = []
-        for chunk in chunks:
-            if chunk.startswith("__") and chunk.endswith("__"):
-                # This is a wildcard
-                replacement = self.sample_wildcard(chunk[2:-2])
+        for wildcard_pattern in chunks:
+            if wildcard_pattern.startswith("__") and wildcard_pattern.endswith("__"):
+                replacement = self.sample_wildcard(wildcard_pattern[2:-2])
                 replacements.append(replacement)
             else:
-                # This is not a wildcard
-                replacements.append(chunk)
+                replacements.append(wildcard_pattern)
         return "".join(replacements)
 
 def assemble_payload(defaults: Dict, payload: Dict) -> Dict:
@@ -84,9 +82,13 @@ class Prompter:
         paths = []
         for p_name, p in self.raw_payloads.items():
             for _ in range(batch_size):
-                rendered_payload = p.copy()
-                processed_prompt = self.dealer.replace_wildcards(p["prompt"])
-                rendered_payload["prompt"] = processed_prompt
+                # Only create a copy if wildcards are present
+                if "__" in p["prompt"]:
+                    rendered_payload = p.copy()
+                    processed_prompt = self.dealer.replace_wildcards(p["prompt"])
+                    rendered_payload["prompt"] = processed_prompt
+                else:
+                    rendered_payload = p  # Use the original payload if no wildcards
                 paths.append(p_name)
                 payloads.append(rendered_payload)
         return payloads, paths

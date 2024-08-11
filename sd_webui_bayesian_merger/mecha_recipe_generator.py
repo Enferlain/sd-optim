@@ -1,4 +1,5 @@
 import re
+import inspect
 import sd_mecha
 
 def generate_mecha_recipe(base_values, weights_list, merge_method, cfg):
@@ -33,18 +34,12 @@ def generate_mecha_recipe(base_values, weights_list, merge_method, cfg):
     mecha_merge_method = sd_mecha.extensions.merge_method.resolve(merge_method)
     input_merge_spaces, _ = mecha_merge_method.get_input_merge_spaces()
 
-    # Apply author's logic for two-model and three-model merging
+    # Construct the recipe using the appropriate sd-mecha function
     primary_param = list(base_values.keys())[0]
-    if len(models) == 2:
-        recipe = getattr(sd_mecha, merge_method)(*models, **{primary_param: hypers})
-    elif len(models) == 3:
-        delta_models = sd_mecha.subtract(models[1], models[2])  # Delta between model_b and model_c
-        recipe = sd_mecha.add_difference(models[0], delta_models, **{primary_param: hypers})  # Apply delta to model_a
-    else:
-        raise ValueError("only support 2 or 3 models")
+    final_recipe = getattr(sd_mecha, merge_method)(*models, **{primary_param: hypers})
 
     # Serialize the recipe to text format
-    recipe_text = sd_mecha.recipe_serializer.serialize(recipe)
+    recipe_text = sd_mecha.recipe_serializer.serialize(final_recipe)
     return recipe_text
 
 def translate_optimiser_parameters(bases, weights):

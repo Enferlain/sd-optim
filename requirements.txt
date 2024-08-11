@@ -13,10 +13,11 @@ pytest
 transformers
 numpy
 hydra-core
-sd-meh==0.9.5
+sd-mecha
 lightgbm 
 scikit-learn
 openai-clip
 tensordict
 timm
 fairscale
+plotly

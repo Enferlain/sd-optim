@@ -4,11 +4,11 @@ import sd_mecha
 def generate_mecha_recipe(base_values, weights_list, merge_method, cfg):
     """Generates an sd-mecha recipe from Bayesian Merger parameters."""
 
-    # Dynamically create ModelRecipeNodes for all models in cfg
+    # Dynamically create ModelRecipeNodes for all models in cfg, using sd_mecha.model
     models = []
     for model_key in ["model_a", "model_b", "model_c"]:
         if model_key in cfg:
-            model = sd_mecha.recipe_nodes.ModelRecipeNode(state_dict=cfg[model_key], model_arch=cfg.model_arch)
+            model = sd_mecha.model(cfg[model_key], cfg.model_arch)
             models.append(model)
 
     # Retrieve and filter block identifiers for the UNet component
@@ -33,39 +33,18 @@ def generate_mecha_recipe(base_values, weights_list, merge_method, cfg):
     mecha_merge_method = sd_mecha.extensions.merge_method.resolve(merge_method)
     input_merge_spaces, _ = mecha_merge_method.get_input_merge_spaces()
 
-    # Create a delta recipe node if the second argument needs to be a delta
-    if len(input_merge_spaces) > 1 and input_merge_spaces[1] == sd_mecha.recipe_nodes.MergeSpace.DELTA:
-        delta_node = sd_mecha.recipe_nodes.MergeRecipeNode(
-            sd_mecha.extensions.merge_method.resolve("subtract"),
-            models[1],
-            models[0],
-            hypers={},
-            volatile_hypers={},
-        )
-
-        # Create a final recipe with the delta as the second argument
-        final_recipe = sd_mecha.recipe_nodes.MergeRecipeNode(
-            mecha_merge_method,
-            models[0],
-            delta_node,
-            *models[2:],
-            hypers={},  # Pass empty hypers here
-            volatile_hypers={},
-        )
+    # Apply author's logic for two-model and three-model merging
+    primary_param = list(base_values.keys())[0]
+    if len(models) == 2:
+        recipe = getattr(sd_mecha, merge_method)(*models, **{primary_param: hypers})
+    elif len(models) == 3:
+        delta_models = sd_mecha.subtract(models[1], models[2])  # Delta between model_b and model_c
+        recipe = sd_mecha.add_difference(models[0], delta_models, **{primary_param: hypers})  # Apply delta to model_a
     else:
-        # Create a final recipe without a delta
-        final_recipe = sd_mecha.recipe_nodes.MergeRecipeNode(
-            mecha_merge_method,
-            *models,
-            hypers={},  # Pass empty hypers here
-            volatile_hypers={},
-        )
-
-    # Simply assign the hypers dictionary to the MergeRecipeNode
-    final_recipe.hypers = {list(base_values.keys())[0]: hypers}
+        raise ValueError("only support 2 or 3 models")
 
     # Serialize the recipe to text format
-    recipe_text = sd_mecha.recipe_serializer.serialize(final_recipe)
+    recipe_text = sd_mecha.recipe_serializer.serialize(recipe)
     return recipe_text
 
 def translate_optimiser_parameters(bases, weights):

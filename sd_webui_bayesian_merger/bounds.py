@@ -1,8 +1,11 @@
 import warnings
 from typing import Dict, List, Tuple
+import logging
 
 from omegaconf import DictConfig, OmegaConf
 import sd_mecha
+
+logger = logging.getLogger(__name__)
 
 class Bounds:
     @staticmethod
@@ -63,10 +66,10 @@ class Bounds:
 
     @staticmethod
     def get_bounds(
-        frozen_params: Dict[str, float] = None,
-        custom_ranges: Dict[str, Tuple[float, float]] = None,
-        groups: List[List[str]] = None,
-        cfg=None,  # Add cfg as argument
+            frozen_params: Dict[str, float] = None,
+            custom_ranges: Dict[str, Tuple[float, float]] = None,
+            groups: List[List[str]] = None,
+            cfg=None,
     ) -> Dict:
         if frozen_params is None:
             frozen_params = {}
@@ -75,16 +78,16 @@ class Bounds:
         if groups is None:
             groups = []
 
-        print("Input Parameters:")
-        print("Frozen Params:", frozen_params)
-        print("Custom Ranges:", custom_ranges)
-        print("Groups:", groups)
+        logger.debug("Input Parameters:")
+        logger.debug(f"Frozen Params: {frozen_params}")
+        logger.debug(f"Custom Ranges: {custom_ranges}")
+        logger.debug(f"Groups: {groups}")
 
-        bounds = Bounds.default_bounds(custom_ranges, cfg)  # Pass cfg to default_bounds
+        bounds = Bounds.default_bounds(custom_ranges, cfg)
         not_frozen_bounds = Bounds.freeze_bounds(bounds, frozen_params)
         grouped_bounds = Bounds.group_bounds(not_frozen_bounds, groups)
-        print("Bounds After Default Bounds:")
-        print(bounds)
+
+        logger.debug(f"Bounds After Default Bounds: {bounds}")
         return Bounds.freeze_groups(grouped_bounds, groups, frozen_params)
 
     @staticmethod
@@ -133,7 +136,7 @@ class Bounds:
         weights_list = {}  # Use weights_list instead of weights
         base_values = {}    # Use base_values instead of bases
 
-        for greek_letter in ["alpha", "beta"]:  # Iterate over alpha and beta
+        for greek_letter in base_values:  # Iterate over Greek letters from base_values
             weights_list[greek_letter] = []
             for block_id in unet_block_identifiers:
                 value = Bounds.get_value(params, block_id, frozen, groups)

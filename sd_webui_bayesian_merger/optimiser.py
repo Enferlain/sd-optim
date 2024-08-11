@@ -11,7 +11,7 @@ from hydra.core.hydra_config import HydraConfig
 from omegaconf import DictConfig, open_dict
 from tqdm import tqdm
 
-from sd_webui_bayesian_merger.artist import convergence_plot, draw_unet
+from sd_webui_bayesian_merger.artist import Artist  # Import the Artist class
 from sd_webui_bayesian_merger.bounds import Bounds
 from sd_webui_bayesian_merger.generator import Generator
 from sd_webui_bayesian_merger.merger import Merger
@@ -37,7 +37,10 @@ class Optimiser:
         self.scorer = AestheticScorer(self.cfg, {}, {}, {})
         self.prompter = Prompter(self.cfg)
         self.iteration = 0
-        self.sdxl = self.cfg.sdxl
+        # Remove this line:
+        # self.sdxl = self.cfg.sdxl
+        # Create an instance of the Artist class
+        self.artist = Artist(self)
 
     def start_logging(self) -> None:
         run_name = "-".join(self.merger.output_file.stem.split("-")[:-1])
@@ -57,7 +60,6 @@ class Optimiser:
                 with open_dict(self.cfg):
                     self.cfg["optimisation_guide"][guide] = None
         return self.bounds_initialiser.get_bounds(
-            # Pass the greek letters from the config instead
             self.cfg.get("greek_letters", ["alpha"]),
             self.cfg.optimisation_guide.frozen_params
             if self.cfg.guided_optimisation
@@ -68,7 +70,7 @@ class Optimiser:
             self.cfg.optimisation_guide.groups
             if self.cfg.guided_optimisation
             else None,
-            sdxl=self.sdxl
+            cfg=self.cfg,  # Pass the configuration object (self.cfg)
         )
 
     def sd_target_function(self, **params) -> float:
@@ -142,46 +144,6 @@ class Optimiser:
     @abstractmethod
     def postprocess(self) -> None:
         raise NotImplementedError("Not implemented")
-
-    def plot_and_save(
-        self,
-        scores: List[float],
-        best_bases: Dict,
-        best_weights: Dict,
-        minimise: bool,
-    ) -> None:
-        # Translate parameters to the new format
-        best_base_values, best_weights_list = translate_optimiser_parameters(best_bases, best_weights)
-
-        img_path = Path(
-            HydraConfig.get().runtime.output_dir,
-            f"{self.log_name}.png",
-        )
-        convergence_plot(scores, figname=img_path, minimise=minimise)
-
-        unet_path = Path(
-            HydraConfig.get().runtime.output_dir,
-            f"{self.log_name}-unet.png",
-        )
-        logger.info("\n" + "-" * 10 + "> Done!")
-        logger.info("\nBest run:")
-
-        for gl in best_base_values:
-            logger.info(f"\nbest base_{gl}: {best_base_values[gl]}")
-            logger.info(f"best weights_{gl}: {best_weights_list[gl]}")
-
-        Optimiser.save_best_log(best_base_values, best_weights_list)  # Pass the translated parameters
-        draw_unet(
-            best_base_values["alpha"],
-            best_weights_list["alpha"],
-            model_a=Path(self.cfg.model_a).stem,
-            model_b=Path(self.cfg.model_b).stem,
-            figname=unet_path,
-        )
-
-        if self.cfg.save_best:
-            logger.info("Merging best model")
-            self.merger.merge(best_weights, best_bases, save_best=True)
 
     @staticmethod
     def save_best_log(bases: Dict, weights: Dict) -> None:

@@ -72,7 +72,12 @@ class Merger:
 
         # Execute the recipe using sd-mecha
         recipe_merger = sd_mecha.RecipeMerger()
-        recipe_merger.merge_and_save(recipe, output=self.cfg.destination)
+        recipe_merger.merge_and_save(
+            recipe,
+            output=self.cfg.destination,
+            threads=self.cfg.threads,
+            save_dtype=torch.float16 if self.cfg.best_precision == 16 else torch.float32,  # Map best_precision
+        )
 
         logging.info(f"Merged model using sd-mecha.")  # Update log message
 

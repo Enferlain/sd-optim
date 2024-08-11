@@ -33,36 +33,36 @@ def generate_mecha_recipe(base_values, weights_list, merge_method, cfg):
     mecha_merge_method = sd_mecha.extensions.merge_method.resolve(merge_method)
     input_merge_spaces, _ = mecha_merge_method.get_input_merge_spaces()
 
-    # Create the initial MergeRecipeNode
-    merge_node = sd_mecha.recipe_nodes.MergeRecipeNode(
-        mecha_merge_method,
-        model_a,
-        model_b,
-        hypers={},  # Initially empty hyperparameters
-        volatile_hypers={},
-    )
+    # Create volatile_hypers dictionary
+    volatile_hypers = {}
 
-    # Dynamically create deltas based on merging space requirements
-    models = [model_a]
-    for i, model_or_delta in enumerate(merge_node.models[1:], start=1):  # Skip model_a
-        if input_merge_spaces[i] == sd_mecha.recipe_nodes.MergeSpace.DELTA:
-            # Create a delta using the subtract method
-            delta = sd_mecha.recipe_nodes.MergeRecipeNode(
-                sd_mecha.extensions.merge_method.resolve("subtract"),
-                model_or_delta,  # The model to subtract from
-                model_a,           # The base model
-            )
-            models.append(delta)
-        else:
-            models.append(model_or_delta)  # Use the model directly if not a delta
+    # Create a delta recipe node if the second argument needs to be a delta
+    if len(input_merge_spaces) > 1 and input_merge_spaces[1] == sd_mecha.recipe_nodes.MergeSpace.DELTA:
+        delta_node = sd_mecha.recipe_nodes.MergeRecipeNode(
+            sd_mecha.extensions.merge_method.resolve("subtract"),
+            models[1],
+            models[0],
+            hypers={},
+            volatile_hypers={},
+        )
 
-    merge_node.models = models  # Update the merge node with the models and deltas
-
-    # Update the hyperparameters of the merge_node
-    merge_node.hypers = {list(base_values.keys())[0]: hypers}
-
-    # Assign merge_node to final_recipe
-    final_recipe = merge_node
+        # Create a final recipe with the delta as the second argument, passing hypers to the merging method
+        final_recipe = sd_mecha.recipe_nodes.MergeRecipeNode(
+            mecha_merge_method,
+            models[0],
+            delta_node,
+            *models[2:],
+            hypers=hypers,
+            volatile_hypers={},
+        )
+    else:
+        # Create a final recipe without a delta, passing hypers to the merging method
+        final_recipe = sd_mecha.recipe_nodes.MergeRecipeNode(
+            mecha_merge_method,
+            *models,
+            hypers=hypers,
+            volatile_hypers={},
+        )
 
     # Serialize the recipe to text format
     recipe_text = sd_mecha.recipe_serializer.serialize(final_recipe)

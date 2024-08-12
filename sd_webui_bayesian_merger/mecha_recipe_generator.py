@@ -24,10 +24,12 @@ def generate_mecha_recipe(base_values, weights_list, merge_method, cfg):
     for greek_letter in weights_list:
         for i, weight in enumerate(weights_list[greek_letter]):
             block_id = unet_block_identifiers[i]
-            hypers[block_id] = weight[0]
+            # Assign the weight directly, not as a list
+            hypers[block_id] = weight
 
         base_value = base_values.get(greek_letter, 0)
-        hypers.update({f"{cfg.model_arch}_{component}_default": base_value for component in ["txt", "txt2"]})
+        # Extract the float value from the base_value list
+        hypers.update({f"{cfg.model_arch}_{component}_default": base_value[0] for component in ["txt", "txt2"]})
 
     # Get the expected merging spaces for the merging method
     mecha_merge_method = sd_mecha.extensions.merge_method.resolve(merge_method)

@@ -116,10 +116,10 @@ class Bounds:
 
     @staticmethod
     def assemble_params(
-        params: Dict,
-        frozen: Dict,
-        groups: List[List[str]],
-        cfg=None,  # Add cfg as argument
+            params: Dict,
+            frozen: Dict,
+            groups: List[List[str]],
+            cfg,
     ) -> Tuple[Dict[str, List[float]], Dict[str, List[float]]]:
         model_arch = sd_mecha.extensions.model_arch.resolve(cfg.model_arch)
         unet_block_identifiers = [
@@ -134,22 +134,29 @@ class Bounds:
 
         print(f"Assemble params - model_arch: {cfg.model_arch}, block_count: {block_count}")
         weights_list = {}  # Use weights_list instead of weights
-        base_values = {}    # Use base_values instead of bases
+        base_values = {}  # Use base_values instead of bases
 
-        for greek_letter in base_values:  # Iterate over Greek letters from base_values
+        # Get the expected number of Greek letters from the merging method
+        mecha_merge_method = sd_mecha.extensions.merge_method.resolve(cfg.merge_mode)
+        expected_greek_letters = len(mecha_merge_method.get_default_hypers())
+
+        # Iterate over the expected Greek letters
+        for i in range(expected_greek_letters):
+            greek_letter = list(mecha_merge_method.get_default_hypers().keys())[i]
+
             weights_list[greek_letter] = []
             for block_id in unet_block_identifiers:
                 value = Bounds.get_value(params, block_id, frozen, groups)
                 weights_list[greek_letter].append(value)
 
             assert len(weights_list[greek_letter]) == block_count
-            print(f"Assemble params - model_arch: {cfg.model_arch}, greek_letter: {greek_letter}, num_weights: {len(weights_list[greek_letter])}")
+            print(
+                f"Assemble params - model_arch: {cfg.model_arch}, greek_letter: {greek_letter}, num_weights: {len(weights_list[greek_letter])}")
 
             base_name = f"base_{greek_letter}"
             base_values[greek_letter] = [Bounds.get_value(params, base_name, frozen, groups)]
 
-        assert len(weights_list) == 2  # Assert 2 greek letters (alpha, beta)
-        assert len(base_values) == 2
+        assert len(weights_list) == expected_greek_letters
         print(f"Assembled Weights List: {weights_list}")
         print(f"Assembled Base Values: {base_values}")
-        return weights_list, base_values  # Return weights_list and base_values
+        return weights_list, base_values

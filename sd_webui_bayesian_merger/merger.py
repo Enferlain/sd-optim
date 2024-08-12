@@ -47,8 +47,6 @@ class Merger:
             save_best: bool = False,
             cfg=None,  # Add cfg as a parameter
     ) -> None:
-        logging.debug(f"Device configuration: {self.cfg.device}")
-        logging.debug(f"Work device configuration: {self.cfg.work_device}")
 
         if save_best:
             with open_dict(self.cfg):
@@ -66,10 +64,10 @@ class Merger:
         )
 
         # Deserialize the recipe
-        recipe = sd_mecha.recipe_serializer.deserialize(recipe_text)
+        recipe = sd_mecha.recipe_serializer.deserialize(recipe_text.splitlines())
 
         # Execute the recipe using sd-mecha
-        recipe_merger = sd_mecha.RecipeMerger()
+        recipe_merger = sd_mecha.RecipeMerger(models_dir=Path(self.cfg.model_a).parent)
         recipe_merger.merge_and_save(
             recipe,
             output=self.cfg.destination,

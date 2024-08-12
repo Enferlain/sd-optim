@@ -84,7 +84,9 @@ class Optimiser:
         logger.info(f"\n{iteration_type} - Iteration: {self.iteration}")
 
         # Assemble parameters using bounds_initialiser
-        weights_list, base_values = self.bounds_initialiser.assemble_params(params, self.cfg.optimisation_guide.groups, self.cfg)
+        weights_list, base_values = self.bounds_initialiser.assemble_params(
+            params, self.cfg.optimisation_guide.frozen_params, self.cfg.optimisation_guide.groups, self.cfg
+        )
 
         # Merge the model in memory
         self.merger.merge(weights_list, base_values, cfg=self.cfg)  # Pass the assembled parameters

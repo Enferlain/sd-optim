@@ -4,7 +4,8 @@ from pathlib import Path
 
 import sd_mecha
 from modules import script_callbacks
-from mecha_recipe_generator import generate_mecha_recipe, translate_optimiser_parameters
+from mecha_recipe_generator import translate_optimiser_parameters
+from merge_methods import MergeMethods  # Import the new MergeMethods class
 
 logger = logging.getLogger("api")
 logging.basicConfig(level=logging.INFO)
@@ -18,6 +19,7 @@ def on_app_started(_gui, api):
         model_b: str = fastapi.Body(..., title="Path to Model B"),
         model_c: str = fastapi.Body(None, title="Path to Model C (Optional)"),
         merge_method: str = fastapi.Body(..., title="Merge Method"),
+        model_arch: str = fastapi.Body(..., title="Model Architecture"),
         save_path: str = fastapi.Body(None, title="Save Path"),
     ):
         """Merges models using sd-mecha."""
@@ -26,7 +28,7 @@ def on_app_started(_gui, api):
         cfg = {
             "model_a": model_a,
             "model_b": model_b,
-            "model_arch": cfg.model_arch,  # Get model_arch from cfg
+            "model_arch": model_arch,  # Get model_arch from the parameter
             "merge_mode": merge_method,
         }
 
@@ -34,15 +36,19 @@ def on_app_started(_gui, api):
         if model_c is not None:
             cfg["model_c"] = model_c
 
-        # Generate the sd-mecha recipe
-        recipe_text = generate_mecha_recipe(base_values, weights_list, merge_method, cfg)
+        # Create a list of sd-mecha models
+        models = [
+            sd_mecha.model(cfg[model_key], model_arch)  # Access model_arch from the function parameter
+            for model_key in ["model_a", "model_b", "model_c"] if model_key in cfg
+        ]
 
-        # Deserialize the recipe
-        recipe = sd_mecha.recipe_serializer.deserialize(recipe_text)
+        # Prepare hyperparameters using translate_optimiser_parameters
+        greek_hypers, _ = translate_optimiser_parameters(base_values, weights_list)
 
-        # Execute the recipe using sd-mecha
+        # Call the merging method using MergeMethods class and execute the recipe
+        state_dict = {}
         recipe_merger = sd_mecha.RecipeMerger()
-        recipe_merger.merge_and_save(recipe, output=save_path)
+        recipe_merger.merge_and_save(getattr(MergeMethods, merge_method)(*models, **greek_hypers), output=state_dict)
 
         return {"message": "Models merged successfully."}
 

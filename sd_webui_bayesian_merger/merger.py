@@ -1,12 +1,12 @@
 import logging
 import sd_mecha
-
+import torch
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict
 
 from omegaconf import DictConfig, open_dict
-from mecha_recipe_generator import generate_mecha_recipe, translate_optimiser_parameters
+from .mecha_recipe_generator import generate_mecha_recipe, translate_optimiser_parameters
 
 logging.basicConfig(level=logging.INFO)
 
@@ -36,15 +36,16 @@ class Merger:
     def create_best_model_out_name(self):
         model_out_name = f"bbwm-{Path(self.cfg.model_a).stem}-{Path(self.cfg.model_b).stem}"
         model_out_name += "-best"
-        model_out_name += f"-{self.cfg.best_precision}bit"
-        model_out_name += f".{self.cfg.best_format}"
+        model_out_name += f"-fp{self.cfg.best_precision}"
+        model_out_name += f".safetensors"
         self.best_output_file = Path(Path(self.cfg.model_a).parent, model_out_name)
 
     def merge(
             self,
-            weights: Dict,
-            bases: Dict,
+            weights_list: Dict,
+            base_values: Dict,
             save_best: bool = False,
+            cfg=None,  # Add cfg as a parameter
     ) -> None:
         logging.debug(f"Device configuration: {self.cfg.device}")
         logging.debug(f"Work device configuration: {self.cfg.work_device}")
@@ -55,9 +56,6 @@ class Merger:
         else:
             with open_dict(self.cfg):
                 self.cfg.destination = "memory"
-
-        # Translate parameters using the new function
-        base_values, weights_list = translate_optimiser_parameters(bases, weights)
 
         # Generate sd-mecha recipe using the updated function
         recipe_text = generate_mecha_recipe(

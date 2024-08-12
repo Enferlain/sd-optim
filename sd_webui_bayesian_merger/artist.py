@@ -1,7 +1,7 @@
 import plotly.graph_objects as go
 from sklearn.decomposition import PCA
 from sklearn.preprocessing import StandardScaler
-from sd_webui_bayesian_merger.optimiser import Optimiser
+from optimiser import Optimiser
 
 class Artist:
     def __init__(self, optimiser: Optimiser):

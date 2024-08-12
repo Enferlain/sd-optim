@@ -11,13 +11,13 @@ from hydra.core.hydra_config import HydraConfig
 from omegaconf import DictConfig, open_dict
 from tqdm import tqdm
 
-from sd_webui_bayesian_merger.artist import Artist  # Import the Artist class
-from sd_webui_bayesian_merger.bounds import Bounds
-from sd_webui_bayesian_merger.generator import Generator
-from sd_webui_bayesian_merger.merger import Merger
-from sd_webui_bayesian_merger.prompter import Prompter
-from sd_webui_bayesian_merger.scorer import AestheticScorer
-from mecha_recipe_generator import translate_optimiser_parameters
+#from sd_webui_bayesian_merger.artist import Artist  # Import the Artist class
+from .bounds import Bounds
+from .generator import Generator
+from .merger import Merger
+from .prompter import Prompter
+from .scorer import AestheticScorer
+from .mecha_recipe_generator import translate_optimiser_parameters
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.DEBUG)
@@ -37,10 +37,8 @@ class Optimiser:
         self.scorer = AestheticScorer(self.cfg, {}, {}, {})
         self.prompter = Prompter(self.cfg)
         self.iteration = 0
-        # Remove this line:
-        # self.sdxl = self.cfg.sdxl
         # Create an instance of the Artist class
-        self.artist = Artist(self)
+#        self.artist = Artist(self)
 
     def start_logging(self) -> None:
         run_name = "-".join(self.merger.output_file.stem.split("-")[:-1])
@@ -60,7 +58,6 @@ class Optimiser:
                 with open_dict(self.cfg):
                     self.cfg["optimisation_guide"][guide] = None
         return self.bounds_initialiser.get_bounds(
-            self.cfg.get("greek_letters", ["alpha"]),
             self.cfg.optimisation_guide.frozen_params
             if self.cfg.guided_optimisation
             else None,
@@ -70,7 +67,7 @@ class Optimiser:
             self.cfg.optimisation_guide.groups
             if self.cfg.guided_optimisation
             else None,
-            cfg=self.cfg,  # Pass the configuration object (self.cfg)
+            self.cfg
         )
 
     def sd_target_function(self, **params) -> float:
@@ -86,19 +83,18 @@ class Optimiser:
 
         logger.info(f"\n{iteration_type} - Iteration: {self.iteration}")
 
-        # Directly use the params dictionary
-        weights = params
-        bases = params
+        # Assemble parameters using bounds_initialiser
+        weights_list, base_values = self.bounds_initialiser.assemble_params(params, self.cfg.optimisation_guide.groups, self.cfg)
 
         # Merge the model in memory
-        self.merger.merge(weights, bases)
+        self.merger.merge(weights_list, base_values, cfg=self.cfg)  # Pass the assembled parameters
 
         images, gen_paths, payloads = self.generate_images()
         scores, norm = self.score_images(images, gen_paths, payloads)
         avg_score = self.scorer.average_calc(scores, norm, self.cfg.img_average_type)
 
         # Update and save only if it's the best score so far
-        self.update_best_score(bases, weights, avg_score)
+        self.update_best_score(base_values, weights_list, avg_score)
 
         logger.info(f"Average Score for Iteration: {avg_score}")
         return avg_score
@@ -124,16 +120,16 @@ class Optimiser:
         # Translate parameters to the new format
         base_values, weights_list = translate_optimiser_parameters(bases, weights)
 
-        for greek_letter in base_values:
-            logger.info(f"\nrun base_{greek_letter}: {base_values[greek_letter]}")
-            logger.info(f"run weights_{greek_letter}: {weights_list[greek_letter]}")
+        for param_name in base_values:
+            logger.info(f"\nrun base_{param_name}: {base_values[param_name]}")
+            logger.info(f"run weights_{param_name}: {weights_list[param_name]}")
 
         if avg_score > self.best_rolling_score:
             logger.info("\n NEW BEST!")
             self.best_rolling_score = avg_score
 
             # Save the best model
-            self.merger.merge(weights, bases, save_best=True)
+            self.merger.merge(weights_list, base_values, save_best=True)
 
             Optimiser.save_best_log(base_values, weights_list)  # Pass the translated parameters
 
@@ -153,8 +149,8 @@ class Optimiser:
             "w",
             encoding="utf-8",
         ) as f:
-            for greek_letter in bases:
-                f.write(f"{bases[greek_letter]}\n\n{weights[greek_letter]}\n\n")
+            for param_name in bases:
+                f.write(f"{bases[param_name]}\n\n{weights[param_name]}\n\n")
 
     @staticmethod
     def load_log(log: PathT) -> List[Dict]:

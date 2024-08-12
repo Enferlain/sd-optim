@@ -23,7 +23,7 @@ def main(cfg: DictConfig) -> None:
     bo.postprocess()
 
     # Trigger visualizations
-    bo.artist.visualize_optimization()  # Call the visualization method
+#    bo.artist.visualize_optimization()  # Call the visualization method
 
 
 if __name__ == "__main__":

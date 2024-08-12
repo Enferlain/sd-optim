@@ -146,7 +146,7 @@ class Bounds:
             print(f"Assemble params - model_arch: {cfg.model_arch}, greek_letter: {greek_letter}, num_weights: {len(weights_list[greek_letter])}")
 
             base_name = f"base_{greek_letter}"
-            base_values[greek_letter] = Bounds.get_value(params, base_name, frozen, groups)
+            base_values[greek_letter] = [Bounds.get_value(params, base_name, frozen, groups)]
 
         assert len(weights_list) == 2  # Assert 2 greek letters (alpha, beta)
         assert len(base_values) == 2

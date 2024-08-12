@@ -53,18 +53,9 @@ class BayesOptimiser(Optimiser):
         for i, res in enumerate(self.optimizer.res):
             logger.info(f"Iteration {i}: \n\t{res}")
 
-        scores = parse_scores(self.optimizer.res)
+        # No need to assign scores, best_weights, or best_bases here
 
-        # Directly assign the optimized parameters
-        best_weights = self.optimizer.max["params"]
-        best_bases = self.optimizer.max["params"]
-
-        self.plot_and_save(
-            scores,
-            best_bases,
-            best_weights,
-            minimise=False,
-        )
+        self.artist.visualize_optimization()  # Call the Artist's visualize_optimization method
 
 
 def parse_scores(iterations: List[Dict]) -> List[float]:

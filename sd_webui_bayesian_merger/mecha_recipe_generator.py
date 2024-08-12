@@ -1,5 +1,4 @@
 import re
-import inspect
 import sd_mecha
 
 def generate_mecha_recipe(base_values, weights_list, merge_method, cfg):

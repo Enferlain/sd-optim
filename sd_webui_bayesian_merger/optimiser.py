@@ -119,8 +119,11 @@ class Optimiser:
     def update_best_score(self, bases, weights, avg_score):
         logger.info(f"{'-' * 10}\nRun score: {avg_score}")
 
-        # Translate parameters to the new format
-        base_values, weights_list = translate_optimiser_parameters(bases, weights)
+        # Use the received base_values and weights_list directly
+        for greek_letter in base_values:
+            logger.info(f"\nrun base_{greek_letter}: {base_values[greek_letter]}")
+            if greek_letter in weights:  # Check if the key exists in weights
+                logger.info(f"run weights_{greek_letter}: {weights[greek_letter]}")
 
         for param_name in base_values:
             logger.info(f"\nrun base_{param_name}: {base_values[param_name]}")

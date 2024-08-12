@@ -121,11 +121,14 @@ class Bounds:
             groups: List[List[str]],
             cfg,
     ) -> Tuple[Dict[str, List[float]], Dict[str, List[float]]]:
-        model_arch = sd_mecha.extensions.model_arch.resolve(cfg.model_arch)
         unet_block_identifiers = [
-            key for key in model_arch.user_keys()
+            key for key in sd_mecha.extensions.model_arch.resolve(cfg.model_arch).user_keys()
             if "_unet_block_" in key
         ]
+
+        # Sort unet_block_identifiers using natural_sort_key
+        unet_block_identifiers.sort(key=sd_mecha.hypers.natural_sort_key)
+
         block_count = len(unet_block_identifiers)
         if frozen is None:
             frozen = {}
@@ -133,8 +136,8 @@ class Bounds:
             groups = []
 
         print(f"Assemble params - model_arch: {cfg.model_arch}, block_count: {block_count}")
-        weights_list = {}  # Use weights_list instead of weights
-        base_values = {}  # Use base_values instead of bases
+        weights_list = {}
+        base_values = {}
 
         # Get the expected number of Greek letters from the merging method
         mecha_merge_method = sd_mecha.extensions.merge_method.resolve(cfg.merge_mode)

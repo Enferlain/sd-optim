@@ -4,8 +4,7 @@ from pathlib import Path
 
 import sd_mecha
 from modules import script_callbacks
-from mecha_recipe_generator import translate_optimiser_parameters
-from merge_methods import MergeMethods  # Import the new MergeMethods class
+from sd_webui_bayesian_merger.merge_methods import MergeMethods
 
 logger = logging.getLogger("api")
 logging.basicConfig(level=logging.INFO)
@@ -28,7 +27,7 @@ def on_app_started(_gui, api):
         cfg = {
             "model_a": model_a,
             "model_b": model_b,
-            "model_arch": model_arch,  # Get model_arch from the parameter
+            "model_arch": model_arch,
             "merge_mode": merge_method,
         }
 
@@ -38,17 +37,14 @@ def on_app_started(_gui, api):
 
         # Create a list of sd-mecha models
         models = [
-            sd_mecha.model(cfg[model_key], model_arch)  # Access model_arch from the function parameter
+            sd_mecha.model(cfg[model_key], model_arch)
             for model_key in ["model_a", "model_b", "model_c"] if model_key in cfg
         ]
-
-        # Prepare hyperparameters using translate_optimiser_parameters
-        greek_hypers, _ = translate_optimiser_parameters(base_values, weights_list)
 
         # Call the merging method using MergeMethods class and execute the recipe
         state_dict = {}
         recipe_merger = sd_mecha.RecipeMerger()
-        recipe_merger.merge_and_save(getattr(MergeMethods, merge_method)(*models, **greek_hypers), output=state_dict)
+        recipe_merger.merge_and_save(getattr(MergeMethods, merge_method)(*models, **base_values, **weights_list), output=state_dict)  # Simplified merging call
 
         return {"message": "Models merged successfully."}
 

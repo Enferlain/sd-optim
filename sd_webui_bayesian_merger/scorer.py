@@ -19,76 +19,60 @@ from sd_webui_bayesian_merger.models.ShadowScore import ShadowScore as SS
 from sd_webui_bayesian_merger.models.CafeScore import CafeScore as CAFE
 from sd_webui_bayesian_merger.models.NoAIScore import NoAIScore as NOAI
 
-LAION_URL = (
-    "https://github.com/grexzen/SD-Chad/blob/main/sac+logos+ava1-l14-linearMSE.pth?raw=true"
-)
-CHAD_URL = (
-    "https://github.com/grexzen/SD-Chad/blob/main/chadscorer.pth?raw=true"
-)
-WDAES_URL = (
-    "https://huggingface.co/hakurei/waifu-diffusion-v1-4/resolve/main/models/aes-B32-v0.pth?download=true"
-)
-IR_URL = (
-    "https://huggingface.co/THUDM/ImageReward/resolve/main/ImageReward.pt?download=true"
-)
-CLIP_URL = (
-    "https://openaipublic.azureedge.net/clip/models/b8cca3fd41ae0c99ba7e8951adf17d267cdb84cd88be6f7c2e0eca1737a03836/ViT-L-14.pt?raw=true"
-)
-BLIP_URL = (
-    "https://storage.googleapis.com/sfr-vision-language-research/BLIP/models/model_large.pth?raw=true"
-)
-HPSV2_URL = (
-    "https://huggingface.co/xswu/HPSv2/resolve/main/HPS_v2.1_compressed.pt?download=true"
-)
-PICK_URL = (
-    "https://huggingface.co/yuvalkirstain/PickScore_v1/resolve/main/model.safetensors?download=true"
-)
-SHADOW_URL = (
-    "https://huggingface.co/shadowlilac/aesthetic-shadow/resolve/main/model.safetensors?download=true"
-)
-CAFE_URL = (
-    "https://huggingface.co/cafeai/cafe_aesthetic/resolve/3bca27c5c0b6021056b1e84e5a18cf1db9fe5d4c/model.safetensors?download=true"
-)
-CLASS_URL = (
-    "https://huggingface.co/cafeai/cafe_style/resolve/d5ae1a7ac05a12ab84732c25f2ea7225d35ac81b/model.safetensors?download=true"
-)
-REAL_URL = (
-    "https://huggingface.co/Sumsub/Sumsub-ffs-synthetic-2.0/resolve/main/synthetic.pt?download=true"
-)
-ANIME_URL = (
-    "https://huggingface.co/saltacc/anime-ai-detect/resolve/e175bb6b5e19cda40bc6c9ad85b138ee7c7ce23a/model.safetensors?download=true"
-)
-
-LAION_MODEL = (
-    "Laion.pth"
-)
-CHAD_MODEL = (
-    "Chad.pth"
-)
-WDAES_MODEL = (
-    "WD_Aes.pth"
-)
-IR_MODEL = (
-    "ImageReward.pt"
-)
-CLIP_MODEL = (
-    "CLIP-ViT-L-14.pt"
-)
-BLIP_MODEL = (
-    "BLIP_Large.safetensors"
-)
-HPSV2_MODEL = (
-    "HPS_v2.1.pt"
-)
-PICK_MODEL = (
-    "Pick-A-Pic.safetensors"
-)
-SHADOW_MODEL = (
-    "Shadow.safetensors"
-)
-CAFE_MODEL = (
-    "Cafe.safetensors"
-)
+MODEL_DATA = {
+    "laion": {
+        "url": "https://github.com/grexzen/SD-Chad/blob/main/sac+logos+ava1-l14-linearMSE.pth?raw=true",
+        "file_name": "Laion.pth",
+    },
+    "chad": {
+        "url": "https://github.com/grexzen/SD-Chad/blob/main/chadscorer.pth?raw=true",
+        "file_name": "Chad.pth",
+    },
+    "WDAES": {
+        "url": "https://huggingface.co/hakurei/waifu-diffusion-v1-4/resolve/main/models/aes-B32-v0.pth?download=true",
+        "file_name": "WD_Aes.pth",
+    },
+    "ImageReward": {
+        "url": "https://huggingface.co/THUDM/ImageReward/resolve/main/ImageReward.pt?download=true",
+        "file_name": "ImageReward.pt",
+    },
+    "CLIP": {
+        "url": "https://openaipublic.azureedge.net/clip/models/b8cca3fd41ae0c99ba7e8951adf17d267cdb84cd88be6f7c2e0eca1737a03836/ViT-L-14.pt?raw=true",
+        "file_name": "CLIP-ViT-L-14.pt",
+    },
+    "BLIP": {
+        "url": "https://storage.googleapis.com/sfr-vision-language-research/BLIP/models/model_large.pth?raw=true",
+        "file_name": "BLIP_Large.safetensors",
+    },
+    "HPSV2": {
+        "url": "https://huggingface.co/xswu/HPSv2/resolve/main/HPS_v2.1_compressed.pt?download=true",
+        "file_name": "HPS_v2.1.pt",
+    },
+    "PickScore": {
+        "url": "https://huggingface.co/yuvalkirstain/PickScore_v1/resolve/main/model.safetensors?download=true",
+        "file_name": "Pick-A-Pic.safetensors",
+    },
+    "ShadowV2": {
+        "url": "https://huggingface.co/shadowlilac/aesthetic-shadow-v2/resolve/main/model.safetensors?download=true",
+        "file_name": "ShadowV2.safetensors",
+    },
+    "CAFE": {
+        "url": "https://huggingface.co/cafeai/cafe_aesthetic/resolve/3bca27c5c0b6021056b1e84e5a18cf1db9fe5d4c/model.safetensors?download=true",
+        "file_name": "Cafe.safetensors",
+    },
+    "CLASS": {
+        "url": "https://huggingface.co/cafeai/cafe_style/resolve/d5ae1a7ac05a12ab84732c25f2ea7225d35ac81b/model.safetensors?download=true",
+        "file_name": "CLASS.safetensors",
+    },
+    "REAL": {
+        "url": "https://huggingface.co/Sumsub/Sumsub-ffs-synthetic-2.0/resolve/main/synthetic.pt?download=true",
+        "file_name": "REAL.pt",
+    },
+    "ANIME": {
+        "url": "https://huggingface.co/saltacc/anime-ai-detect/resolve/e175bb6b5e19cda40bc6c9ad85b138ee7c7ce23a/model.safetensors?download=true",
+        "file_name": "ANIME.safetensors",
+    },
+}
 
 printWSLFlag = 0
 
@@ -116,7 +100,8 @@ class AestheticScorer:
                         self.scorer_model_name[evaluator] = self.cfg.scorer_alt_location[evaluator]['model_name']
                         self.model_path[evaluator] = Path(self.cfg.scorer_alt_location[evaluator]['model_dir'])
                     else:
-                        self.scorer_model_name[evaluator] = eval(f"{evaluator.upper() + '_MODEL'}")
+                        # Use MODEL_DATA to get file name
+                        self.scorer_model_name[evaluator] = MODEL_DATA[evaluator]["file_name"]
                         self.model_path[evaluator] = Path(
                             self.cfg.scorer_model_dir,
                             self.scorer_model_name[evaluator],
@@ -151,7 +136,7 @@ class AestheticScorer:
                 x in ['laion', 'chad'] for x in self.cfg.scorer_method):
             self.model_path['clip'] = Path(
                 self.cfg.scorer_model_dir,
-                CLIP_MODEL,
+                CLIP_MODEL="CLIP-ViT-L-14.pt",
             )
 
         self.get_models()
@@ -177,7 +162,8 @@ class AestheticScorer:
                 if evaluator != 'noai':
                     if not self.model_path[evaluator].is_file():
                         print(f"You do not have the {evaluator.upper()} model, let me download that for you")
-                        url = eval(f"{evaluator.upper() + '_URL'}")
+                        # Use MODEL_DATA to get URL
+                        url = MODEL_DATA[evaluator]["url"]
 
                         r = requests.get(url)
                         r.raise_for_status()
@@ -198,9 +184,10 @@ class AestheticScorer:
                                 f.write(r.content)
 
                 if evaluator == 'wdaes':
+                    # Use MODEL_DATA to get file name
                     clip_vit_b_32 = Path(
                         self.cfg.scorer_model_dir,
-                        "CLIP-ViT-B-32.safetensors",
+                        MODEL_DATA["wdaes"]["clip_file_name"],
                     )
                     if not clip_vit_b_32.is_file():
                         print(
@@ -218,7 +205,7 @@ class AestheticScorer:
                 any(x in ['laion', 'chad'] for x in self.cfg.scorer_method)):
             if not self.model_path['clip'].is_file():
                 print(f"You do not have the CLIP(which you need) model, let me download that for you")
-                url = CLIP_URL
+                url = "https://openaipublic.azureedge.net/clip/models/b8cca3fd41ae0c99ba7e8951adf17d267cdb84cd88be6f7c2e0eca1737a03836/ViT-L-14.pt?raw=true"
 
                 r = requests.get(url)
                 r.raise_for_status()
@@ -291,21 +278,15 @@ class AestheticScorer:
             it: int,
     ) -> List[float]:
         scores = []
-        norm = []
+
         for i, (img, name, payload) in enumerate(zip(images, payload_names, payloads)):
             score = self.score(img, payload["prompt"])
             if self.cfg.save_imgs:
                 self.save_img(img, name, score, it, i, payload)
 
-            if "score_weight" in payload:
-                norm.append(payload["score_weight"])
-            else:
-                norm.append(1.0)
-            scores.append(score)
-
             print(f"{name}-{i} {score:4.3f}")
 
-        return scores, norm
+        return scores
 
     def average_calc(self, values: List[float], weights: List[float], average_type: str) -> float:
         norm = 0

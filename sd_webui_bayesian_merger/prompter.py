@@ -29,9 +29,11 @@ class CardDealer:
         if wildcard_name in self.wildcards:
             content = self.wildcards[wildcard_name]
             if content:
-                # Randomly choose a line from the content
                 return random.choice(content)
-        return f"__{wildcard_name}__"  # Return the original wildcard if not found
+            else:
+                raise ValueError(f"Wildcard file for '{wildcard_name}' is empty.")  # Raise an exception
+        else:
+            raise FileNotFoundError(f"Wildcard file for '{wildcard_name}' not found.")  # Raise an exception
 
     def replace_wildcards(self, prompt: str) -> str:
         chunks = re.split("(__\w+__)", prompt)
@@ -82,13 +84,11 @@ class Prompter:
         paths = []
         for p_name, p in self.raw_payloads.items():
             for _ in range(batch_size):
-                # Only create a copy if wildcards are present
-                if "__" in p["prompt"]:
-                    rendered_payload = p.copy()
+                rendered_payload = p  # Start with the original payload
+                if "__" in p["prompt"]:  # Only process if wildcards are present
+                    rendered_payload = p.copy()  # Create a copy only if needed
                     processed_prompt = self.dealer.replace_wildcards(p["prompt"])
                     rendered_payload["prompt"] = processed_prompt
-                else:
-                    rendered_payload = p  # Use the original payload if no wildcards
                 paths.append(p_name)
                 payloads.append(rendered_payload)
         return payloads, paths

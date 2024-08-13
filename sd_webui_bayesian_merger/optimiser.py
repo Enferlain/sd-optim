@@ -11,18 +11,18 @@ from hydra.core.hydra_config import HydraConfig
 from omegaconf import DictConfig, open_dict
 from tqdm import tqdm
 
-#from sd_webui_bayesian_merger.artist import Artist  # Import the Artist class
-from .bounds import Bounds
-from .generator import Generator
-from .merger import Merger
-from .prompter import Prompter
-from .scorer import AestheticScorer
-from .mecha_recipe_generator import translate_optimiser_parameters
+from sd_webui_bayesian_merger.artist import Artist
+from sd_webui_bayesian_merger.bounds import Bounds
+from sd_webui_bayesian_merger.generator import Generator
+from sd_webui_bayesian_merger.merger import Merger
+from sd_webui_bayesian_merger.prompter import Prompter
+from sd_webui_bayesian_merger.scorer import AestheticScorer
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.DEBUG)
 
 PathT = os.PathLike
+
 
 @dataclass
 class Optimiser:
@@ -37,8 +37,7 @@ class Optimiser:
         self.scorer = AestheticScorer(self.cfg, {}, {}, {})
         self.prompter = Prompter(self.cfg)
         self.iteration = 0
-        # Create an instance of the Artist class
-#        self.artist = Artist(self)
+        self.artist = Artist(self.cfg, self.iteration)
 
     def start_logging(self) -> None:
         run_name = "-".join(self.merger.output_file.stem.split("-")[:-1])
@@ -96,7 +95,7 @@ class Optimiser:
         avg_score = self.scorer.average_calc(scores, norm, self.cfg.img_average_type)
 
         # Update and save only if it's the best score so far
-        self.update_best_score(base_values, weights_list, avg_score)
+        self.update_best_score(base_values, weights_list, avg_score)  # Pass the correct variables
 
         logger.info(f"Average Score for Iteration: {avg_score}")
         return avg_score
@@ -116,27 +115,23 @@ class Optimiser:
         logger.info("\nScoring")
         return self.scorer.batch_score(images, gen_paths, payloads, self.iteration)
 
-    def update_best_score(self, bases, weights, avg_score):
+    def update_best_score(self, base_values, weights_list, avg_score):  # Use consistent variable names
         logger.info(f"{'-' * 10}\nRun score: {avg_score}")
 
         # Use the received base_values and weights_list directly
-        for greek_letter in base_values:
-            logger.info(f"\nrun base_{greek_letter}: {base_values[greek_letter]}")
-            if greek_letter in weights:  # Check if the key exists in weights
-                logger.info(f"run weights_{greek_letter}: {weights[greek_letter]}")
-
         for param_name in base_values:
             logger.info(f"\nrun base_{param_name}: {base_values[param_name]}")
-            logger.info(f"run weights_{param_name}: {weights_list[param_name]}")
+            if param_name in weights_list:  # Check if the key exists in weights_list
+                logger.info(f"run weights_{param_name}: {weights_list[param_name]}")
 
         if avg_score > self.best_rolling_score:
             logger.info("\n NEW BEST!")
             self.best_rolling_score = avg_score
 
             # Save the best model
-            self.merger.merge(weights_list, base_values, save_best=True)
+            self.merger.merge(weights_list, base_values, save_best=True, cfg=self.cfg)
 
-            Optimiser.save_best_log(base_values, weights_list)  # Pass the translated parameters
+            Optimiser.save_best_log(base_values, weights_list)  # Pass the correct variables
 
     @abstractmethod
     def optimise(self) -> None:
@@ -147,15 +142,15 @@ class Optimiser:
         raise NotImplementedError("Not implemented")
 
     @staticmethod
-    def save_best_log(bases: Dict, weights: Dict) -> None:
+    def save_best_log(base_values: Dict, weights_list: Dict) -> None:  # Use consistent variable names
         logger.info("Saving best.log")
         with open(
             Path(HydraConfig.get().runtime.output_dir, "best.log"),
             "w",
             encoding="utf-8",
         ) as f:
-            for param_name in bases:
-                f.write(f"{bases[param_name]}\n\n{weights[param_name]}\n\n")
+            for param_name in base_values:
+                f.write(f"{base_values[param_name]}\n\n{weights_list[param_name]}\n\n")  # Use the correct variable names
 
     @staticmethod
     def load_log(log: PathT) -> List[Dict]:

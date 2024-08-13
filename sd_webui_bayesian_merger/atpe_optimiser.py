@@ -2,7 +2,6 @@ from hyperopt import STATUS_OK, Trials, atpe, fmin, hp
 
 from sd_webui_bayesian_merger.optimiser import Optimiser
 
-
 class ATPEOptimiser(Optimiser):
     def _target_function(self, params):
         res = self.sd_target_function(**params)
@@ -33,15 +32,10 @@ class ATPEOptimiser(Optimiser):
         for i, res in enumerate(self.trials.losses()):
             print(f"Iteration {i} loss: \n\t{res}")
             scores.append(res)
-        best = self.trials.best_trial
 
-        # Directly assign the optimized parameters
-        best_weights = best["result"]["params"]
-        best_bases = best["result"]["params"]
+        # Remove unnecessary assignments:
+        # best = self.trials.best_trial
+        # best_weights = best["result"]["params"]
+        # best_bases = best["result"]["params"]
 
-        self.plot_and_save(
-            scores,
-            best_bases,
-            best_weights,
-            minimise=True,
-        )
+        self.artist.visualize_optimization()  # Call the Artist's visualize_optimization method

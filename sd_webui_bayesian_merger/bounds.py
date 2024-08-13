@@ -10,14 +10,14 @@ logger = logging.getLogger(__name__)
 class Bounds:
     @staticmethod
     def set_block_bounds(
-        block_name: str, lb: float = 0.0, ub: float = 1.0
+            lb: float = 0.0, ub: float = 1.0
     ) -> Tuple[float, float]:
         return (lb, ub)
 
     @staticmethod
     def default_bounds(
         custom_ranges: Dict[str, Tuple[float, float]] = None,
-        cfg=None,  # Add cfg as argument
+        cfg=None,
     ) -> Dict:
         model_arch = sd_mecha.extensions.model_arch.resolve(cfg.model_arch)
         unet_block_identifiers = [
@@ -27,12 +27,17 @@ class Bounds:
         block_count = len(unet_block_identifiers)
         print(f"Default bounds - model_arch: {cfg.model_arch}, block_count: {block_count}")
 
-        block_names = unet_block_identifiers + ["base_alpha", "base_beta"]  # Include base parameters
+        # Get the default hyperparameters from the merging method
+        mecha_merge_method = sd_mecha.extensions.merge_method.resolve(cfg.merge_mode)
+        default_hypers = mecha_merge_method.get_default_hypers()
+
+        # Construct block names, including base parameters dynamically
+        block_names = unet_block_identifiers + [f"base_{name}" for name in default_hypers]
         ranges = {b: (0.0, 1.0) for b in block_names} | OmegaConf.to_object(
             custom_ranges
         )
 
-        return {b: Bounds.set_block_bounds(b, *ranges[b]) for b in block_names}
+        return {b: Bounds.set_block_bounds(float(r[0]), float(r[1])) for b, r in ranges.items()}  # Convert to floats
 
     @staticmethod
     def freeze_bounds(bounds: Dict, frozen: Dict[str, float] = None) -> Dict:
@@ -99,19 +104,14 @@ class Bounds:
         return bounds
 
     @staticmethod
-    def get_value(params, block_name, frozen, groups, model_arch="sd1") -> float:  # Replace sdxl with model_arch
+    def get_value(params, block_name, frozen, groups) -> float:
         if block_name in params:
             return params[block_name]
         if groups is not None:
             for group in groups:
                 if block_name in group:
                     group_name = "-".join(group)
-                    if group_name in params:
-                        return params[group_name]
-                    if group[0] in frozen:
-                        return frozen[group[0]]
-                    if group[0] in params:
-                        return params[group[0]]
+                    return params.get(group_name, frozen.get(group[0], params.get(group[0])))
         return frozen[block_name]
 
     @staticmethod
@@ -121,6 +121,7 @@ class Bounds:
             groups: List[List[str]],
             cfg,
     ) -> Tuple[Dict[str, List[float]], Dict[str, List[float]]]:
+
         unet_block_identifiers = [
             key for key in sd_mecha.extensions.model_arch.resolve(cfg.model_arch).user_keys()
             if "_unet_block_" in key
@@ -141,25 +142,25 @@ class Bounds:
 
         # Get the expected number of Greek letters from the merging method
         mecha_merge_method = sd_mecha.extensions.merge_method.resolve(cfg.merge_mode)
-        expected_greek_letters = len(mecha_merge_method.get_default_hypers())
+        expected_param_name = len(mecha_merge_method.get_default_hypers())
 
-        # Iterate over the expected Greek letters
-        for i in range(expected_greek_letters):
-            greek_letter = list(mecha_merge_method.get_default_hypers().keys())[i]
+        # Iterate over the expected parameter names
+        for i in range(expected_param_name):
+            param_name = list(mecha_merge_method.get_default_hypers().keys())[i]
 
-            weights_list[greek_letter] = []
+            weights_list[param_name] = []
             for block_id in unet_block_identifiers:
                 value = Bounds.get_value(params, block_id, frozen, groups)
-                weights_list[greek_letter].append(value)
+                weights_list[param_name].append(value)
 
-            assert len(weights_list[greek_letter]) == block_count
+            assert len(weights_list[param_name]) == block_count
             print(
-                f"Assemble params - model_arch: {cfg.model_arch}, greek_letter: {greek_letter}, num_weights: {len(weights_list[greek_letter])}")
+                f"Assemble params - model_arch: {cfg.model_arch}, param_name: {param_name}, num_weights: {len(weights_list[param_name])}")
 
-            base_name = f"base_{greek_letter}"
-            base_values[greek_letter] = [Bounds.get_value(params, base_name, frozen, groups)]
+            base_name = f"base_{param_name}"
+            base_values[param_name] = [Bounds.get_value(params, base_name, frozen, groups)]
 
-        assert len(weights_list) == expected_greek_letters
+        assert len(weights_list) == expected_param_name
         print(f"Assembled Weights List: {weights_list}")
         print(f"Assembled Base Values: {base_values}")
         return weights_list, base_values

@@ -1,31 +1,31 @@
 import plotly.graph_objects as go
 from sklearn.decomposition import PCA
 from sklearn.preprocessing import StandardScaler
-from optimiser import Optimiser
+import matplotlib.pyplot as plt
+import numpy as np
+from sd_mecha.extensions.model_arch import resolve
 
 class Artist:
-    def __init__(self, optimiser: Optimiser):
-        self.optimiser = optimiser
-        self.cfg = optimiser.cfg
-        self.data = []  # Store optimization data (iteration, score, parameters)
+    def __init__(self, cfg, iteration):  # Accept cfg and iteration as arguments
+        self.cfg = cfg
+        self.iteration = iteration
+        self.data = []
 
     def collect_data(self, score, params):
         """Collects data for each optimization iteration."""
         self.data.append({
-            "iteration": self.optimiser.iteration,
+            "iteration": iteration,  # Use the imported iteration attribute
             "score": score,
-            "params": params.copy()  # Store a copy of the parameters
+            "params": params.copy()
         })
 
     def visualize_optimization(self):
-        """Creates an interactive 3D scatter plot of the optimization process using PCA."""
+        """Creates visualizations based on user configuration."""
 
         if self.cfg.visualizations.scatter_plot:
             # Extract data for plotting
             iterations = [d["iteration"] for d in self.data]
             scores = [d["score"] for d in self.data]
-            param_1 = [d["params"][self.cfg.plot_x_param] for d in self.data]  # Extract values for the first parameter to plot
-            param_2 = [d["params"][self.cfg.plot_y_param] for d in self.data]  # Extract values for the second parameter to plot
 
             # Prepare parameter data for PCA
             param_data = [[d["params"][key] for key in d["params"]] for d in self.data]  # Extract all parameter values
@@ -41,6 +41,7 @@ class Artist:
             y = reduced_data[:, 1]
             z = reduced_data[:, 2]
 
+            # Create the scatter plot
             fig = go.Figure(data=[go.Scatter3d(
                 x=x,  # Use the reduced x dimension
                 y=y,  # Use the reduced y dimension
@@ -61,23 +62,25 @@ class Artist:
                 zaxis_title="Principal Component 3"
             ), title="Optimization Landscape")
 
+            # Assign the figure to self.scatter_fig before saving
+            self.scatter_fig = fig
             self.scatter_fig.write_html("optimization_landscape.html")
             self.scatter_fig.write_image("optimization_landscape.png")
 
-    if self.cfg.visualizations.unet_diagram:
-        self.draw_unet()
-        self.unet_fig.write_html("unet_diagram.html")
-        self.unet_fig.write_image("unet_diagram.png")
+        if self.cfg.visualizations.unet_diagram:
+            self.draw_unet()
+            self.unet_fig.write_html("unet_diagram.html")  # Indentation corrected
+            self.unet_fig.write_image("unet_diagram.png") # Indentation corrected
 
-    if self.cfg.visualizations.convergence_plot:
-        self.plot_convergence()
-        self.convergence_fig.write_html("convergence_plot.html")
-        self.convergence_fig.write_image("convergence_plot.png")
+        if self.cfg.visualizations.convergence_plot:
+            self.plot_convergence()
+            self.convergence_fig.write_html("convergence_plot.html") # Indentation corrected
+            self.convergence_fig.write_image("convergence_plot.png") # Indentation corrected
 
-    if self.cfg.visualizations.heatmap:
-        self.plot_heatmap()
-        self.heatmap_fig.write_html("parameter_heatmap.html")
-        self.heatmap_fig.write_image("parameter_heatmap.png")
+        if self.cfg.visualizations.heatmap:
+            self.plot_heatmap()
+            self.heatmap_fig.write_html("parameter_heatmap.html") # Indentation corrected
+            self.heatmap_fig.write_image("parameter_heatmap.png") # Indentation corrected
 
     def draw_unet(self):
         """Creates an interactive UNet diagram."""
@@ -123,14 +126,16 @@ class Artist:
         if selected_data is None:
             return  # No data selected, keep default colors
 
-        selected_iteration = selected_data["points"][0]["pointIndex"]
+        selected_iteration = int(selected_data["points"][0]["pointIndex"])
         weights = self.data[selected_iteration]["params"]
 
         # Update node colors based on weights
         for i, block_id in enumerate(self.unet_block_identifiers):
-            weight = weights.get(block_id, 0.5)  # Get weight, default to 0.5 if not found
-            color = plt.cm.viridis(weight)  # Get color from Viridis colormap
+            weight = weights.get(block_id, 0.5)
+            color = plt.cm.get_cmap('viridis')(weight)
             self.unet_fig.data[i].marker.color = f'rgb({color[0] * 255}, {color[1] * 255}, {color[2] * 255})'
+
+        self.unet_fig.show()
 
     def plot_convergence(self):
         """Creates an interactive score convergence plot."""
@@ -161,13 +166,15 @@ class Artist:
 
         # Highlight the selected point
         with self.convergence_fig.batch_update():
-            for i, data in enumerate(self.convergence_fig.data):
+            for i, data in enumerate(self.convergence_fig.data[0].marker):  # Access marker within the Scatter object
                 if i == selected_iteration:
-                    data.marker.color = "red"  # Highlight the selected point
-                    data.marker.size = 10
+                    data.color = "red"  # Highlight the selected point
+                    data.size = 10
                 else:
-                    data.marker.color = "blue"  # Reset other points to default
-                    data.marker.size = 8
+                    data.color = "blue"  # Reset other points to default
+                    data.size = 8
+
+        self.convergence_fig.show()  # Display the updated plot
 
     def plot_heatmap(self):
         """Creates an interactive parameter heatmap."""
@@ -227,3 +234,5 @@ class Artist:
             self.heatmap_param_2 = param_2
 
         self.heatmap_fig = self._create_heatmap(self.heatmap_param_1, self.heatmap_param_2)
+
+        self.unet_fig.show()

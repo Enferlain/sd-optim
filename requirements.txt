@@ -21,3 +21,4 @@ tensordict
 timm
 fairscale
 plotly
+omegaconf

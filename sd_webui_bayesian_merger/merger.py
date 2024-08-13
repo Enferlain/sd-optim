@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Dict
 
 from omegaconf import DictConfig, open_dict
-from .mecha_recipe_generator import generate_mecha_recipe, translate_optimiser_parameters
+from sd_webui_bayesian_merger.merge_methods import MergeMethods
 
 logging.basicConfig(level=logging.INFO)
 
@@ -55,28 +55,23 @@ class Merger:
             with open_dict(self.cfg):
                 self.cfg.destination = "memory"
 
-        # Generate sd-mecha recipe using the updated function
-        recipe_text = generate_mecha_recipe(
-            base_values,
-            weights_list,
-            self.cfg.merge_mode,
-            self.cfg,
-        )
+        # Dynamically create ModelRecipeNodes for all models in cfg, using sd_mecha.model
+        models = []
+        for model_key in ["model_a", "model_b", "model_c"]:
+            if model_key in self.cfg:
+                model = sd_mecha.model(self.cfg[model_key], self.cfg.model_arch)
+                models.append(model)
 
-        # Deserialize the recipe
-        recipe = sd_mecha.recipe_serializer.deserialize(recipe_text.splitlines())
+        # Call the merging method from MergeMethods directly
+        merged_model = getattr(MergeMethods, self.cfg.merge_mode)(*models, **base_values, **weights_list)
 
-        # Execute the recipe using sd-mecha
+        # Execute the merge using sd-mecha
         recipe_merger = sd_mecha.RecipeMerger(models_dir=Path(self.cfg.model_a).parent)
         recipe_merger.merge_and_save(
-            recipe,
+            merged_model,  # Pass the merged model directly
             output=self.cfg.destination,
             threads=self.cfg.threads,
-            save_dtype=torch.float16 if self.cfg.best_precision == 16 else torch.float32,  # Map best_precision
+            save_dtype=torch.float16 if self.cfg.best_precision == 16 else torch.float32,
         )
 
-        logging.info(f"Merged model using sd-mecha.")  # Update log message
-
-        # Remove A1111 API request:
-        # r = requests.post(url=f"{self.cfg.url}/bbwm/merge-models", json=option_payload)
-        # ... (remove remaining API request code)
+        logging.info(f"Merged model using sd-mecha.")

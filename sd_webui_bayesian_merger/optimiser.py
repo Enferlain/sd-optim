@@ -91,8 +91,8 @@ class Optimiser:
         self.merger.merge(weights_list, base_values, cfg=self.cfg)  # Pass the assembled parameters
 
         images, gen_paths, payloads = self.generate_images()
-        scores, norm = self.score_images(images, gen_paths, payloads)
-        avg_score = self.scorer.average_calc(scores, norm, self.cfg.img_average_type)
+        scores, norm = self.score_images(images, gen_paths, payloads)  # Unpack both values
+        avg_score = self.scorer.average_calc(scores, norm, self.cfg.img_average_type)  # Pass norm to average_calc
 
         # Update and save only if it's the best score so far
         self.update_best_score(base_values, weights_list, avg_score)  # Pass the correct variables

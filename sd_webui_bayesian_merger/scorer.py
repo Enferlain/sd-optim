@@ -2,7 +2,7 @@ import platform
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, List
+from typing import Dict, List, Tuple
 
 import requests
 from hydra.core.hydra_config import HydraConfig
@@ -219,41 +219,33 @@ class AestheticScorer:
             self.cfg.scorer_model_dir,
             "med_config.json"
         )
+
+        # Create a dictionary mapping evaluator names to model loading functions
+        model_loaders = {
+            "wdaes": lambda: WDA(self.model_path["wdaes"], Path(self.cfg.scorer_model_dir, "CLIP-ViT-B-32.safetensors"), self.cfg.scorer_device["wdaes"]),
+            "clip": lambda: CLP(self.model_path["clip"], self.cfg.scorer_device["clip"]),
+            "blip": lambda: BLP(self.model_path["blip"], med_config, self.cfg.scorer_device["blip"]),
+            "ir": lambda: IMGR(self.model_path["ir"], med_config, self.cfg.scorer_device["ir"]),
+            "laion": lambda: AES(self.model_path["laion"], self.model_path['clip'], self.cfg.scorer_device["laion"]),
+            "chad": lambda: AES(self.model_path["chad"], self.model_path['clip'], self.cfg.scorer_device["chad"]),
+            "hpsv2": lambda: HPS(self.model_path["hpsv2"], self.cfg.scorer_device["hpsv2"]),
+            "pick": lambda: PICK(self.model_path["pick"], self.cfg.scorer_device["pick"]),
+            "shadow": lambda: SS(self.model_path["shadow"], self.cfg.scorer_device["shadow"]),
+            "cafe": lambda: CAFE(self.model_path["cafe"], self.cfg.scorer_device["cafe"]),
+            "noai": lambda: NOAI(self.model_path["noai"]['class'], self.model_path["noai"]['real'], self.model_path["noai"]['anime'], device=self.cfg.scorer_device["noai"]),
+        }
+
         for evaluator in self.cfg.scorer_method:
             if evaluator != 'manual':
                 print(f"Loading {self.scorer_model_name[evaluator]}")
-            if evaluator == 'wdaes':
-                clip_vit_b_32 = Path(
-                    self.cfg.scorer_model_dir,
-                    "CLIP-ViT-B-32.safetensors",
-                )
-                self.model[evaluator] = WDA(self.model_path[evaluator], clip_vit_b_32,
-                                            self.cfg.scorer_device[evaluator])
-            elif evaluator == 'clip':
-                self.model[evaluator] = CLP(self.model_path[evaluator], self.cfg.scorer_device[evaluator])
-            elif evaluator == 'blip':
-                self.model[evaluator] = BLP(self.model_path[evaluator], med_config, self.cfg.scorer_device[evaluator])
-            elif evaluator == 'ir':
-                self.model[evaluator] = IMGR(self.model_path[evaluator], med_config, self.cfg.scorer_device[evaluator])
-            elif evaluator == 'laion' or evaluator == 'chad':
-                self.model[evaluator] = AES(self.model_path[evaluator], self.model_path['clip'],
-                                            self.cfg.scorer_device[evaluator])
-            elif evaluator == 'hpsv2':
-                self.model[evaluator] = HPS(self.model_path[evaluator], self.cfg.scorer_device[evaluator])
-            elif evaluator == 'pick':
-                self.model[evaluator] = PICK(self.model_path[evaluator], self.cfg.scorer_device[evaluator])
-            elif evaluator == 'shadow':
-                self.model[evaluator] = SS(self.model_path[evaluator], self.cfg.scorer_device[evaluator])
-            elif evaluator == 'cafe':
-                self.model[evaluator] = CAFE(self.model_path[evaluator], self.cfg.scorer_device[evaluator])
-            elif evaluator == 'noai':
-                self.model[evaluator] = NOAI(self.model_path[evaluator]['class'],  self.model_path[evaluator]['real'], self.model_path[evaluator]['anime'], device=self.cfg.scorer_device[evaluator])
+                if evaluator in model_loaders:
+                    self.model[evaluator] = model_loaders[evaluator]()  # Call the appropriate loading function
 
     def score(self, image: Image.Image, prompt) -> float:
         values = []
-        weights = []
+        scorer_weights = []
         for evaluator in self.cfg.scorer_method:
-            weights.append(int(self.cfg.scorer_weight[evaluator]))
+            scorer_weights.append(int(self.cfg.scorer_weight[evaluator]))
             if evaluator == 'manual':
                 # in manual mode, we save a temp image first then request user input
                 tmp_path = Path(Path.cwd(), "tmp.png")
@@ -267,7 +259,7 @@ class AestheticScorer:
             if self.cfg.scorer_print_individual:
                 print(f"{evaluator}:{values[-1]}")
 
-        score = self.average_calc(values, weights, self.cfg.scorer_average_type)
+        score = self.average_calc(values, scorer_weights, self.cfg.scorer_average_type)
         return score
 
     def batch_score(
@@ -276,21 +268,28 @@ class AestheticScorer:
             payload_names: List[str],
             payloads: Dict,
             it: int,
-    ) -> List[float]:
+    ) -> Tuple[List[float], List[float]]:  # Update return type hint
         scores = []
+        norm = []  # Restore the norm list
 
         for i, (img, name, payload) in enumerate(zip(images, payload_names, payloads)):
             score = self.score(img, payload["prompt"])
             if self.cfg.save_imgs:
                 self.save_img(img, name, score, it, i, payload)
 
+            if "score_weight" in payload:
+                norm.append(payload["score_weight"])
+            else:
+                norm.append(1.0)
+            scores.append(score)
+
             print(f"{name}-{i} {score:4.3f}")
 
-        return scores
+        return scores, norm  # Return both scores and norm
 
-    def average_calc(self, values: List[float], weights: List[float], average_type: str) -> float:
+    def average_calc(self, values: List[float], scorer_weights: List[float], average_type: str) -> float:
         norm = 0
-        for weight in weights:
+        for weight in scorer_weights:  # Use scorer_weights in the loop
             norm += weight
         avg = 0
         if average_type == 'geometric':
@@ -298,7 +297,7 @@ class AestheticScorer:
         elif average_type == 'arithmetic' or average_type == 'quadratic':
             avg = 0
 
-        for value, weight in zip(values, weights):
+        for value, weight in zip(values, scorer_weights):
             if average_type == 'arithmetic':
                 avg += value * weight
             elif average_type == 'geometric':

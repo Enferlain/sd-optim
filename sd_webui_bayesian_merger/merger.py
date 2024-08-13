@@ -62,8 +62,24 @@ class Merger:
                 model = sd_mecha.model(self.cfg[model_key], self.cfg.model_arch)
                 models.append(model)
 
-        # Call the merging method from MergeMethods directly
-        merged_model = getattr(MergeMethods, self.cfg.merge_mode)(*models, **base_values, **weights_list)
+        # Get the merging method's default hyperparameters
+        mecha_merge_method = sd_mecha.extensions.merge_method.resolve(self.cfg.merge_mode)
+        default_hypers = mecha_merge_method.get_default_hypers()
+
+        # Merge base_values and weights_list into a single dictionary, using the mapping
+        all_hypers = {}
+        for param_name in weights_list:
+            # Get the base value for the current parameter from sd-mecha's defaults
+            base_value = base_values.get(f"base_{param_name}", [default_hypers.get(param_name, 0.5)])[0]
+
+            # Merge the base value and block weights into a single dictionary
+            all_hypers[param_name] = {
+                **{f"{self.cfg.model_arch}_{component}_default": base_value for component in ["txt", "txt2"]},
+                **weights_list[param_name]
+            }
+
+        # Call the merging method from MergeMethods directly, passing the combined hyperparameters
+        merged_model = getattr(MergeMethods, self.cfg.merge_mode)(*models, **all_hypers)
 
         # Execute the merge using sd-mecha
         recipe_merger = sd_mecha.RecipeMerger(models_dir=Path(self.cfg.model_a).parent)

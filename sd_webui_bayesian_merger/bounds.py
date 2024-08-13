@@ -120,7 +120,7 @@ class Bounds:
             frozen: Dict,
             groups: List[List[str]],
             cfg,
-    ) -> Tuple[Dict[str, List[float]], Dict[str, List[float]]]:
+    ) -> Tuple[Dict[str, Dict[str, float]], Dict[str, List[float]]]:  # Updated type hint
 
         unet_block_identifiers = [
             key for key in sd_mecha.extensions.model_arch.resolve(cfg.model_arch).user_keys()
@@ -136,7 +136,6 @@ class Bounds:
         if groups is None:
             groups = []
 
-        print(f"Assemble params - model_arch: {cfg.model_arch}, block_count: {block_count}")
         weights_list = {}
         base_values = {}
 
@@ -148,10 +147,11 @@ class Bounds:
         for i in range(expected_param_name):
             param_name = list(mecha_merge_method.get_default_hypers().keys())[i]
 
-            weights_list[param_name] = []
-            for block_id in unet_block_identifiers:
-                value = Bounds.get_value(params, block_id, frozen, groups)
-                weights_list[param_name].append(value)
+            # Create a dictionary for weights_list[param_name], mapping block identifiers to weights
+            weights_list[param_name] = {
+                block_id: Bounds.get_value(params, block_id, frozen, groups)
+                for block_id in unet_block_identifiers
+            }
 
             assert len(weights_list[param_name]) == block_count
             print(

@@ -19,7 +19,7 @@ def on_app_started(_gui, api):
         model_c: str = fastapi.Body(None, title="Path to Model C (Optional)"),
         merge_method: str = fastapi.Body(..., title="Merge Method"),
         model_arch: str = fastapi.Body(..., title="Model Architecture"),
-        save_path: str = fastapi.Body(None, title="Save Path"),
+        #save_path: str = fastapi.Body(None, title="Save Path"), # do later
     ):
         """Merges models using sd-mecha."""
 

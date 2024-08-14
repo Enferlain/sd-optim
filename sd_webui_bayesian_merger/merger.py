@@ -85,7 +85,6 @@ class Merger:
         recipe_merger = sd_mecha.RecipeMerger(models_dir=Path(self.cfg.model_a).parent)
         recipe_merger.merge_and_save(
             merged_model,  # Pass the merged model directly
-            output=self.cfg.destination,
             threads=self.cfg.threads,
             save_dtype=torch.float16 if self.cfg.best_precision == 16 else torch.float32,
         )

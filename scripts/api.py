@@ -4,6 +4,7 @@ from pathlib import Path
 
 import sd_mecha
 from modules import script_callbacks
+from sd_webui_bayesian_merger.sd_models import load_model, unload_model # Import from your custom module
 from sd_webui_bayesian_merger.merge_methods import MergeMethods
 
 logger = logging.getLogger("api")

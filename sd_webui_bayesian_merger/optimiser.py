@@ -11,7 +11,7 @@ from hydra.core.hydra_config import HydraConfig
 from omegaconf import DictConfig, open_dict
 from tqdm import tqdm
 
-from sd_webui_bayesian_merger.artist import Artist
+#from sd_webui_bayesian_merger.artist import Artist
 from sd_webui_bayesian_merger.bounds import Bounds
 from sd_webui_bayesian_merger.generator import Generator
 from sd_webui_bayesian_merger.merger import Merger
@@ -37,7 +37,10 @@ class Optimiser:
         self.scorer = AestheticScorer(self.cfg, {}, {}, {})
         self.prompter = Prompter(self.cfg)
         self.iteration = 0
-        self.artist = Artist(self.cfg, self.iteration)
+
+        # Import Artist here, inside the function
+        from sd_webui_bayesian_merger.artist import Artist
+        self.artist = Artist(self)
 
     def start_logging(self) -> None:
         run_name = "-".join(self.merger.output_file.stem.split("-")[:-1])
@@ -96,6 +99,9 @@ class Optimiser:
 
         # Update and save only if it's the best score so far
         self.update_best_score(base_values, weights_list, avg_score)  # Pass the correct variables
+
+        # Collect data for visualization
+        self.artist.collect_data(avg_score, params)  # Add this line to collect data
 
         logger.info(f"Average Score for Iteration: {avg_score}")
         return avg_score

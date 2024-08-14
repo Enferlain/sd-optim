@@ -1,20 +1,24 @@
 import plotly.graph_objects as go
-from sklearn.decomposition import PCA
-from sklearn.preprocessing import StandardScaler
 import matplotlib.pyplot as plt
 import numpy as np
+
+from sklearn.decomposition import PCA
+from sklearn.preprocessing import StandardScaler
+
 from sd_mecha.extensions.model_arch import resolve
+from sd_webui_bayesian_merger.optimiser import Optimiser
+
 
 class Artist:
-    def __init__(self, cfg, iteration):  # Accept cfg and iteration as arguments
-        self.cfg = cfg
-        self.iteration = iteration
-        self.data = []
+    def __init__(self, optimiser: Optimiser):  # Accept the Optimiser object as an argument
+        self.optimiser = optimiser  # Store the reference to the Optimiser object
+        self.cfg = optimiser.cfg
+        self.data = []  # Store optimization data (iteration, score, parameters)
 
     def collect_data(self, score, params):
         """Collects data for each optimization iteration."""
         self.data.append({
-            "iteration": iteration,  # Use the imported iteration attribute
+            "iteration": self.optimiser.iteration,  # Make sure to update the iteration!
             "score": score,
             "params": params.copy()
         })
@@ -28,18 +32,26 @@ class Artist:
             scores = [d["score"] for d in self.data]
 
             # Prepare parameter data for PCA
-            param_data = [[d["params"][key] for key in d["params"]] for d in self.data]  # Extract all parameter values
-            scaler = StandardScaler()  # Create a scaler for standardization
-            scaled_param_data = scaler.fit_transform(param_data)  # Standardize the parameter data
+            param_data = [[d["params"][key] for key in d["params"]] for d in self.data]
+            param_data = np.array(param_data).reshape(-1, 1) if len(param_data) > 0 else np.empty((0, 1))
 
-            # Apply PCA to reduce to 3 dimensions
-            pca = PCA(n_components=3)  # Create a PCA object for 3 dimensions
-            reduced_data = pca.fit_transform(scaled_param_data)  # Apply PCA
+            # Determine maximum allowable n_components
+            n_samples, n_features = param_data.shape
+            max_components = min(n_samples, n_features)
+            n_components = min(3, max_components)  # Choose 3 or the maximum allowable, whichever is smaller
+
+            scaler = StandardScaler()
+            scaled_param_data = scaler.fit_transform(param_data)
+
+            # Apply PCA with the determined n_components
+            pca = PCA(n_components=n_components)
+            reduced_data = pca.fit_transform(scaled_param_data)
 
             # Extract the reduced dimensions for plotting
-            x = reduced_data[:, 0]
-            y = reduced_data[:, 1]
-            z = reduced_data[:, 2]
+            x = reduced_data[:, 0]  # First principal component
+            y = reduced_data[:, 1] if n_components > 1 else np.zeros_like(
+                x)  # Second principal component (if available)
+            z = reduced_data[:, 2] if n_components > 2 else np.zeros_like(x)  # Third principal component (if available)
 
             # Create the scatter plot
             fig = go.Figure(data=[go.Scatter3d(
@@ -112,8 +124,9 @@ class Artist:
         # Create the figure
         fig = go.Figure(data=nodes + edges)
         fig.update_layout(scene=dict(
-            xaxis_title="", yaxis_title="", zaxis_title="",
-            showticklabels=False, showgrid=False,  # Hide axes
+            xaxis=dict(showticklabels=False),  # Hide x-axis tick labels
+            yaxis=dict(showticklabels=False),  # Hide y-axis tick labels
+            zaxis=dict(showticklabels=False),  # Hide z-axis tick labels
         ), showlegend=False, title="Interactive UNet Diagram", margin=dict(l=0, r=0, b=0, t=40))
 
         # Store the figure and block identifiers for later updates
@@ -132,7 +145,9 @@ class Artist:
         # Update node colors based on weights
         for i, block_id in enumerate(self.unet_block_identifiers):
             weight = weights.get(block_id, 0.5)
-            color = plt.cm.get_cmap('viridis')(weight)
+            # Normalize weight to be between 0 and 1
+            normalized_weight = (weight - min(weights.values())) / (max(weights.values()) - min(weights.values()))
+            color = plt.cm.get_cmap('viridis')(normalized_weight)
             self.unet_fig.data[i].marker.color = f'rgb({color[0] * 255}, {color[1] * 255}, {color[2] * 255})'
 
         self.unet_fig.show()
@@ -179,9 +194,17 @@ class Artist:
     def plot_heatmap(self):
         """Creates an interactive parameter heatmap."""
 
-        # Select initial parameters for the heatmap (can be made configurable)
-        param_1 = self.cfg.plot_x_param
-        param_2 = self.cfg.plot_y_param
+        # Get all unique parameter names across all iterations
+        available_params = set()
+        for data_point in self.data:
+            available_params.update(data_point["params"].keys())
+
+        # Convert the set to a list to maintain a consistent order
+        available_params = list(available_params)
+
+        param_1 = self.cfg.get("plot_x_param", available_params[0] if available_params else "base_alpha")
+        param_2 = self.cfg.get("plot_y_param",
+                               available_params[1] if len(available_params) > 1 else "sdxl_unet_block_in0")
 
         fig = self._create_heatmap(param_1, param_2)
 
@@ -234,5 +257,4 @@ class Artist:
             self.heatmap_param_2 = param_2
 
         self.heatmap_fig = self._create_heatmap(self.heatmap_param_1, self.heatmap_param_2)
-
-        self.unet_fig.show()
+        self.heatmap_fig.show()  # Display the updated heatmap

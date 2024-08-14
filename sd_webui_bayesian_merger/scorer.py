@@ -1,10 +1,12 @@
 import platform
 import subprocess
+import threading
+import requests
+
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Tuple
 
-import requests
 from hydra.core.hydra_config import HydraConfig
 from omegaconf import DictConfig, open_dict
 from PIL import Image, PngImagePlugin
@@ -247,12 +249,9 @@ class AestheticScorer:
         for evaluator in self.cfg.scorer_method:
             scorer_weights.append(int(self.cfg.scorer_weight[evaluator]))
             if evaluator == 'manual':
-                # in manual mode, we save a temp image first then request user input
-                tmp_path = Path(Path.cwd(), "tmp.png")
-                image.save(tmp_path)
-                self.open_image(tmp_path)
+                # Display the image in a separate thread
+                threading.Thread(target=image.show, daemon=True).start()
                 values.append(self.get_user_score())
-                tmp_path.unlink()  # remove temporary image
             else:
                 values.append(self.model[evaluator].score(prompt, image))
 

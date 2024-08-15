@@ -5,7 +5,7 @@ import requests
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, List, Tuple
+from typing import Dict, List
 
 from hydra.core.hydra_config import HydraConfig
 from omegaconf import DictConfig, open_dict
@@ -267,7 +267,7 @@ class AestheticScorer:
             payload_names: List[str],
             payloads: Dict,
             it: int,
-    ) -> Tuple[List[float], List[float]]:  # Update return type hint
+    ) -> List[float]:
         scores = []
         norm = []  # Restore the norm list
 

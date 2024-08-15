@@ -5,13 +5,13 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Tuple
 import logging
+import requests
 
 from bayes_opt.logger import JSONLogger
 from hydra.core.hydra_config import HydraConfig
 from omegaconf import DictConfig, open_dict
 from tqdm import tqdm
 
-from sd_webui_bayesian_merger.model_loader import load_model, unload_model
 from sd_webui_bayesian_merger.bounds import Bounds
 from sd_webui_bayesian_merger.generator import Generator
 from sd_webui_bayesian_merger.merger import Merger
@@ -39,7 +39,7 @@ class Optimiser:
         self.iteration = 0
         self.best_model_path = self.merger.best_output_file
 
-        # Import Artist here, inside the function
+        # import artist inside
         from sd_webui_bayesian_merger.artist import Artist
         self.artist = Artist(self)
 
@@ -92,10 +92,11 @@ class Optimiser:
         )
 
         # Merge the model to disk
-        merged_state_dict = self.merger.merge(weights_list, base_values, cfg=self.cfg)
+        model_path = self.merger.merge(weights_list, base_values, cfg=self.cfg)
 
-        # Load the merged model
-        sd_model = load_model(self.merger.output_file, self.cfg.model_arch)
+        # Send a request to the API to load the merged model
+        r = requests.post(url=f"{self.cfg.url}/bbwm/load-model", json={"model_path": str(model_path), "model_arch": self.cfg.model_arch})
+        r.raise_for_status()
 
         # Generate images and score
         images, gen_paths, payloads = self.generate_images()
@@ -108,8 +109,9 @@ class Optimiser:
         # Collect data for visualization
         self.artist.collect_data(avg_score, params)
 
-        # unload model
-        unload_model()
+        # Send a request to the API to unload the merged model
+        r = requests.post(url=f"{self.cfg.url}/bbwm/unload-model", json={})
+        r.raise_for_status()
 
         logger.info(f"Average Score for Iteration: {avg_score}")
         return avg_score
@@ -144,8 +146,6 @@ class Optimiser:
             if os.path.exists(self.best_model_path):
                 os.remove(self.best_model_path)
             os.rename(self.merger.output_file, self.best_model_path)
-            # Save the best model
-            #self.merger.merge(weights_list, base_values, save_best=True, cfg=self.cfg)
 
             Optimiser.save_best_log(base_values, weights_list)
 

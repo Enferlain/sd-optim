@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict
 
-from omegaconf import DictConfig
+from omegaconf import DictConfig, open_dict
 from sd_webui_bayesian_merger.merge_methods import MergeMethods
 
 logging.basicConfig(level=logging.INFO)
@@ -44,8 +44,8 @@ class Merger:
             weights_list: Dict,
             base_values: Dict,
             save_best: bool = False,
-            cfg=None,  # Add cfg as a parameter
-    ) -> Dict:  # Specify the correct return type: Dict
+            cfg=None,
+    ) -> Path:  # Return the model path
 
         # Use the correct model output path based on save_best
         if save_best:
@@ -79,16 +79,15 @@ class Merger:
         # Call the merging method from MergeMethods directly, passing the combined hyperparameters
         merged_model = getattr(MergeMethods, self.cfg.merge_mode)(*models, **all_hypers)
 
-        # Execute the merge using sd-mecha
+        # Execute the merge using sd-mecha and save to the determined model path
         recipe_merger = sd_mecha.RecipeMerger(models_dir=Path(self.cfg.model_a).parent)
-        merged_state_dict = {}  # Create an empty dictionary to store the merged state dict
         recipe_merger.merge_and_save(
-            merged_model,  # Pass the merged model directly
-            output=model_path,  # Save to the determined model path
+            merged_model,
+            output=model_path,
             threads=self.cfg.threads,
             save_dtype=torch.float16 if self.cfg.best_precision == 16 else torch.float32,
         )
 
         logging.info(f"Merged model using sd-mecha.")
 
-        return merged_state_dict  # Return the merged state dictionary
+        return model_path  # Return the model path

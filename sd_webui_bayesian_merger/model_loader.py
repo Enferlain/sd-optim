@@ -1,9 +1,9 @@
 import os
+import sys
 import logging
 import torch
 
-# No need to import sd_mecha here
-from modules import sd_models, shared  # Import necessary modules from A1111
+from modules import script_callbacks, sd_models, shared
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO)

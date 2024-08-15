@@ -4,7 +4,6 @@ from pathlib import Path
 
 import sd_mecha
 from modules import script_callbacks
-from sd_webui_bayesian_merger.sd_models import load_model, unload_model # Import from your custom module
 from sd_webui_bayesian_merger.merge_methods import MergeMethods
 
 logger = logging.getLogger("api")
@@ -20,9 +19,9 @@ def on_app_started(_gui, api):
         model_c: str = fastapi.Body(None, title="Path to Model C (Optional)"),
         merge_method: str = fastapi.Body(..., title="Merge Method"),
         model_arch: str = fastapi.Body(..., title="Model Architecture"),
-        #save_path: str = fastapi.Body(None, title="Save Path"), # do later
+        save_path: str = fastapi.Body(None, title="Save Path"),
     ):
-        """Merges models using sd-mecha."""
+        """Merges models using sd-mecha and saves the result."""
 
         # Create the configuration object
         cfg = {
@@ -42,10 +41,12 @@ def on_app_started(_gui, api):
             for model_key in ["model_a", "model_b", "model_c"] if model_key in cfg
         ]
 
-        # Call the merging method using MergeMethods class and execute the recipe
-        state_dict = {}
-        recipe_merger = sd_mecha.RecipeMerger()
-        recipe_merger.merge_and_save(getattr(MergeMethods, merge_method)(*models, **base_values, **weights_list), output=state_dict)  # Simplified merging call
+        # Call the merging method using MergeMethods class
+        merged_model = getattr(MergeMethods, merge_method)(*models, **base_values, **weights_list)
+
+        # Execute the merge using sd-mecha
+        recipe_merger = sd_mecha.RecipeMerger(models_dir=Path(cfg['model_a']).parent)
+        recipe_merger.merge_and_save(merged_model, output=save_path)
 
         return {"message": "Models merged successfully."}
 

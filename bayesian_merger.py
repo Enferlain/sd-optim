@@ -1,5 +1,3 @@
-from pathlib import Path
-
 import hydra
 from omegaconf import DictConfig
 
@@ -21,10 +19,6 @@ def main(cfg: DictConfig) -> None:
     bo = cls(cfg)
     bo.optimise()
     bo.postprocess()
-
-    # Trigger visualizations
-#    bo.artist.visualize_optimization()  # Call the visualization method
-
 
 if __name__ == "__main__":
     main()

@@ -11,7 +11,7 @@ from hydra.core.hydra_config import HydraConfig
 from omegaconf import DictConfig, open_dict
 from tqdm import tqdm
 
-#from sd_webui_bayesian_merger.artist import Artist
+from sd_webui_bayesian_merger.model_loader import load_model, unload_model
 from sd_webui_bayesian_merger.bounds import Bounds
 from sd_webui_bayesian_merger.generator import Generator
 from sd_webui_bayesian_merger.merger import Merger
@@ -37,6 +37,7 @@ class Optimiser:
         self.scorer = AestheticScorer(self.cfg, {}, {}, {})
         self.prompter = Prompter(self.cfg)
         self.iteration = 0
+        self.best_model_path = self.merger.best_output_file
 
         # Import Artist here, inside the function
         from sd_webui_bayesian_merger.artist import Artist
@@ -90,18 +91,25 @@ class Optimiser:
             params, self.cfg.optimisation_guide.frozen_params, self.cfg.optimisation_guide.groups, self.cfg
         )
 
-        # Merge the model in memory
-        self.merger.merge(weights_list, base_values, cfg=self.cfg)  # Pass the assembled parameters
+        # Merge the model to disk
+        merged_state_dict = self.merger.merge(weights_list, base_values, cfg=self.cfg)
 
+        # Load the merged model
+        sd_model = load_model(self.merger.output_file, self.cfg.model_arch)
+
+        # Generate images and score
         images, gen_paths, payloads = self.generate_images()
-        scores, norm = self.score_images(images, gen_paths, payloads)  # Unpack both values
-        avg_score = self.scorer.average_calc(scores, norm, self.cfg.img_average_type)  # Pass norm to average_calc
+        scores, norm = self.score_images(images, gen_paths, payloads)
+        avg_score = self.scorer.average_calc(scores, norm, self.cfg.img_average_type)
 
-        # Update and save only if it's the best score so far
-        self.update_best_score(base_values, weights_list, avg_score)  # Pass the correct variables
+        # Update best score and handle best model saving
+        self.update_best_score(base_values, weights_list, avg_score)
 
         # Collect data for visualization
-        self.artist.collect_data(avg_score, params)  # Add this line to collect data
+        self.artist.collect_data(avg_score, params)
+
+        # unload model
+        unload_model()
 
         logger.info(f"Average Score for Iteration: {avg_score}")
         return avg_score
@@ -121,23 +129,25 @@ class Optimiser:
         logger.info("\nScoring")
         return self.scorer.batch_score(images, gen_paths, payloads, self.iteration)
 
-    def update_best_score(self, base_values, weights_list, avg_score):  # Use consistent variable names
+    def update_best_score(self, base_values, weights_list, avg_score):
         logger.info(f"{'-' * 10}\nRun score: {avg_score}")
 
-        # Use the received base_values and weights_list directly
         for param_name in base_values:
             logger.info(f"\nrun base_{param_name}: {base_values[param_name]}")
-            if param_name in weights_list:  # Check if the key exists in weights_list
+            if param_name in weights_list:
                 logger.info(f"run weights_{param_name}: {weights_list[param_name]}")
 
         if avg_score > self.best_rolling_score:
             logger.info("\n NEW BEST!")
             self.best_rolling_score = avg_score
 
+            if os.path.exists(self.best_model_path):
+                os.remove(self.best_model_path)
+            os.rename(self.merger.output_file, self.best_model_path)
             # Save the best model
-            self.merger.merge(weights_list, base_values, save_best=True, cfg=self.cfg)
+            #self.merger.merge(weights_list, base_values, save_best=True, cfg=self.cfg)
 
-            Optimiser.save_best_log(base_values, weights_list)  # Pass the correct variables
+            Optimiser.save_best_log(base_values, weights_list)
 
     @abstractmethod
     def optimise(self) -> None:

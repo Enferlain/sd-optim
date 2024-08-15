@@ -5,11 +5,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict
 
-from omegaconf import DictConfig, open_dict
+from omegaconf import DictConfig
 from sd_webui_bayesian_merger.merge_methods import MergeMethods
 
 logging.basicConfig(level=logging.INFO)
-
 
 @dataclass
 class Merger:
@@ -21,7 +20,7 @@ class Merger:
         self.create_best_model_out_name()
 
     def validate_config(self):
-        required_fields = ['model_a', 'model_b', 'merge_mode']
+        required_fields = ['model_a', 'model_b', 'merge_mode', 'model_arch']
         for field in required_fields:
             if not getattr(self.cfg, field, None):
                 raise ValueError(f"Configuration missing required field: {field}")
@@ -46,14 +45,13 @@ class Merger:
             base_values: Dict,
             save_best: bool = False,
             cfg=None,  # Add cfg as a parameter
-    ) -> None:
+    ) -> Dict:  # Specify the correct return type: Dict
 
+        # Use the correct model output path based on save_best
         if save_best:
-            with open_dict(self.cfg):
-                self.cfg.destination = str(self.best_output_file)
+            model_path = self.best_output_file
         else:
-            with open_dict(self.cfg):
-                self.cfg.destination = "memory"
+            model_path = self.output_file
 
         # Dynamically create ModelRecipeNodes for all models in cfg, using sd_mecha.model
         models = []
@@ -83,10 +81,14 @@ class Merger:
 
         # Execute the merge using sd-mecha
         recipe_merger = sd_mecha.RecipeMerger(models_dir=Path(self.cfg.model_a).parent)
+        merged_state_dict = {}  # Create an empty dictionary to store the merged state dict
         recipe_merger.merge_and_save(
             merged_model,  # Pass the merged model directly
+            output=model_path,  # Save to the determined model path
             threads=self.cfg.threads,
             save_dtype=torch.float16 if self.cfg.best_precision == 16 else torch.float32,
         )
 
         logging.info(f"Merged model using sd-mecha.")
+
+        return merged_state_dict  # Return the merged state dictionary

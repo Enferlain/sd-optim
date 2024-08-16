@@ -1,11 +1,13 @@
 import logging
 import sd_mecha
 import torch
+import os
+
+from hydra.core.hydra_config import HydraConfig
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict
-
-from omegaconf import DictConfig, open_dict
+from omegaconf import DictConfig
 from sd_webui_bayesian_merger.merge_methods import MergeMethods
 
 logging.basicConfig(level=logging.INFO)
@@ -32,9 +34,9 @@ class Merger:
         self.model_out_name = model_out_name
         self.output_file = Path(Path(self.cfg.model_a).parent, model_out_name)
 
-    def create_best_model_out_name(self):
+    def create_best_model_out_name(self, it: int = 0) -> None:  # Accept the iteration number as an argument
         model_out_name = f"bbwm-{Path(self.cfg.model_a).stem}-{Path(self.cfg.model_b).stem}"
-        model_out_name += "-best"
+        model_out_name += f"-it_{it}_best"  # Include the iteration number in the filename
         model_out_name += f"-fp{self.cfg.best_precision}"
         model_out_name += f".safetensors"
         self.best_output_file = Path(Path(self.cfg.model_a).parent, model_out_name)
@@ -78,6 +80,20 @@ class Merger:
 
         # Call the merging method from MergeMethods directly, passing the combined hyperparameters
         merged_model = getattr(MergeMethods, self.cfg.merge_mode)(*models, **all_hypers)
+
+        # Get the Hydra log directory
+        log_dir = Path(HydraConfig.get().runtime.output_dir)
+
+        # Create the "recipes" folder if it doesn't exist
+        recipes_dir = log_dir / "recipes"
+        os.makedirs(recipes_dir, exist_ok=True)
+
+        # Generate the recipe file path
+        recipe_file_path = recipes_dir / f"{self.model_out_name}.mecha"
+
+        # Serialize and save the recipe to the file
+        with open(recipe_file_path, "w", encoding="utf-8") as f:
+            f.write(sd_mecha.recipe_serializer.serialize(merged_model))
 
         # Execute the merge using sd-mecha and save to the determined model path
         recipe_merger = sd_mecha.RecipeMerger(models_dir=Path(self.cfg.model_a).parent)

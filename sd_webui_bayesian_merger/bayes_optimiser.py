@@ -51,7 +51,7 @@ class BayesOptimiser(Optimiser):
     def postprocess(self) -> None:
         logger.info("\nRecap!")
         for i, res in enumerate(self.optimizer.res):
-            logger.info(f"Iteration {i}: \n\t{res}")
+            logger.info(f"Iteration {i + 1}: \n\t{res}")  # Add 1 to the iteration number
 
         # No need to assign scores, best_weights, or best_bases here
 

@@ -37,7 +37,7 @@ class Optimiser:
         self.scorer = AestheticScorer(self.cfg, {}, {}, {})
         self.prompter = Prompter(self.cfg)
         self.iteration = 0
-        self.best_model_path = self.merger.best_output_file
+        self.best_model_path = None
 
         # import artist inside
         from sd_webui_bayesian_merger.artist import Artist
@@ -91,6 +91,9 @@ class Optimiser:
             params, self.cfg.optimisation_guide.frozen_params, self.cfg.optimisation_guide.groups, self.cfg
         )
 
+        # Update the output file name with the current iteration
+        self.merger.create_model_out_name(self.iteration)
+
         # Merge the model to disk
         model_path = self.merger.merge(weights_list, base_values, cfg=self.cfg)
 
@@ -143,11 +146,20 @@ class Optimiser:
             logger.info("\n NEW BEST!")
             self.best_rolling_score = avg_score
 
-            if os.path.exists(self.best_model_path):
-                os.remove(self.best_model_path)
-            os.rename(self.merger.output_file, self.best_model_path)
+            # Update the best model filename BEFORE renaming
+            self.merger.create_best_model_out_name(self.iteration)
 
-            Optimiser.save_best_log(base_values, weights_list)
+            # Delete the previous best model (if it exists and best_model_path is not None)
+            if self.best_model_path is not None and os.path.exists(self.best_model_path):
+                os.remove(self.best_model_path)
+                logger.info(f"Deleted previous best model: {self.best_model_path}")
+
+            # Update best_model_path AFTER deletion and BEFORE renaming
+            self.best_model_path = self.merger.best_output_file
+
+            # Rename the current model to the new best model filename
+            os.rename(self.merger.output_file, self.best_model_path)
+            logger.info(f"Saved new best model as: {self.best_model_path}")
 
     @abstractmethod
     def optimise(self) -> None:

@@ -1,13 +1,16 @@
+import os
+from pathlib import Path
+
 import plotly.graph_objects as go
 import matplotlib.pyplot as plt
 import numpy as np
 
 from sklearn.decomposition import PCA
 from sklearn.preprocessing import StandardScaler
+from hydra.core.hydra_config import HydraConfig
 
 from sd_mecha.extensions.model_arch import resolve
 from sd_webui_bayesian_merger.optimiser import Optimiser
-
 
 class Artist:
     def __init__(self, optimiser: Optimiser):  # Accept the Optimiser object as an argument
@@ -25,6 +28,13 @@ class Artist:
 
     def visualize_optimization(self):
         """Creates visualizations based on user configuration."""
+
+        # Get the Hydra log directory
+        log_dir = Path(HydraConfig.get().runtime.output_dir)
+
+        # Create the "visualizations" folder if it doesn't exist
+        visualizations_dir = log_dir / "visualizations"
+        os.makedirs(visualizations_dir, exist_ok=True)
 
         if self.cfg.visualizations.scatter_plot:
             # Extract data for plotting

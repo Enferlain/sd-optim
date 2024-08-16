@@ -59,7 +59,6 @@ def on_app_started(_gui, api):
 
         if unload_default:
             sd_models.unload_model_weights()  # Unload the default model
-            print("Unloaded default model to free up memory.")  # Provide user feedback
 
         sd_models.load_model(sd_models.CheckpointInfo(model_path))
         return {"message": f"Model loaded successfully from: {model_path}"}

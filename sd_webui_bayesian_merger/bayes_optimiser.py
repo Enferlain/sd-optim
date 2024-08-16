@@ -57,6 +57,5 @@ class BayesOptimiser(Optimiser):
 
         self.artist.visualize_optimization()  # Call the Artist's visualize_optimization method
 
-
 def parse_scores(iterations: List[Dict]) -> List[float]:
     return [r["target"] for r in iterations]

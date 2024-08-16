@@ -70,13 +70,19 @@ class Merger:
         all_hypers = {}
         for param_name in weights_list:
             # Get the base value for the current parameter from sd-mecha's defaults
-            base_value = base_values.get(f"base_{param_name}", [default_hypers.get(param_name, 0.5)])[0]
+            base_value = base_values.get(f"base_{param_name}", default_hypers.get(param_name, 0.5)) # Remove [0]
+
+            print(f"param_name: {param_name}, base_value: {base_value}")
 
             # Merge the base value and block weights into a single dictionary
             all_hypers[param_name] = {
                 **{f"{self.cfg.model_arch}_{component}_default": base_value for component in ["txt", "txt2"]},
                 **weights_list[param_name]
             }
+
+            print(f"Constructing all_hypers: {all_hypers[param_name]}")  # Move the print statement here
+
+        print(f"Final all_hypers: {all_hypers}")  # Move this print statement outside the loop
 
         # Call the merging method from MergeMethods directly, passing the combined hyperparameters
         merged_model = getattr(MergeMethods, self.cfg.merge_mode)(*models, **all_hypers)

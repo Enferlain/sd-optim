@@ -120,7 +120,7 @@ class Bounds:
             frozen: Dict,
             groups: List[List[str]],
             cfg,
-    ) -> Tuple[Dict[str, Dict[str, float]], Dict[str, List[float]]]:  # Updated type hint
+    ) -> Tuple[Dict[str, Dict[str, float]], Dict[str, float]]:
 
         unet_block_identifiers = [
             key for key in sd_mecha.extensions.model_arch.resolve(cfg.model_arch).user_keys()
@@ -139,7 +139,7 @@ class Bounds:
         weights_list = {}
         base_values = {}
 
-        # Get the expected number of Greek letters from the merging method
+        # Get the expected number of parameters from the merging method
         mecha_merge_method = sd_mecha.extensions.merge_method.resolve(cfg.merge_mode)
         expected_param_name = len(mecha_merge_method.get_default_hypers())
 
@@ -154,11 +154,11 @@ class Bounds:
             }
 
             assert len(weights_list[param_name]) == block_count
-            print(
-                f"Assemble params - model_arch: {cfg.model_arch}, param_name: {param_name}, num_weights: {len(weights_list[param_name])}")
+            print(f"Assemble params - model_arch: {cfg.model_arch}, param_name: {param_name}, num_weights: {len(weights_list[param_name])}")
 
             base_name = f"base_{param_name}"
-            base_values[param_name] = [Bounds.get_value(params, base_name, frozen, groups)]
+            # Use base_name as the key for base_values
+            base_values[base_name] = Bounds.get_value(params, base_name, frozen, groups)  # Store base value as float
 
         assert len(weights_list) == expected_param_name
         print(f"Assembled Weights List: {weights_list}")

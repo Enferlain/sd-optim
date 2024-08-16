@@ -1,5 +1,7 @@
 import json
 import os
+import shutil
+
 from abc import abstractmethod
 from dataclasses import dataclass
 from pathlib import Path
@@ -137,8 +139,10 @@ class Optimiser:
     def update_best_score(self, base_values, weights_list, avg_score):
         logger.info(f"{'-' * 10}\nRun score: {avg_score}")
 
-        for param_name in base_values:
-            logger.info(f"\nrun base_{param_name}: {base_values[param_name]}")
+        for base_param_name in base_values:  # Iterate over base parameter names (e.g., "base_alpha")
+            logger.info(f"\nrun {base_param_name}: {base_values[base_param_name]}")
+            # Extract the corresponding parameter name without the "base_" prefix
+            param_name = base_param_name[5:]  # Remove "base_"
             if param_name in weights_list:
                 logger.info(f"run weights_{param_name}: {weights_list[param_name]}")
 
@@ -146,20 +150,14 @@ class Optimiser:
             logger.info("\n NEW BEST!")
             self.best_rolling_score = avg_score
 
-            # Update the best model filename BEFORE renaming
+            # Update the best model filename
             self.merger.create_best_model_out_name(self.iteration)
 
-            # Delete the previous best model (if it exists and best_model_path is not None)
-            if self.best_model_path is not None and os.path.exists(self.best_model_path):
-                os.remove(self.best_model_path)
-                logger.info(f"Deleted previous best model: {self.best_model_path}")
+            # Move the current model to the new best model filename (overwriting if necessary)
+            shutil.move(self.merger.output_file, self.merger.best_output_file)
+            logger.info(f"Saved new best model as: {self.merger.best_output_file}")
 
-            # Update best_model_path AFTER deletion and BEFORE renaming
-            self.best_model_path = self.merger.best_output_file
-
-            # Rename the current model to the new best model filename
-            os.rename(self.merger.output_file, self.best_model_path)
-            logger.info(f"Saved new best model as: {self.best_model_path}")
+            Optimiser.save_best_log(base_values, weights_list, self.iteration)
 
     @abstractmethod
     def optimise(self) -> None:
@@ -170,15 +168,19 @@ class Optimiser:
         raise NotImplementedError("Not implemented")
 
     @staticmethod
-    def save_best_log(base_values: Dict, weights_list: Dict) -> None:  # Use consistent variable names
+    def save_best_log(base_values: Dict, weights_list: Dict, iteration: int) -> None:  # Accept iteration as argument
         logger.info("Saving best.log")
         with open(
-            Path(HydraConfig.get().runtime.output_dir, "best.log"),
-            "w",
-            encoding="utf-8",
+                Path(HydraConfig.get().runtime.output_dir, "best.log"),
+                "w",
+                encoding="utf-8",
         ) as f:
+            f.write(f"Best Iteration: {iteration}\n\n")
+
             for param_name in base_values:
-                f.write(f"{base_values[param_name]}\n\n{weights_list[param_name]}\n\n")  # Use the correct variable names
+                f.write(f"Parameter: {param_name}\n")
+                f.write(f"Base Value: {base_values[param_name]}\n")
+                f.write(f"Weights: {weights_list.get(param_name, [])}\n\n")  # Use .get() with default value
 
     @staticmethod
     def load_log(log: PathT) -> List[Dict]:

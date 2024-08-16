@@ -9,3 +9,4 @@ class MergeMethods:
     @staticmethod
     def rotate(a, b, alignment: Hyper, alpha: Hyper):
         return sd_mecha.rotate(a, b, alignment=alignment, alpha=alpha)
+

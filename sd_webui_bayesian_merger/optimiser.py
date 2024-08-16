@@ -160,6 +160,8 @@ class Optimiser:
             shutil.move(self.merger.output_file, self.merger.best_output_file)
             logger.info(f"Saved new best model as: {self.merger.best_output_file}")
 
+            Optimiser.save_best_log(base_values, weights_list, self.iteration)
+
     @abstractmethod
     def optimise(self) -> None:
         raise NotImplementedError("Not implemented")

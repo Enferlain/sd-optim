@@ -139,25 +139,26 @@ class Optimiser:
     def update_best_score(self, base_values, weights_list, avg_score):
         logger.info(f"{'-' * 10}\nRun score: {avg_score}")
 
-        for base_param_name in base_values:  # Iterate over base parameter names (e.g., "base_alpha")
-            logger.info(f"\nrun {base_param_name}: {base_values[base_param_name]}")
-            # Extract the corresponding parameter name without the "base_" prefix
-            param_name = base_param_name[5:]  # Remove "base_"
-            if param_name in weights_list:
-                logger.info(f"run weights_{param_name}: {weights_list[param_name]}")
+        for param_name in base_values:
+            logger.info(f"\nrun {param_name}: {base_values[param_name]}")  # Remove extra "base_"
+            if param_name.replace("base_", "") in weights_list:  # Adjust key check for weights_list
+                logger.info(f"run weights_{param_name.replace('base_', '')}: {weights_list[param_name.replace('base_', '')]}")
 
         if avg_score > self.best_rolling_score:
             logger.info("\n NEW BEST!")
             self.best_rolling_score = avg_score
 
+            # Check if a previous best model exists and delete it BEFORE updating the filename
+            if os.path.exists(self.merger.best_output_file):
+                os.remove(self.merger.best_output_file)
+                logger.info(f"Deleted previous best model: {self.merger.best_output_file}")
+
             # Update the best model filename
             self.merger.create_best_model_out_name(self.iteration)
 
-            # Move the current model to the new best model filename (overwriting if necessary)
+            # Move the current model to the new best model filename
             shutil.move(self.merger.output_file, self.merger.best_output_file)
             logger.info(f"Saved new best model as: {self.merger.best_output_file}")
-
-            Optimiser.save_best_log(base_values, weights_list, self.iteration)
 
     @abstractmethod
     def optimise(self) -> None:
@@ -168,19 +169,21 @@ class Optimiser:
         raise NotImplementedError("Not implemented")
 
     @staticmethod
-    def save_best_log(base_values: Dict, weights_list: Dict, iteration: int) -> None:  # Accept iteration as argument
+    def save_best_log(base_values: Dict, weights_list: Dict, iteration: int) -> None:
         logger.info("Saving best.log")
         with open(
                 Path(HydraConfig.get().runtime.output_dir, "best.log"),
                 "w",
                 encoding="utf-8",
         ) as f:
-            f.write(f"Best Iteration: {iteration}\n\n")
+            f.write(f"Best Iteration: {iteration}.\n\n")
 
             for param_name in base_values:
-                f.write(f"Parameter: {param_name}\n")
+                # Remove "base_" prefix from parameter name in log output
+                clean_param_name = param_name.replace("base_", "")
+                f.write(f"Parameter: {clean_param_name}\n")
                 f.write(f"Base Value: {base_values[param_name]}\n")
-                f.write(f"Weights: {weights_list.get(param_name, [])}\n\n")  # Use .get() with default value
+                f.write(f"Weights: {weights_list.get(clean_param_name, [])}\n\n")
 
     @staticmethod
     def load_log(log: PathT) -> List[Dict]:

@@ -1,13 +1,17 @@
 import fastapi
 import logging
 from pathlib import Path
+import time
+import gc
+
 
 import sd_mecha
-from modules import script_callbacks, sd_models
-from sd_webui_bayesian_merger.merge_methods import MergeMethods
+from modules import script_callbacks, sd_models, shared
+from modules.sd_models import CheckpointInfo
+from backend import memory_management
+from backend.loader import forge_loader
 
-# Import forge_model_reload and model_data
-from modules.sd_models import forge_model_reload, model_data
+from sd_webui_bayesian_merger.merge_methods import MergeMethods
 
 logger = logging.getLogger("api")
 logging.basicConfig(level=logging.INFO)
@@ -65,21 +69,49 @@ def on_app_started(_gui, api):
             sd_models.load_model(sd_models.CheckpointInfo(model_path))
             print(f"Bayesian Merger: Loaded model from {model_path}")
         elif webui == "forge":
-            # Update model_data.forge_loading_parameters with the model path
-            model_data.forge_loading_parameters = {
-                "checkpoint_info": sd_models.CheckpointInfo(model_path),
-                "additional_modules": []  # Add any additional modules if needed
-            }
+            # Construct the checkpoint_info dictionary
+            checkpoint_info = CheckpointInfo(model_path)
 
-            # Introduce a short delay using asyncio.sleep
-            await asyncio.sleep(0.5)  # Adjust the delay as needed
-
-            # Call forge_model_reload without any arguments
-            forge_model_reload()
+            # Call forge_model_reload to load the model
+            load_model_forge(checkpoint_info)
             print(f"Bayesian Merger: Loaded model from {model_path} in Forge")
         else:
             raise fastapi.HTTPException(status_code=400, detail="Invalid WebUI type specified")
         return {"message": f"Model loaded successfully from: {model_path}"}
+
+
+    def load_model_forge(checkpoint_info):
+        """Custom model loading function for Forge."""
+
+        print(f"Loading model: {checkpoint_info}")
+
+        timer = time.perf_counter()
+
+        if shared.sd_model:
+            shared.sd_model = None
+            memory_management.unload_all_models()
+            memory_management.soft_empty_cache()
+            gc.collect()
+
+        # Load the model using forge_loader
+        sd_model = forge_loader(checkpoint_info.filename)
+
+        # Initialize model attributes
+        sd_model.extra_generation_params = {}
+        sd_model.comments = []
+        sd_model.sd_checkpoint_info = checkpoint_info
+        sd_model.filename = checkpoint_info.filename
+        sd_model.sd_model_hash = checkpoint_info.calculate_shorthash()
+
+        shared.opts.data["sd_checkpoint_hash"] = checkpoint_info.sha256
+
+        # Set the model in sd_models
+        sd_models.model_data.set_sd_model(sd_model)
+
+        # Trigger model loaded callbacks
+        script_callbacks.model_loaded_callback(sd_model)
+
+        print(f"Model loaded in {time.perf_counter() - timer:.2f} seconds.")
 
 
 script_callbacks.on_app_started(on_app_started)

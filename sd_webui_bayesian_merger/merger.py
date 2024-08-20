@@ -12,6 +12,7 @@ from sd_webui_bayesian_merger.merge_methods import MergeMethods
 
 logging.basicConfig(level=logging.INFO)
 
+
 @dataclass
 class Merger:
     cfg: DictConfig
@@ -47,6 +48,7 @@ class Merger:
             base_values: Dict,
             save_best: bool = False,
             cfg=None,
+            models_dir=None,  # Add models_dir as a parameter
     ) -> Path:  # Return the model path
 
         # Use the correct model output path based on save_best
@@ -59,7 +61,9 @@ class Merger:
         models = []
         for model_key in ["model_a", "model_b", "model_c"]:
             if model_key in self.cfg:
-                model = sd_mecha.model(self.cfg[model_key], self.cfg.model_arch)
+                # Use the passed models_dir for relative path calculation
+                relative_path = os.path.relpath(self.cfg[model_key], models_dir)
+                model = sd_mecha.model(relative_path, self.cfg.model_arch)
                 models.append(model)
 
         # Get the merging method's default hyperparameters

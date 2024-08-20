@@ -9,6 +9,7 @@ hydra:
     dir: logs/${now:%Y-%m-%d_%H-%M-%S}_${run_name}
 
 url: http://127.0.0.1:7860
+webui: a1111  # or "forge"
 
 wildcards_dir: path/to/wildcards/folder
 

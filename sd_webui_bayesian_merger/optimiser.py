@@ -96,11 +96,13 @@ class Optimiser:
         # Update the output file name with the current iteration
         self.merger.create_model_out_name(self.iteration)
 
-        # Merge the model to disk
-        model_path = self.merger.merge(weights_list, base_values, cfg=self.cfg)
+        # Pass the models directory to the merge function
+        model_path = self.merger.merge(weights_list, base_values, cfg=self.cfg,
+                                       models_dir=Path(self.cfg.model_a).parent)
 
         # Send a request to the API to load the merged model
-        r = requests.post(url=f"{self.cfg.url}/bbwm/load-model", json={"model_path": str(model_path), "model_arch": self.cfg.model_arch})
+        r = requests.post(url=f"{self.cfg.url}/bbwm/load-model",
+                          json={"model_path": str(model_path), "webui": self.cfg.webui})  # Add webui parameter
         r.raise_for_status()
 
         # Generate images and score
@@ -113,10 +115,6 @@ class Optimiser:
 
         # Collect data for visualization
         self.artist.collect_data(avg_score, params)
-
-        # Send a request to the API to unload the merged model
-        r = requests.post(url=f"{self.cfg.url}/bbwm/unload-model", json={})
-        r.raise_for_status()
 
         logger.info(f"Average Score for Iteration: {avg_score}")
         return avg_score

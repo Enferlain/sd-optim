@@ -6,6 +6,9 @@ import sd_mecha
 from modules import script_callbacks, sd_models
 from sd_webui_bayesian_merger.merge_methods import MergeMethods
 
+# Import forge_model_reload and model_data
+from modules.sd_models import forge_model_reload, model_data
+
 logger = logging.getLogger("api")
 logging.basicConfig(level=logging.INFO)
 
@@ -20,6 +23,7 @@ def on_app_started(_gui, api):
         merge_method: str = fastapi.Body(..., title="Merge Method"),
         model_arch: str = fastapi.Body(..., title="Model Architecture"),
         save_path: str = fastapi.Body(None, title="Save Path"),
+        webui: str = fastapi.Body(..., title="WebUI Type"),  # Add webui parameter
     ):
         """Merges models using sd-mecha and saves the result."""
 
@@ -29,6 +33,7 @@ def on_app_started(_gui, api):
             "model_b": model_b,
             "model_arch": model_arch,
             "merge_mode": merge_method,
+            "webui": webui,  # Include webui in the configuration
         }
 
         # Add model_c to the configuration if provided
@@ -53,22 +58,28 @@ def on_app_started(_gui, api):
     @api.post("/bbwm/load-model")
     async def load_model_api(
             model_path: str = fastapi.Body(..., title="Path to Model"),
-            unload_default: bool = fastapi.Body(False, title="Unload Default Model"),  # Add unload_default parameter
+            webui: str = fastapi.Body(..., title="WebUI Type"),
     ):
-        """Loads a model into A1111."""
+        """Loads a model into the specified WebUI."""
+        if webui == "a1111":
+            sd_models.load_model(sd_models.CheckpointInfo(model_path))
+            print(f"Bayesian Merger: Loaded model from {model_path}")
+        elif webui == "forge":
+            # Update model_data.forge_loading_parameters with the model path
+            model_data.forge_loading_parameters = {
+                "checkpoint_info": sd_models.CheckpointInfo(model_path),
+                "additional_modules": []  # Add any additional modules if needed
+            }
 
-        if unload_default:
-            sd_models.unload_model_weights()  # Unload the default model
+            # Introduce a short delay using asyncio.sleep
+            await asyncio.sleep(0.5)  # Adjust the delay as needed
 
-        sd_models.load_model(sd_models.CheckpointInfo(model_path))
+            # Call forge_model_reload without any arguments
+            forge_model_reload()
+            print(f"Bayesian Merger: Loaded model from {model_path} in Forge")
+        else:
+            raise fastapi.HTTPException(status_code=400, detail="Invalid WebUI type specified")
         return {"message": f"Model loaded successfully from: {model_path}"}
-
-    @api.post("/bbwm/unload-model")
-    async def unload_model_api():
-        """Unloads the currently loaded model in A1111."""
-
-        sd_models.unload_model_weights()
-        return {"message": "Model unloaded successfully."}
 
 
 script_callbacks.on_app_started(on_app_started)

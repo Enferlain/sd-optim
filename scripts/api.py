@@ -1,16 +1,10 @@
 import fastapi
 import logging
 from pathlib import Path
-import time
-import gc
-
 
 import sd_mecha
-from modules import script_callbacks, sd_models, shared
-from modules.sd_models import CheckpointInfo
-from backend import memory_management
-from backend.loader import forge_loader
-
+import requests
+from modules import script_callbacks, sd_models
 from sd_webui_bayesian_merger.merge_methods import MergeMethods
 
 logger = logging.getLogger("api")
@@ -62,56 +56,21 @@ def on_app_started(_gui, api):
     @api.post("/bbwm/load-model")
     async def load_model_api(
             model_path: str = fastapi.Body(..., title="Path to Model"),
-            webui: str = fastapi.Body(..., title="WebUI Type"),
+            webui: str = fastapi.Body(..., title="WebUI Type"),  # Add webui parameter
     ):
         """Loads a model into the specified WebUI."""
         if webui == "a1111":
             sd_models.load_model(sd_models.CheckpointInfo(model_path))
             print(f"Bayesian Merger: Loaded model from {model_path}")
         elif webui == "forge":
-            # Construct the checkpoint_info dictionary
-            checkpoint_info = CheckpointInfo(model_path)
-
-            # Call forge_model_reload to load the model
-            load_model_forge(checkpoint_info)
-            print(f"Bayesian Merger: Loaded model from {model_path} in Forge")
+            payload = {"sd_model_checkpoint": model_path}
+            response = requests.post(url=f"{shared.opts.sd_webui_url}/sdapi/v1/options", json=payload)
+            if response.status_code == 200:
+                print(f"Bayesian Merger: Loaded model from {model_path} in Forge")
+            else:
+                raise fastapi.HTTPException(status_code=response.status_code, detail="Failed to load model in Forge")
         else:
             raise fastapi.HTTPException(status_code=400, detail="Invalid WebUI type specified")
         return {"message": f"Model loaded successfully from: {model_path}"}
-
-
-    def load_model_forge(checkpoint_info):
-        """Custom model loading function for Forge."""
-
-        print(f"Loading model: {checkpoint_info}")
-
-        timer = time.perf_counter()
-
-        if shared.sd_model:
-            shared.sd_model = None
-            memory_management.unload_all_models()
-            memory_management.soft_empty_cache()
-            gc.collect()
-
-        # Load the model using forge_loader
-        sd_model = forge_loader(checkpoint_info.filename)
-
-        # Initialize model attributes
-        sd_model.extra_generation_params = {}
-        sd_model.comments = []
-        sd_model.sd_checkpoint_info = checkpoint_info
-        sd_model.filename = checkpoint_info.filename
-        sd_model.sd_model_hash = checkpoint_info.calculate_shorthash()
-
-        shared.opts.data["sd_checkpoint_hash"] = checkpoint_info.sha256
-
-        # Set the model in sd_models
-        sd_models.model_data.set_sd_model(sd_model)
-
-        # Trigger model loaded callbacks
-        script_callbacks.model_loaded_callback(sd_model)
-
-        print(f"Model loaded in {time.perf_counter() - timer:.2f} seconds.")
-
 
 script_callbacks.on_app_started(on_app_started)

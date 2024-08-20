@@ -1,7 +1,6 @@
 import json
 import os
 import shutil
-import time
 
 from abc import abstractmethod
 from dataclasses import dataclass
@@ -101,14 +100,9 @@ class Optimiser:
         model_path = self.merger.merge(weights_list, base_values, cfg=self.cfg,
                                        models_dir=Path(self.cfg.model_a).parent)
 
-        # Determine which WebUI is configured and send the appropriate API request
-        if self.cfg.webui == "forge":
-            r = requests.post(url=f"{self.cfg.url}/sdapi/v1/options", json={"sd_model_checkpoint": str(model_path)})
-        elif self.cfg.webui == "a1111":
-            r = requests.post(url=f"{self.cfg.url}/bbwm/load-model", json={"model_path": str(model_path)})
-        else:
-            raise ValueError(f"Unsupported WebUI: {self.cfg.webui}")
-
+        # Send a request to the API to load the merged model
+        r = requests.post(url=f"{self.cfg.url}/bbwm/load-model",
+                          json={"model_path": str(model_path), "webui": self.cfg.webui})
         r.raise_for_status()
 
         # Generate images and score

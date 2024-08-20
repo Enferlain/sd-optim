@@ -1,10 +1,14 @@
 import fastapi
 import logging
 from pathlib import Path
+import gc
 
 import sd_mecha
-import requests
-from modules import script_callbacks, sd_models
+
+from modules import script_callbacks, sd_models, shared
+from backend.loader import forge_loader
+from backend import memory_management
+
 from sd_webui_bayesian_merger.merge_methods import MergeMethods
 
 logger = logging.getLogger("api")
@@ -63,14 +67,46 @@ def on_app_started(_gui, api):
             sd_models.load_model(sd_models.CheckpointInfo(model_path))
             print(f"Bayesian Merger: Loaded model from {model_path}")
         elif webui == "forge":
-            payload = {"sd_model_checkpoint": model_path}
-            response = requests.post(url=f"{shared.opts.sd_webui_url}/sdapi/v1/options", json=payload)
-            if response.status_code == 200:
-                print(f"Bayesian Merger: Loaded model from {model_path} in Forge")
-            else:
-                raise fastapi.HTTPException(status_code=response.status_code, detail="Failed to load model in Forge")
+            load_model_forge(model_path)  # Call our custom function for Forge
+            print(f"Bayesian Merger: Loaded model from {model_path} in Forge")
         else:
             raise fastapi.HTTPException(status_code=400, detail="Invalid WebUI type specified")
         return {"message": f"Model loaded successfully from: {model_path}"}
+
+
+def load_model_forge(model_path: str):
+    """Custom model loading function for Forge."""
+
+    try:
+        # 1. Unload existing model
+        memory_management.unload_all_models()
+        memory_management.soft_empty_cache()
+        gc.collect()
+
+        # 2. Prepare model data
+        checkpoint_info = sd_models.CheckpointInfo(model_path)
+        additional_state_dicts = []  # Modify as needed based on your requirements
+
+        # 3. Load the model
+        sd_model = forge_loader(checkpoint_info.filename, additional_state_dicts=additional_state_dicts)
+
+        # 4. Initialize model attributes
+        sd_model.extra_generation_params = {}
+        sd_model.comments = []
+        sd_model.sd_checkpoint_info = checkpoint_info
+        sd_model.filename = checkpoint_info.filename
+        sd_model.sd_model_hash = checkpoint_info.calculate_shorthash()
+
+        # 5. Trigger callbacks
+        script_callbacks.model_loaded_callback(sd_model)
+
+        # Update the shared.sd_model object in Forge
+        shared.sd_model = sd_model
+
+        logger.info(f"Model loaded successfully from: {model_path} in Forge")
+
+    except Exception as e:
+        logger.error(f"Error loading model in Forge: {e}", exc_info=True)
+        raise
 
 script_callbacks.on_app_started(on_app_started)

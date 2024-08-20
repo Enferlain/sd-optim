@@ -41,7 +41,7 @@ class Artist:
             self.plot_3d_scatter(visualizations_dir)
 
         if self.cfg.visualizations.unet_diagram:
-            self.plot_unet_heatmap(visualizations_dir)
+            self.visualize_unet(visualizations_dir)
 
         if self.cfg.visualizations.convergence_plot:
             self.plot_convergence(visualizations_dir)

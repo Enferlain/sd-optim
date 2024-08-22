@@ -16,8 +16,8 @@ class Bounds:
 
     @staticmethod
     def default_bounds(
-        custom_ranges: Dict[str, Tuple[float, float]] = None,
-        cfg=None,
+            custom_ranges: Dict[str, Tuple[float, float]] = None,
+            cfg=None,
     ) -> Dict:
         model_arch = sd_mecha.extensions.model_arch.resolve(cfg.model_arch)
         unet_block_identifiers = [
@@ -25,19 +25,25 @@ class Bounds:
             if "_unet_block_" in key
         ]
         block_count = len(unet_block_identifiers)
-        print(f"Default bounds - model_arch: {cfg.model_arch}, block_count: {block_count}")
 
         # Get the default hyperparameters from the merging method
         mecha_merge_method = sd_mecha.extensions.merge_method.resolve(cfg.merge_mode)
         default_hypers = mecha_merge_method.get_default_hypers()
 
-        # Construct block names, including base parameters dynamically
-        block_names = unet_block_identifiers + [f"base_{name}" for name in default_hypers]
-        ranges = {b: (0.0, 1.0) for b in block_names} | OmegaConf.to_object(
-            custom_ranges
-        )
+        # Create a flattened dictionary for parameter bounds
+        bounds = {}
+        for param_name in default_hypers:
+            for i in range(block_count):
+                # Construct a unique key for each block and parameter combination
+                key = f"block_{i}_{param_name}"
+                bounds[key] = (0.0, 1.0)
+            # Add bounds for base parameters
+            bounds[f"base_{param_name}"] = (0.0, 1.0)
 
-        return {b: Bounds.set_block_bounds(float(r[0]), float(r[1])) for b, r in ranges.items()}  # Convert to floats
+        # Override with custom ranges
+        bounds.update(OmegaConf.to_object(custom_ranges))
+
+        return bounds
 
     @staticmethod
     def freeze_bounds(bounds: Dict, frozen: Dict[str, float] = None) -> Dict:
@@ -141,24 +147,19 @@ class Bounds:
 
         # Get the expected number of parameters from the merging method
         mecha_merge_method = sd_mecha.extensions.merge_method.resolve(cfg.merge_mode)
+        default_hypers = mecha_merge_method.get_default_hypers()
         expected_param_name = len(mecha_merge_method.get_default_hypers())
 
         # Iterate over the expected parameter names
-        for i in range(expected_param_name):
-            param_name = list(mecha_merge_method.get_default_hypers().keys())[i]
-
-            # Create a dictionary for weights_list[param_name], mapping block identifiers to weights
-            weights_list[param_name] = {
-                block_id: Bounds.get_value(params, block_id, frozen, groups)
-                for block_id in unet_block_identifiers
-            }
-
-            assert len(weights_list[param_name]) == block_count
-            print(f"Assemble params - model_arch: {cfg.model_arch}, param_name: {param_name}, num_weights: {len(weights_list[param_name])}")
+        for param_name in default_hypers:
+            # Initialize weights_list for the current parameter
+            weights_list[param_name] = {}
+            for i in range(block_count):
+                key = f"block_{i}_{param_name}"
+                weights_list[param_name][unet_block_identifiers[i]] = Bounds.get_value(params, key, frozen, groups)
 
             base_name = f"base_{param_name}"
-            # Use base_name as the key for base_values
-            base_values[base_name] = Bounds.get_value(params, base_name, frozen, groups)  # Store base value as float
+            base_values[base_name] = Bounds.get_value(params, base_name, frozen, groups)
 
         assert len(weights_list) == expected_param_name
         print(f"Assembled Weights List: {weights_list}")

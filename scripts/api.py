@@ -1,11 +1,12 @@
 import fastapi
 import logging
+import os
 from pathlib import Path
 
 import sd_mecha
 
 from modules import script_callbacks, sd_models, shared
-from modules_forge.main_entry import refresh_model_loading_parameters
+from modules_forge import main_entry
 
 from sd_webui_bayesian_merger.merge_methods import MergeMethods
 
@@ -75,12 +76,13 @@ def on_app_started(_gui, api):
             # Call forge_model_reload to load the model
             sd_models.forge_model_reload()
 
-            # Call refresh_model_loading_parameters to update settings
-            refresh_model_loading_parameters()
+            # Set the loaded model as the active model using checkpoint_change
+            main_entry.checkpoint_change(os.path.basename(model_path))
 
             print(f"Bayesian Merger: Loaded model from {model_path} in Forge")
         else:
             raise fastapi.HTTPException(status_code=400, detail="Invalid WebUI type specified")
         return {"message": f"Model loaded successfully from: {model_path}"}
+
 
 script_callbacks.on_app_started(on_app_started)

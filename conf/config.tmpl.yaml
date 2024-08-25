@@ -17,6 +17,7 @@ model_a: path/to/model_a/file
 model_b: path/to/model_b/file
 model_c: path/to/model_c/file
 
+device: cpu # specify device to merge on (cpu, cuda)
 threads: 6
 
 merge_mode: weighted_sum

@@ -97,7 +97,7 @@ class Optimiser:
         self.merger.create_model_out_name(self.iteration)
 
         # Pass the models directory to the merge function
-        model_path = self.merger.merge(weights_list, base_values, cfg=self.cfg,
+        model_path = self.merger.merge(weights_list, base_values, cfg=self.cfg, device=self.cfg.device,
                                        models_dir=Path(self.cfg.model_a).parent)
 
         # Send a request to the API to load the merged model
@@ -113,8 +113,8 @@ class Optimiser:
         # Update best score and handle best model saving
         self.update_best_score(base_values, weights_list, avg_score)
 
-        # Collect data for visualization
-        self.artist.collect_data(avg_score, params)
+        # Collect data for visualization, including weights_list and base_values
+        self.artist.collect_data(avg_score, params, weights_list, base_values)  # Pass the dictionaries here
 
         logger.info(f"Average Score for Iteration: {avg_score}")
         return avg_score
@@ -137,10 +137,9 @@ class Optimiser:
     def update_best_score(self, base_values, weights_list, avg_score):
         logger.info(f"{'-' * 10}\nRun score: {avg_score}")
 
-        for param_name in base_values:
-            logger.info(f"\nrun {param_name}: {base_values[param_name]}")  # Remove extra "base_"
-            if param_name.replace("base_", "") in weights_list:  # Adjust key check for weights_list
-                logger.info(f"run weights_{param_name.replace('base_', '')}: {weights_list[param_name.replace('base_', '')]}")
+        for param_name in weights_list:
+            logger.info(f"\nrun base_{param_name}: {base_values.get(f'base_{param_name}')}")
+            logger.info(f"run weights_{param_name}: {weights_list[param_name]}")
 
         if avg_score > self.best_rolling_score:
             logger.info("\n NEW BEST!")
@@ -159,6 +158,11 @@ class Optimiser:
             logger.info(f"Saved new best model as: {self.merger.best_output_file}")
 
             Optimiser.save_best_log(base_values, weights_list, self.iteration)
+        else:
+            # Delete the current iteration's model file if it's not the best
+            if os.path.exists(self.merger.output_file):
+                os.remove(self.merger.output_file)
+                logger.info(f"Deleted non-best model: {self.merger.output_file}")
 
     @abstractmethod
     def optimise(self) -> None:

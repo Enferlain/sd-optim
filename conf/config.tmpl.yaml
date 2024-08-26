@@ -20,8 +20,8 @@ model_c: path/to/model_c/file
 device: cpu # specify device to merge on (cpu, cuda)
 threads: 6
 
-merge_mode: weighted_sum
-model_arch: sdxl  # Specify model architecture (sd1, sdxl, sd3)
+merge_mode: weighted_sum # specify merge method https://github.com/ljleb/sd-mecha/blob/main/sd_mecha/merge_methods/__init__.py
+model_arch: sdxl  # specify model architecture (sd1, sdxl, sd3)
 
 optimiser: bayes                 # tpe
 bounds_transformer: False        # bayes only

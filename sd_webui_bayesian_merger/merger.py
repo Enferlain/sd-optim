@@ -2,6 +2,7 @@ import logging
 import sd_mecha
 import torch
 import os
+import requests
 
 from hydra.core.hydra_config import HydraConfig
 from dataclasses import dataclass
@@ -49,7 +50,6 @@ class Merger:
             save_best: bool = False,
             cfg=None,
             device=None,
-            dtype=None,
             models_dir=None,  # Add models_dir as a parameter
     ) -> Path:  # Return the model path
 
@@ -72,9 +72,6 @@ class Merger:
         mecha_merge_method = sd_mecha.extensions.merge_method.resolve(self.cfg.merge_mode)
         default_hypers = mecha_merge_method.get_default_hypers()
 
-        # Extract the default dtype from default_hypers
-        default_dtype = default_hypers.get("dtype", None)  # Get the default dtype, or None if it's not specified
-
         # Merge base_values and weights_list into a single dictionary, using the mapping
         all_hypers = {}
         for param_name in weights_list:
@@ -93,12 +90,14 @@ class Merger:
 
         print(f"Final all_hypers: {all_hypers}")  # Move this print statement outside the loop
 
+        # Unload the currently loaded model
+        requests.post(url=f"{self.cfg.url}/bbwm/unload-model", json={})
+
         # Call the merging method from MergeMethods directly, passing device and default_dtype
         merged_model = getattr(MergeMethods, self.cfg.merge_mode)(
             *models,
             **{list(all_hypers.keys())[0]: all_hypers[list(all_hypers.keys())[0]]},
             device=device,  # Pass the device
-            dtype=default_dtype,    # Pass the default dtype
         )
 
         # Get the Hydra log directory

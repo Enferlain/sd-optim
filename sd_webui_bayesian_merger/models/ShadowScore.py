@@ -18,9 +18,9 @@ class ShadowScore:
 
     def initialize_model(self):
         statedict = safetensors.torch.load_file(self.pathname)
-        config = AutoConfig.from_pretrained(pretrained_model_name_or_path="shadowlilac/aesthetic-shadow")
+        config = AutoConfig.from_pretrained(pretrained_model_name_or_path="shadowlilac/aesthetic-shadow-v2")
         model = ViTForImageClassification.from_pretrained(pretrained_model_name_or_path=None, state_dict=statedict, config=config)
-        processor = AutoProcessor.from_pretrained(pretrained_model_name_or_path="shadowlilac/aesthetic-shadow")
+        processor = AutoProcessor.from_pretrained(pretrained_model_name_or_path="shadowlilac/aesthetic-shadow-v2")
         self.pipe = pipeline("image-classification", model=model, image_processor=processor, device=self.device)
 
     def score(self, prompt, image):

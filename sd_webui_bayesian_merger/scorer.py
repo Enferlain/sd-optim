@@ -20,6 +20,7 @@ from sd_webui_bayesian_merger.models.WDAes import WDAes as WDA
 from sd_webui_bayesian_merger.models.ShadowScore import ShadowScore as SS
 from sd_webui_bayesian_merger.models.CafeScore import CafeScore as CAFE
 from sd_webui_bayesian_merger.models.NoAIScore import NoAIScore as NOAI
+from sd_webui_bayesian_merger.models.CityAesthetics import CityAesthetics as CITY
 
 MODEL_DATA = {
     "laion": {
@@ -30,49 +31,53 @@ MODEL_DATA = {
         "url": "https://github.com/grexzen/SD-Chad/blob/main/chadscorer.pth?raw=true",
         "file_name": "Chad.pth",
     },
-    "WDAES": {
+    "wdaes": {
         "url": "https://huggingface.co/hakurei/waifu-diffusion-v1-4/resolve/main/models/aes-B32-v0.pth?download=true",
         "file_name": "WD_Aes.pth",
     },
-    "ImageReward": {
+    "imagereward": {
         "url": "https://huggingface.co/THUDM/ImageReward/resolve/main/ImageReward.pt?download=true",
         "file_name": "ImageReward.pt",
     },
-    "CLIP": {
+    "clip": {
         "url": "https://openaipublic.azureedge.net/clip/models/b8cca3fd41ae0c99ba7e8951adf17d267cdb84cd88be6f7c2e0eca1737a03836/ViT-L-14.pt?raw=true",
         "file_name": "CLIP-ViT-L-14.pt",
     },
-    "BLIP": {
+    "blip": {
         "url": "https://storage.googleapis.com/sfr-vision-language-research/BLIP/models/model_large.pth?raw=true",
         "file_name": "BLIP_Large.safetensors",
     },
-    "HPSV2": {
+    "hpsv2": {
         "url": "https://huggingface.co/xswu/HPSv2/resolve/main/HPS_v2.1_compressed.pt?download=true",
         "file_name": "HPS_v2.1.pt",
     },
-    "PickScore": {
+    "pick": {
         "url": "https://huggingface.co/yuvalkirstain/PickScore_v1/resolve/main/model.safetensors?download=true",
         "file_name": "Pick-A-Pic.safetensors",
     },
-    "ShadowV2": {
+    "shadowv2": {
         "url": "https://huggingface.co/shadowlilac/aesthetic-shadow-v2/resolve/main/model.safetensors?download=true",
         "file_name": "ShadowV2.safetensors",
     },
-    "CAFE": {
+    "cafe": {
         "url": "https://huggingface.co/cafeai/cafe_aesthetic/resolve/3bca27c5c0b6021056b1e84e5a18cf1db9fe5d4c/model.safetensors?download=true",
         "file_name": "Cafe.safetensors",
     },
-    "CLASS": {
+    "class": {
         "url": "https://huggingface.co/cafeai/cafe_style/resolve/d5ae1a7ac05a12ab84732c25f2ea7225d35ac81b/model.safetensors?download=true",
         "file_name": "CLASS.safetensors",
     },
-    "REAL": {
+    "real": {
         "url": "https://huggingface.co/Sumsub/Sumsub-ffs-synthetic-2.0/resolve/main/synthetic.pt?download=true",
         "file_name": "REAL.pt",
     },
-    "ANIME": {
+    "anime": {
         "url": "https://huggingface.co/saltacc/anime-ai-detect/resolve/e175bb6b5e19cda40bc6c9ad85b138ee7c7ce23a/model.safetensors?download=true",
         "file_name": "ANIME.safetensors",
+    },
+    "cityaes": {
+        "url": "https://huggingface.co/city96/CityAesthetics/resolve/main/CityAesthetics-Anime-v1.8.safetensors?download=true",
+        "file_name": "CityAesthetics-Anime-v1.8.safetensors",
     },
 }
 
@@ -102,27 +107,21 @@ class AestheticScorer:
                         self.scorer_model_name[evaluator] = self.cfg.scorer_alt_location[evaluator]['model_name']
                         self.model_path[evaluator] = Path(self.cfg.scorer_alt_location[evaluator]['model_dir'])
                     else:
-                        # Use MODEL_DATA to get file name
-                        self.scorer_model_name[evaluator] = MODEL_DATA[evaluator]["file_name"]
-                        self.model_path[evaluator] = Path(
-                            self.cfg.scorer_model_dir,
-                            self.scorer_model_name[evaluator],
-                        )
-                else:
-                    self.scorer_model_name[evaluator] = 'NOAI pipeline'
-                    self.model_path[evaluator] = {}
-                    self.model_path[evaluator]['class'] = Path(
-                        self.cfg.scorer_model_dir,
-                        "Class.safetensors",
-                    )
-                    self.model_path[evaluator]['real'] = Path(
-                        self.cfg.scorer_model_dir,
-                        "Real.pt",
-                    )
-                    self.model_path[evaluator]['anime'] = Path(
-                        self.cfg.scorer_model_dir,
-                        "Anime.safetensors",
-                    )
+                        # Use MODEL_DATA to get file name, dynamically adjusting casing
+                        if evaluator.upper() in MODEL_DATA:
+                            self.scorer_model_name[evaluator] = MODEL_DATA[evaluator.upper()]["file_name"]
+                            self.model_path[evaluator] = Path(
+                                self.cfg.scorer_model_dir,
+                                self.scorer_model_name[evaluator],
+                            )
+                        elif evaluator.lower() in MODEL_DATA:
+                            self.scorer_model_name[evaluator] = MODEL_DATA[evaluator.lower()]["file_name"]
+                            self.model_path[evaluator] = Path(
+                                self.cfg.scorer_model_dir,
+                                self.scorer_model_name[evaluator],
+                            )
+                        else:
+                            raise KeyError(f"Evaluator '{evaluator}' not found in MODEL_DATA")
 
                 with open_dict(self.cfg):
                     if self.cfg.scorer_device is None:
@@ -227,14 +226,15 @@ class AestheticScorer:
             "wdaes": lambda: WDA(self.model_path["wdaes"], Path(self.cfg.scorer_model_dir, "CLIP-ViT-B-32.safetensors"), self.cfg.scorer_device["wdaes"]),
             "clip": lambda: CLP(self.model_path["clip"], self.cfg.scorer_device["clip"]),
             "blip": lambda: BLP(self.model_path["blip"], med_config, self.cfg.scorer_device["blip"]),
-            "ir": lambda: IMGR(self.model_path["ir"], med_config, self.cfg.scorer_device["ir"]),
+            "imagereward": lambda: IMGR(self.model_path["imagereward"], med_config, self.cfg.scorer_device["imagereward"]),
             "laion": lambda: AES(self.model_path["laion"], self.model_path['clip'], self.cfg.scorer_device["laion"]),
             "chad": lambda: AES(self.model_path["chad"], self.model_path['clip'], self.cfg.scorer_device["chad"]),
             "hpsv2": lambda: HPS(self.model_path["hpsv2"], self.cfg.scorer_device["hpsv2"]),
             "pick": lambda: PICK(self.model_path["pick"], self.cfg.scorer_device["pick"]),
-            "shadow": lambda: SS(self.model_path["shadow"], self.cfg.scorer_device["shadow"]),
+            "shadowv2": lambda: SS(self.model_path["shadowv2"], self.cfg.scorer_device["shadowv2"]),
             "cafe": lambda: CAFE(self.model_path["cafe"], self.cfg.scorer_device["cafe"]),
             "noai": lambda: NOAI(self.model_path["noai"]['class'], self.model_path["noai"]['real'], self.model_path["noai"]['anime'], device=self.cfg.scorer_device["noai"]),
+            "cityaes": lambda: CITY(self.model_path["cityaes"], self.model_path['clip'], self.cfg.scorer_device["cityaes"]),
         }
 
         for evaluator in self.cfg.scorer_method:

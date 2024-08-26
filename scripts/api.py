@@ -7,6 +7,7 @@ import sd_mecha
 
 from modules import script_callbacks, sd_models, shared
 from modules_forge import main_entry
+from backend import memory_management
 
 from sd_webui_bayesian_merger.merge_methods import MergeMethods
 
@@ -83,6 +84,23 @@ def on_app_started(_gui, api):
         else:
             raise fastapi.HTTPException(status_code=400, detail="Invalid WebUI type specified")
         return {"message": f"Model loaded successfully from: {model_path}"}
+
+    @api.post("/bbwm/unload-model")  # Update endpoint path for consistency
+    async def unload_model_api(
+        webui: str = fastapi.Body(..., title="WebUI Type"),  # Add webui parameter
+    ):
+        """Unloads the currently loaded model in A1111 or Forge."""
+
+        if webui == "a1111":
+            sd_models.unload_model_weights()
+            print("Bayesian Merger: Unloaded model in A1111")
+        elif webui == "forge":
+            # Use Forge's memory_management to unload the model
+            memory_management.unload_all_models()
+            print("Bayesian Merger: Unloaded model in Forge")
+        else:
+            raise fastapi.HTTPException(status_code=400, detail="Invalid WebUI type specified")
+        return {"message": "Model unloaded successfully."}
 
 
 script_callbacks.on_app_started(on_app_started)

@@ -91,14 +91,11 @@ class Merger:
         print(f"Final all_hypers: {all_hypers}")  # Move this print statement outside the loop
 
         # Unload the currently loaded model
-        requests.post(url=f"{self.cfg.url}/bbwm/unload-model", json={})
+        r = requests.post(url=f"{self.cfg.url}/bbwm/unload-model?webui={self.cfg.webui}")  # Use query parameter
+        r.raise_for_status()
 
         # Call the merging method from MergeMethods directly, passing device and default_dtype
-        merged_model = getattr(MergeMethods, self.cfg.merge_mode)(
-            *models,
-            **{list(all_hypers.keys())[0]: all_hypers[list(all_hypers.keys())[0]]},
-            device=device,  # Pass the device
-        )
+        merged_model = getattr(MergeMethods, self.cfg.merge_mode)(*models, device=self.cfg.device, **all_hypers)
 
         # Get the Hydra log directory
         log_dir = Path(HydraConfig.get().runtime.output_dir)

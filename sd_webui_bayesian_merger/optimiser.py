@@ -97,7 +97,8 @@ class Optimiser:
         self.merger.create_model_out_name(self.iteration)
 
         # Unload the currently loaded model
-        requests.post(url=f"{self.cfg.url}/bbwm/unload-model", json={})
+        r = requests.post(url=f"{self.cfg.url}/bbwm/unload-model?webui={self.cfg.webui}")  # Use query parameter
+        r.raise_for_status()
 
         # Pass the models directory to the merge function
         model_path = self.merger.merge(weights_list, base_values, cfg=self.cfg, device=self.cfg.device,

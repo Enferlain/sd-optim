@@ -85,22 +85,27 @@ def on_app_started(_gui, api):
             raise fastapi.HTTPException(status_code=400, detail="Invalid WebUI type specified")
         return {"message": f"Model loaded successfully from: {model_path}"}
 
-    @api.post("/bbwm/unload-model")  # Update endpoint path for consistency
+    @api.post("/bbwm/unload-model")
     async def unload_model_api(
-        webui: str = fastapi.Body(..., title="WebUI Type"),  # Add webui parameter
+        webui: str = fastapi.Query(..., title="WebUI Type"),
     ):
         """Unloads the currently loaded model in A1111 or Forge."""
 
-        if webui == "a1111":
-            sd_models.unload_model_weights()
-            print("Bayesian Merger: Unloaded model in A1111")
-        elif webui == "forge":
-            # Use Forge's memory_management to unload the model
-            memory_management.unload_all_models()
-            print("Bayesian Merger: Unloaded model in Forge")
-        else:
-            raise fastapi.HTTPException(status_code=400, detail="Invalid WebUI type specified")
-        return {"message": "Model unloaded successfully."}
+        try:
+            if webui == "a1111":
+                sd_models.unload_model_weights()
+                print("Bayesian Merger: Unloaded model in A1111")
+            elif webui == "forge":
+                # Use memory_management.free_memory for selective unloading
+                memory_management.free_memory(1e30, shared.device, keep_loaded=[], free_all=True)
+                print("Bayesian Merger: Unloaded model in Forge")
+            else:
+                raise fastapi.HTTPException(status_code=400, detail="Invalid WebUI type specified")
+
+            return {"message": "Model unloaded successfully."}
+        except Exception as e:
+            logger.error(f"Error unloading model: {e}", exc_info=True)
+            return {"message": "Failed to unload model."}  # Return an error message
 
 
 script_callbacks.on_app_started(on_app_started)

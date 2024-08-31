@@ -6,7 +6,7 @@ import math
 import torch.nn.functional as F
 
 from torch import Tensor
-from typing import Tuple, TypeVar, Dict, Optional
+from typing import Union, Tuple, Callable, TypeVar, Dict, Any, get_args, get_origin
 from pytorch_wavelets import DWTForward, DWTInverse
 
 from sd_mecha.hypers import Hyper
@@ -15,6 +15,12 @@ from sd_mecha.extensions.merge_method import LiftFlag, convert_to_recipe
 
 EPSILON = 1e-10
 SameMergeSpace = TypeVar("SameMergeSpace", bound=LiftFlag[MergeSpace.BASE | MergeSpace.DELTA])
+DeltaMergeSpace = TypeVar("DeltaMergeSpace", bound=LiftFlag[MergeSpace.DELTA])
+
+
+def optimizable(hyper_type):
+    """Marks a hyperparameter as optimizable by Bayesian Merger."""
+    return hyper_type
 
 
 class MergeMethods:
@@ -23,7 +29,7 @@ class MergeMethods:
         return sd_mecha.weighted_sum(a, b, alpha=alpha, device=device)
 
     @staticmethod
-    def rotate(a, b, alignment: Hyper = 1.0, alpha: Hyper = 0.0, device=None, cache=None):  # Use None as default
+    def rotate(a, b, alignment: Hyper, alpha: Hyper, device=None, cache=None):  # Use None as default
         if cache is None:
             cache = {}  # Create a new dictionary if cache is None
 
@@ -85,14 +91,14 @@ class MergeMethods:
     def distribution_crossover(a, b, c, alpha: Hyper, tilt: Hyper, device=None):
         return sd_mecha.distribution_crossover(a, b, c, alpha=alpha, tilt=tilt, device=device)
 
+
     # custom methods
-    @staticmethod
     @convert_to_recipe
     def determinant_sum(
         a: Tensor | SameMergeSpace,
         b: Tensor | SameMergeSpace,
         *,
-        alpha: Hyper = 0.5,
+        alpha: optimizable(Hyper) = 0.5,
         **kwargs,
     ) -> Tensor | SameMergeSpace:
         key = kwargs.get("key", "")
@@ -145,13 +151,12 @@ class MergeMethods:
 
         return (a * (1 - alpha) + b * alpha) * ab_rescale
 
-    @staticmethod
     @convert_to_recipe
     def wavelet_merge(
         a: Tensor | SameMergeSpace,
         b: Tensor | SameMergeSpace,
         *,
-        alpha: Hyper = 0.5,
+        alpha: optimizable(Hyper) = 0.5,
         ** kwargs,
     ) -> Tensor | SameMergeSpace:
         key = kwargs.get("key", "")
@@ -202,15 +207,14 @@ class MergeMethods:
 
         return merged_tensor.reshape(original_shape)
 
-    @staticmethod
     @convert_to_recipe
     def anchored_guided_alignment(
         a: Tensor | SameMergeSpace,
         b: Tensor | SameMergeSpace,
         c: Tensor | SameMergeSpace,
         *,
-        alpha: Hyper = 0.5,
-        beta: Hyper = 0.5,
+        alpha: optimizable(Hyper) = 0.5,
+        beta: optimizable(Hyper) = 0.5,
         ** kwargs,
     ) -> Tensor | SameMergeSpace:
         """Merges tensors A and B using anchored neuron train difference with simplified alignment and slerp interpolation.
@@ -414,3 +418,619 @@ class MergeMethods:
         magnitudes = torch.abs(dft)
         centroid = (frequencies * magnitudes).sum() / (magnitudes.sum() + EPSILON)
         return centroid.item()
+
+    @convert_to_recipe
+    def add_difference_var_clip(
+        a: Tensor | SameMergeSpace,
+        b: Tensor | SameMergeSpace,
+        c: Tensor | SameMergeSpace,
+        *,
+        alpha: optimizable(Hyper) = 1.0,
+        **kwargs,
+    ) -> Tensor | SameMergeSpace:
+        bc_corr = torch.corrcoef(torch.stack([
+            (b - b.mean()).flatten(),
+            (c - c.mean()).flatten()
+        ], dim=0))[0, 1]
+
+        b_var = b.var(correction=0)
+        c_var = c.var(correction=0)
+
+        bc_cov = bc_corr * torch.sqrt(b_var * c_var)
+
+        min_corr = 0.9999
+        if bc_corr < min_corr:
+            bc_scale = torch.sqrt(b_var + c_var - 2 * min_corr * torch.sqrt(b_var * c_var)) / torch.sqrt(b_var + c_var - 2 * bc_cov)
+        else:
+            bc_scale = 1.0
+
+        bc = b - c
+        bc = (bc - bc.mean()) * bc_scale + bc.mean()
+        res = a + alpha*bc
+        return (res - res.mean()) * a.std(correction=0) / res.std(correction=0) + a.mean()
+
+    @convert_to_recipe
+    def gram_schmidt_ortho(
+        a: Tensor | SameMergeSpace,
+        b: Tensor | SameMergeSpace,
+        c: Tensor | SameMergeSpace,
+        *,
+        alpha: optimizable(Hyper) = 1.0,
+        **kwargs,
+    ) -> Tensor | SameMergeSpace:
+        # Calculate the vectors
+        vector_a = a - c
+        vector_b = b - c
+
+        # Calculate the projection of B onto A
+        projection_b_on_a = (torch.dot(vector_b.flatten(), vector_a.flatten()) / torch.dot(vector_a.flatten(), vector_a.flatten())) * vector_a
+
+        # Magnitude adjustment based on the difference between A and C
+        magnitude_ratio = torch.norm(projection_b_on_a) / torch.norm(vector_a)
+        adjusted_projection = projection_b_on_a * (1 + alpha * (magnitude_ratio - 1))
+
+        # Add the adjusted projection to the base model
+        return a + adjusted_projection
+
+    @convert_to_recipe
+    def orth_pro(
+        a: Tensor | SameMergeSpace,
+        b: Tensor | SameMergeSpace,
+        c: Tensor | SameMergeSpace,
+        *,
+        alpha: optimizable(Hyper) = 1.0,
+        use_perp: Hyper = 0,
+        ab_only: Hyper = 0,
+        noisy_c: Hyper = 0,
+        noisy_c_sgn_flt: Hyper = 0,
+        **kwargs,
+    ) -> Tensor | SameMergeSpace:
+        """
+        Merges tensors 'a' and 'b' using Orthogonal Procrustes alignment with options for perpendicular
+        component projection, noise injection, and control over alignment scope.
+
+        Args:
+            a (Tensor): The first tensor.
+            b (Tensor): The second tensor.
+            c (Tensor): The anchor tensor.
+            alpha (float): The interpolation factor between the original tensor 'b' and the mapped
+                           tensor (0 <= alpha <= 1).
+            use_perp (bool): If True, projects 'a' onto the perpendicular component of 'b' before alignment.
+            ab_only (bool): If True, performs alignment only between 'a' and 'b', ignoring 'c'.
+            noisy_c (float): The standard deviation of Gaussian noise added to 'c' (0 for no noise).
+            noisy_c_sgn_flt (bool): If True, filters the noise added to 'c' to match the sign of 'c'.
+            **kwargs: Additional keyword arguments.
+
+        Returns:
+            Tensor: The merged tensor.
+        """
+        # Reshape tensors to 2D
+        is_conv_3x3 = len(a.shape) == 4 and a.shape[-1] != 1
+        is_conv_1x1 = len(a.shape) == 4 and a.shape[-1] == 1
+        original_shape = a.shape
+        if is_conv_3x3:
+            shape_2d = (-1, functools.reduce(operator.mul, a.shape[1:]))
+        elif is_conv_1x1:
+            shape_2d = (-1, functools.reduce(operator.mul, a.shape[1:]))
+        elif not a.shape:
+            shape_2d = (1, 1)
+        else:
+            shape_2d = (-1, a.shape[-1])
+
+        a = a.reshape(shape_2d)
+        b = b.reshape(shape_2d)
+        c = c.reshape(shape_2d) if not noisy_c else MergeMethods.create_noisy_tensor(c.reshape(shape_2d), sign_filter=noisy_c_sgn_flt, seed=0)
+        ac = a if ab_only else (a - c)
+        bc = b if ab_only else (b - c)
+
+        if use_perp:
+            norm_bc = torch.linalg.norm(bc) + 1e-20
+            ac = ac - bc * (bc / norm_bc * (ac / norm_bc)).sum()
+
+        res = MergeMethods.orthogonal_procrustes(ac, bc)
+        if ab_only:
+            return torch.lerp(b.reshape(original_shape), res.reshape(original_shape), alpha)
+        else:
+            return torch.lerp(b.reshape(original_shape), (c + res).reshape(original_shape), alpha)
+
+    def orthogonal_procrustes(a: Tensor, b: Tensor):
+        # Compute the QR decomposition of (a - c)
+        Q, R = torch.qr(a)
+
+        # Compute the mapping matrix
+        mapping_matrix = torch.mm(Q.t(), b)
+
+        # Map (a - c) to (b - c)
+        mapped_tensor = torch.mm(Q, mapping_matrix)
+
+        return mapped_tensor
+
+    def create_noisy_tensor(
+        a: Tensor,
+        seed = 218,
+        sign_filter = False,
+    ) -> Tensor:
+        torch.manual_seed(seed)
+
+        dist = torch.normal(a.mean(), a.std(correction=0, keepdim=True))
+
+        if sign_filter:
+            signs = torch.sign(dist)
+
+            final_sign = torch.sign(a)
+
+            delta_filters = (signs == final_sign).float()
+
+            param_counts = torch.sum(delta_filters, dim=0)
+
+            filtered_delta = (dist * delta_filters)
+
+            filtered_delta = filtered_delta.sum(dim=0)
+
+            dist = torch.nan_to_num(filtered_delta / param_counts)
+
+        return dist
+
+    @staticmethod
+    @convert_to_recipe
+    def lu_merge_actual(a, b, c, alpha: Hyper, theta: Hyper, **kwargs):  # Remove device parameter
+        # Access device from kwargs
+        device = kwargs["device"]
+
+        return MergeMethods.lu_merge.__wrapped__(a, b, c, alpha=alpha, theta=theta, use_perp=0, ab_only=0,
+                                                 device=device, **kwargs)
+
+    @convert_to_recipe
+    def lu_merge(
+        a: Tensor | SameMergeSpace,
+        b: Tensor | SameMergeSpace,
+        c: Tensor | SameMergeSpace,
+        *,
+        alpha: Hyper = 1.0,
+        theta: Hyper = 1.0,
+        use_perp: Hyper = 0,
+        ab_only: Hyper = 0,
+        **kwargs,
+    ) -> Tensor | SameMergeSpace:
+        """
+        Merges tensors 'a' and 'b' using LU decomposition interpolation with optional alignment adjustments.
+
+        Args:
+            a (Tensor): The first tensor.
+            b (Tensor): The second tensor.
+            c (Tensor): The anchor tensor.
+            alpha (float): The interpolation factor between the original tensor 'a' and the merged
+                           tensor (0 <= alpha <= 1).
+            theta (float): The interpolation factor for the LU decomposition components of 'a' and 'b'
+                           (0 <= theta <= 1).
+            use_perp (bool): If True, projects 'a' onto the perpendicular component of 'b' before merging.
+            ab_only (bool): If True, performs merging only between 'a' and 'b', ignoring 'c'.
+            **kwargs: Additional keyword arguments.
+
+        Returns:
+            Tensor: The merged tensor.
+        """
+        # Reshape tensors to 2D
+        is_conv_3x3 = len(a.shape) == 4 and a.shape[-1] != 1
+        is_conv_1x1 = len(a.shape) == 4 and a.shape[-1] == 1
+        original_shape = a.shape
+        if is_conv_3x3:
+            shape_2d = (-1, functools.reduce(operator.mul, a.shape[1:]))
+        elif is_conv_1x1:
+            shape_2d = (-1, functools.reduce(operator.mul, a.shape[1:]))
+        elif not a.shape:
+            shape_2d = (1, 1)
+        else:
+            shape_2d = (-1, a.shape[-1])
+
+        a = a.reshape(shape_2d)
+        b = b.reshape(shape_2d)
+        c = c.reshape(shape_2d)
+
+        # Calculate difference tensors if not ab_only
+        ac = a if ab_only else (a - c)
+        bc = b if ab_only else (b - c)
+
+        # Project 'ac' onto the perpendicular component of 'bc' if use_perp is True
+        if use_perp:
+            norm_bc = torch.linalg.norm(bc) + 1e-20
+            ac = ac - bc * (bc / norm_bc * (ac / norm_bc)).sum()
+
+        # Perform LU decomposition-based merging
+        res = MergeMethods.lu_decompose(ac, bc, theta)
+
+        # Interpolate between original tensor 'A' and the merged result based on 'alpha'
+        if ab_only:
+            return torch.lerp(a.reshape(original_shape), res.reshape(original_shape), alpha)
+        else:
+            return torch.lerp(a.reshape(original_shape), (c + res).reshape(original_shape), alpha)
+
+    def lu_decompose(a, b, t=1.0):
+        """
+        Performs LU decomposition-based interpolation between tensors a and b.
+
+        Args:
+            a (Tensor): The first tensor (2D).
+            b (Tensor): The second tensor (2D).
+            t (float): Interpolation factor (0 <= t <= 1).
+
+        Returns:
+            Tensor: Interpolated tensor based on LU decomposition.
+        """
+        # Compute LU decomposition for tensors a and b
+        P_A, L_A, U_A = torch.linalg.lu(a)
+        P_B, L_B, U_B = torch.linalg.lu(b)
+
+        # Interpolate L and U matrices
+        L_interpolated = (1 - t) * L_A + t * L_B
+        U_interpolated = (1 - t) * U_A + t * U_B
+
+        # Combine interpolated matrices
+        A_interpolated = P_A @ L_interpolated @ U_interpolated
+
+        return A_interpolated
+
+    @convert_to_recipe
+    def clyb_merge(
+        a: Tensor | SameMergeSpace,
+        b: Tensor | SameMergeSpace,
+        c: Tensor | SameMergeSpace,
+        *,
+        alpha: optimizable(Hyper) = 1.0,
+        use_perp: Hyper = 0,
+        ab_only: Hyper = 0,
+        **kwargs,
+    ) -> Tensor | SameMergeSpace:
+        """
+        Merges tensors 'a' and 'b' using a combination of low-rank approximation, orthogonal projection,
+        and optional perpendicular component projection and alignment adjustments.
+
+        Args:
+            a (Tensor): The source tensor.
+            b (Tensor): The target tensor.
+            c (Tensor): The reference tensor.
+            alpha (float): The interpolation factor between the original tensor 'b' and the merged
+                           tensor (0 <= alpha <= 1).
+            use_perp (bool): If True, projects 'a' onto the perpendicular component of 'b' before merging.
+            ab_only (bool): If True, performs merging only between 'a' and 'b', ignoring 'c'.
+            **kwargs: Additional keyword arguments.
+
+        Returns:
+            Tensor: The merged tensor (in fp16).
+        """
+        # Reshape tensors to 2D
+        is_conv_3x3 = len(a.shape) == 4 and a.shape[-1] != 1
+        is_conv_1x1 = len(a.shape) == 4 and a.shape[-1] == 1
+        original_shape = a.shape
+        if is_conv_3x3:
+            shape_2d = (-1, functools.reduce(operator.mul, a.shape[1:]))
+        elif is_conv_1x1:
+            shape_2d = (-1, functools.reduce(operator.mul, a.shape[1:]))
+        elif not a.shape:
+            shape_2d = (1, 1)
+        else:
+            shape_2d = (-1, a.shape[-1])
+
+        a = a.reshape(shape_2d)
+        b = b.reshape(shape_2d)
+        c = c.reshape(shape_2d)
+
+        # Calculate difference tensors if not ab_only
+        ac = a if ab_only else (a - c)
+        bc = b if ab_only else (b - c)
+
+        # Project 'ac' onto the perpendicular component of 'bc' if use_perp is True
+        if use_perp:
+            norm_bc = torch.linalg.norm(bc) + 1e-20
+            ac = ac - bc * (bc / norm_bc * (ac / norm_bc)).sum()
+
+        # Perform the core merging operation
+        res = MergeMethods.clyb_align(ac, bc)
+
+        # Interpolate between original tensor 'b' and the merged result based on 'alpha'
+        if ab_only:
+            return torch.lerp(b.reshape(original_shape), res.reshape(original_shape), alpha)
+        else:
+            return torch.lerp(b.reshape(original_shape), (c + res).reshape(original_shape), alpha)
+
+    def clyb_align(a, b):
+        """
+        Performs the core merging operation using QR decomposition, low-rank approximation, and orthogonal projection.
+
+        Args:
+            a (Tensor): The source tensor (2D).
+            b (Tensor): The target tensor (2D).
+
+        Returns:
+            Tensor: The merged tensor (2D).
+        """
+        compression = 16
+        Qb, _ = torch.qr(b)
+        q_size = max(int(torch.linalg.matrix_rank(Qb)) // compression, 1)
+        iters = min(max(int(math.exp(math.log(640 / q_size))), 2), 64)
+
+        print(q_size, iters)
+
+        Ua, Sa, Va = torch.svd_lowrank(a, q=q_size, niter=iters)
+
+        a_lowrank = torch.mm(Ua, torch.mm(torch.diag(Sa), Va.t()))
+        a_diff = a - a_lowrank
+
+        # Project the difference onto the space spanned by Qb (orthogonal basis of B)
+        a_diff_projected = torch.mm(Qb, torch.mm(Qb.t(), a_diff))
+
+        return b + a_diff_projected
+
+    @convert_to_recipe
+    def decompose_merge(
+        a: Tensor | SameMergeSpace,
+        b: Tensor | SameMergeSpace,
+        *,
+        alpha: optimizable(Hyper) = 1.0,
+        **kwargs,
+    ) -> Tensor | SameMergeSpace:
+        """
+        Merges tensors 'a' and 'b' by decomposing 'b' using SVD, aligning the difference
+        between 'b' and its low-rank approximation to 'a', and adding the scaled result to 'a'.
+
+        Args:
+            a (Tensor): The first tensor, serving as the base model.
+            b (Tensor): The second tensor, whose components will be blended into 'a'.
+            alpha (float): The scaling factor for the projected difference, controlling the strength of 'b's
+                           influence on the merged result (0 <= alpha <= 1).
+            **kwargs: Additional keyword arguments.
+
+        Returns:
+            Tensor: The merged tensor.
+        """
+        # Reshape tensors to 2D
+        is_conv_3x3 = len(a.shape) == 4 and a.shape[-1] != 1
+        is_conv_1x1 = len(a.shape) == 4 and a.shape[-1] == 1
+        original_shape = a.shape
+        if is_conv_3x3:
+            shape_2d = (-1, functools.reduce(operator.mul, a.shape[1:]))
+        elif is_conv_1x1:
+            shape_2d = (-1, functools.reduce(operator.mul, a.shape[1:]))
+        elif not a.shape:
+            shape_2d = (1, 1)
+        else:
+            shape_2d = (-1, a.shape[-1])
+
+        a = a.reshape(shape_2d)
+        b = b.reshape(shape_2d)
+
+        # Perform the core merging operation
+        res = MergeMethods.decompose_align(a, b, alpha)
+
+        return res.reshape(original_shape)
+
+    def decompose_align(a, b, alpha):
+        """
+        Performs the core merging operation using SVD and orthogonal projection.
+
+        Args:
+            a (Tensor): The base tensor (2D).
+            b (Tensor): The tensor whose components will be blended into 'a' (2D).
+            alpha (float): The scaling factor for the projected difference.
+
+        Returns:
+            Tensor: The merged tensor (2D).
+        """
+        Ua, Sa, Va = torch.linalg.svd(a, full_matrices=False, driver="gesvd")
+        Ub, Sb, Vb = torch.linalg.svd(b, full_matrices=False, driver="gesvd")
+
+        # Reconstruct a low-rank approximation of B using the singular values from A
+        b_lowrank = torch.mm(Ub, torch.mm(torch.diag(Sa), Vb))
+        b_diff = b - b_lowrank
+
+        # Project the difference (B - B_lowrank) onto the space spanned by Ua (orthogonal basis of A)
+        b_diff_projected = torch.mm(Ua, torch.mm(Ua.t(), b_diff))
+
+        # Add the scaled projected difference to A to create the merged tensor
+        return a + b_diff_projected * alpha
+
+    @convert_to_recipe
+    def svd_replace_merge(
+            a: Tensor | SameMergeSpace,
+            b: Tensor | SameMergeSpace,
+            *,
+            alpha: optimizable(Hyper) = 1.0,
+            **kwargs,
+    ) -> Tensor | SameMergeSpace:
+        """
+        Merges tensors 'a' and 'b' using Singular Value Decomposition (SVD) by replacing the singular values
+        of 'b' with those from 'a' and reconstructing 'b' using the modified singular values.
+
+        Args:
+            a (Tensor): The first tensor, whose singular values will be used to modify 'b'.
+            b (Tensor): The second tensor, whose structure will be retained but modified with 'a's singular values .
+            alpha (float): The interpolation factor between the original tensor 'b' and the merged tensor (0 <= alpha <= 1).
+            **kwargs: Additional keyword arguments.
+
+        Returns:
+            Tensor: The merged tensor.
+        """
+        # Reshape tensors to 2D
+        is_conv_3x3 = len(a.shape) == 4 and a.shape[-1] != 1
+        is_conv_1x1 = len(a.shape) == 4 and a.shape[-1] == 1
+        original_shape = a.shape
+        if is_conv_3x3:
+            shape_2d = (-1, functools.reduce(operator.mul, a.shape[1:]))
+        elif is_conv_1x1:
+            shape_2d = (-1, functools.reduce(operator.mul, a.shape[1:]))
+        elif not a.shape:
+            shape_2d = (1, 1)
+        else:
+            shape_2d = (-1, a.shape[-1])
+
+        a = a.reshape(shape_2d)
+        b = b.reshape(shape_2d)
+
+        res = MergeMethods.SVD_Replace(a, b, alpha)
+
+        return res.reshape(original_shape)
+
+    def SVD_Replace(a, b, alpha):
+        """
+        Performs the core merging operation using SVD.
+
+        Args:
+            a (Tensor): The source tensor (2D), providing the singular values.
+            b (Tensor): The target tensor (2D), whose structure is retained.
+            alpha (float): The interpolation factor between the original tensor 'b' and the merged tensor.
+
+        Returns:
+            Tensor: The merged tensor (2D).
+        """
+        Ua, Sa, Va = None, None, None
+        Ub, Sb, Vb = None, None, None
+        if a.shape[0] + 10 < a.shape[1]:
+            svd_driver = "gesvdj" if a.is_cuda else None
+            Ua, Sa, Va = torch.linalg.svd(a, full_matrices=False, driver=svd_driver)
+            Ub, Sb, Vb = torch.linalg.svd(b, full_matrices=False, driver=svd_driver)
+        else:
+            svd_driver = "gesvd" if a.is_cuda else None
+            Ua, Sa, Va = torch.linalg.svd(a, full_matrices=False, driver=svd_driver)
+            Ub, Sb, Vb = torch.linalg.svd(b, full_matrices=False, driver=svd_driver)
+
+        # Reconstruct 'b' using the singular values from 'a'
+        merged_tensor = torch.mm(Ub, torch.mm(torch.diag(Sa), Vb.t()))
+
+        # Interpolate between the original tensor 'b' and the merged tensor
+        return torch.lerp(b, merged_tensor, alpha)
+
+    @convert_to_recipe
+    def weighted_sum_projection_v2(
+        a: Tensor | SameMergeSpace,
+        b: Tensor | SameMergeSpace,
+        c: Tensor | SameMergeSpace,
+        *,
+        perplexity: optimizable(Hyper) = 0.0,
+        **kwargs,
+    ) -> Tensor | SameMergeSpace:
+        """
+        Merges tensors 'a' and 'b' using a weighted sum based on vector projection, with the 'perplexity'
+        hyperparameter controlling the level of granularity in the projection calculation.
+
+        Args:
+            a (Tensor): The first tensor.
+            b (Tensor): The second tensor.
+            c (Tensor): The reference tensor.
+            perplexity (float): A hyperparameter that controls the blending between different levels of
+                                projection granularity (0.0 <= perplexity <= 1.0).
+
+                                - perplexity = 0.0: Merging is based on a single alpha value calculated for the entire key.
+                                - perplexity = 0.5: Merging is based on alpha values calculated for each neuron.
+                                - perplexity = 1.0: Merging is based on alpha values calculated for each individual parameter.
+            **kwargs: Additional keyword arguments.
+
+        Returns:
+            Tensor: The merged tensor.
+        """
+        # Handle special case for concatenated attention projection layers
+        key = kwargs.get("key", "")
+        if key.endswith(("in_proj_weight", "in_proj_bias")):
+            vs = []
+            for i, k in enumerate(("to_q", "to_k", "to_v")):
+                k_kwargs = kwargs.copy()
+                k_kwargs["key"] = key.replace("in_proj_", f"{k}.")
+                dim = a.shape[0] // 3
+                t_start = dim*i
+                t_end = dim*(i+1)
+                k_a = a[t_start:t_end]
+                k_b = b[t_start:t_end]
+                k_c = c[t_start:t_end]
+                vs.append(MergeMethods.weighted_sum_projection_v2.__wrapped__(k_a, k_b, k_c, **k_kwargs))
+            return torch.cat(vs)
+
+        # Reshape tensors to 2D
+        is_conv_3x3 = len(a.shape) == 4 and a.shape[-1] != 1
+        is_conv_1x1 = len(a.shape) == 4 and a.shape[-1] == 1
+        original_shape = a.shape
+        if is_conv_3x3:
+            shape_2d = (-1, functools.reduce(operator.mul, a.shape[1:]))
+        elif is_conv_1x1:
+            shape_2d = (-1, functools.reduce(operator.mul, a.shape[1:]))
+        elif not a.shape:
+            shape_2d = (1, 1)
+        else:
+            shape_2d = (-1, a.shape[-1])
+
+        a = a.reshape(shape_2d)
+        b = b.reshape(shape_2d)
+        c = c.reshape(shape_2d)
+
+        ba = b - a
+        ca = c - a
+
+        # Calculate alpha values at different levels of granularity
+        key_alpha = torch.nan_to_num((ba * ca).sum() / (ba ** 2).sum(), nan=0, posinf=0, neginf=0)
+        neuron_alpha = torch.nan_to_num((ba * ca).sum(dim=1, keepdim=True) / (ba ** 2).sum(dim=1, keepdim=True), nan=0,
+                                        posinf=0, neginf=0)
+        param_alpha = torch.nan_to_num((ba * ca) / (ba ** 2), nan=0, posinf=0, neginf=0)
+
+        # Interpolate between alpha values based on perplexity
+        alpha = torch.lerp(torch.lerp(key_alpha, neuron_alpha, 2 * perplexity),
+                           torch.lerp(neuron_alpha, param_alpha, 2 * perplexity - 1), perplexity)
+
+        # Perform weighted sum using the interpolated alpha
+        return ((1 - alpha) * a + alpha * b).reshape(original_shape)
+
+    @convert_to_recipe
+    def qr_swap(
+        a: Tensor | SameMergeSpace,
+        b: Tensor | SameMergeSpace,
+        *,
+        alpha: optimizable(Hyper) = 1.0,
+        **kwargs,
+    ) -> Tensor | SameMergeSpace:
+        """
+        Merges tensors 'a' and 'b' by performing QR decomposition on both tensors,
+        interpolating the resulting 'Q' and 'R' matrices, and then multiplying the
+        interpolated matrices to obtain the merged tensor.
+
+        Args:
+            a (Tensor): The first tensor.
+            b (Tensor): The second tensor.
+            alpha (float): The interpolation factor between the 'Q' and 'R' matrices of 'a' and 'b'
+                           (0 <= alpha <= 1).
+            **kwargs: Additional keyword arguments.
+
+        Returns:
+            Tensor: The merged tensor).
+        """
+        if a.dim() == 0:
+            print("Skipping 0 dim tensor (returns a)\n")
+            return a
+
+        # Reshape tensors to 2D
+        is_conv_3x3 = len(a.shape) == 4 and a.shape[-1] != 1
+        is_conv_1x1 = len(a.shape) == 4 and a.shape[-1] == 1
+        original_shape = a.shape
+        if is_conv_3x3:
+            shape_2d = (-1, functools.reduce(operator.mul, a.shape[1:]))
+        elif is_conv_1x1:
+            shape_2d = (-1, functools.reduce(operator.mul, a.shape[1:]))
+        elif not a.shape:
+            shape_2d = (1, 1)
+        else:
+            shape_2d = (-1, a.shape[-1])
+
+        a = a.reshape(shape_2d)
+        b = b.reshape(shape_2d)
+
+        # Perform reduced QR decomposition on both tensors
+        Qa, Ra = torch.linalg.qr(a, mode='reduced')
+        Qb, Rb = torch.linalg.qr(b, mode='reduced')
+
+        # Interpolate the Q and R matrices using alpha
+        Q_merged = Qb * alpha + Qa * (1 - alpha)
+        R_merged = Ra * alpha + Rb * (1 - alpha)
+
+        # Multiply the interpolated matrices to get the merged tensor
+        merged_tensor_2D = Q_merged @ R_merged
+
+        # Reshape the merged tensor back to its original shape
+        merged_tensor = merged_tensor_2D.view(original_shape)
+
+        return merged_tensor

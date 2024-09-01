@@ -150,13 +150,12 @@ class Bounds:
         weights_list = {}
         base_values = {}
 
-        # Get the expected number of parameters from the merging method
+        # Get hyperparameter names from the merging method
         mecha_merge_method = sd_mecha.extensions.merge_method.resolve(cfg.merge_mode)
-        default_hypers = mecha_merge_method.get_default_hypers()
-        expected_param_name = len(mecha_merge_method.get_default_hypers())
+        hyper_names = mecha_merge_method.get_hyper_names()
 
-        # Iterate over the expected parameter names
-        for param_name in default_hypers:
+        # Iterate over hyperparameter names
+        for param_name in hyper_names:
             # Initialize weights_list for the current parameter
             weights_list[param_name] = {}
             for i in range(block_count):
@@ -166,7 +165,7 @@ class Bounds:
             base_name = f"base_{param_name}"
             base_values[base_name] = Bounds.get_value(params, base_name, frozen, groups)
 
-        assert len(weights_list) == expected_param_name
+        assert len(weights_list) == len(hyper_names)  # Check against hyper_names
         print(f"Assembled Weights List: {weights_list}")
         print(f"Assembled Base Values: {base_values}")
         return weights_list, base_values

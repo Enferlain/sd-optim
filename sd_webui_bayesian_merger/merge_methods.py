@@ -6,20 +6,20 @@ import math
 import torch.nn.functional as F
 
 from torch import Tensor
-from typing import Union, Tuple, Callable, TypeVar, Dict, Any, get_args, get_origin
+from typing import Optional, Callable, Dict, Tuple, TypeVar, Generic, get_type_hints, get_origin, Union, get_args, List, Set, Iterable
 from pytorch_wavelets import DWTForward, DWTInverse
 
 from sd_mecha.hypers import Hyper
 from sd_mecha.merge_space import MergeSpace
+from sd_mecha.merge_methods import SameMergeSpace
 from sd_mecha.extensions.merge_method import LiftFlag, convert_to_recipe
 
 EPSILON = 1e-10
-SameMergeSpace = TypeVar("SameMergeSpace", bound=LiftFlag[MergeSpace.BASE | MergeSpace.DELTA])
+
 DeltaMergeSpace = TypeVar("DeltaMergeSpace", bound=LiftFlag[MergeSpace.DELTA])
 
 
 def optimizable(hyper_type):
-    """Marks a hyperparameter as optimizable by Bayesian Merger."""
     return hyper_type
 
 
@@ -91,15 +91,14 @@ class MergeMethods:
     def distribution_crossover(a, b, c, alpha: Hyper, tilt: Hyper, device=None):
         return sd_mecha.distribution_crossover(a, b, c, alpha=alpha, tilt=tilt, device=device)
 
-
     # custom methods
     @convert_to_recipe
     def determinant_sum(
-        a: Tensor | SameMergeSpace,
-        b: Tensor | SameMergeSpace,
-        *,
-        alpha: optimizable(Hyper) = 0.5,
-        **kwargs,
+            a: Tensor | SameMergeSpace,
+            b: Tensor | SameMergeSpace,
+            *,
+            alpha: Hyper = 0.5,
+            **kwargs,
     ) -> Tensor | SameMergeSpace:
         key = kwargs.get("key", "")
         if key.endswith(("in_proj_weight", "in_proj_bias")):
@@ -109,8 +108,8 @@ class MergeMethods:
                 k_kwargs = kwargs.copy()
                 k_kwargs["key"] = key.replace("in_proj_", f"{k}.")
                 dim = a.shape[0] // 3
-                t_start = dim*i
-                t_end = dim*(i+1)
+                t_start = dim * i
+                t_end = dim * (i + 1)
                 k_a = a[t_start:t_end]
                 k_b = b[t_start:t_end]
                 vs.append(MergeMethods.determinant_sum.__wrapped__(k_a, k_b, **k_kwargs))
@@ -153,11 +152,11 @@ class MergeMethods:
 
     @convert_to_recipe
     def wavelet_merge(
-        a: Tensor | SameMergeSpace,
-        b: Tensor | SameMergeSpace,
-        *,
-        alpha: optimizable(Hyper) = 0.5,
-        ** kwargs,
+            a: Tensor | SameMergeSpace,
+            b: Tensor | SameMergeSpace,
+            *,
+            alpha: Hyper = 0.5,
+            **kwargs,
     ) -> Tensor | SameMergeSpace:
         key = kwargs.get("key", "")
         if key.endswith(("in_proj_weight", "in_proj_bias")):
@@ -209,13 +208,13 @@ class MergeMethods:
 
     @convert_to_recipe
     def anchored_guided_alignment(
-        a: Tensor | SameMergeSpace,
-        b: Tensor | SameMergeSpace,
-        c: Tensor | SameMergeSpace,
-        *,
-        alpha: optimizable(Hyper) = 0.5,
-        beta: optimizable(Hyper) = 0.5,
-        ** kwargs,
+            a: Tensor | SameMergeSpace,
+            b: Tensor | SameMergeSpace,
+            c: Tensor | SameMergeSpace,
+            *,
+            alpha: Hyper = 0.5,
+            beta: Hyper = 0.5,
+            **kwargs,
     ) -> Tensor | SameMergeSpace:
         """Merges tensors A and B using anchored neuron train difference with simplified alignment and slerp interpolation.
 
@@ -421,12 +420,12 @@ class MergeMethods:
 
     @convert_to_recipe
     def add_difference_var_clip(
-        a: Tensor | SameMergeSpace,
-        b: Tensor | SameMergeSpace,
-        c: Tensor | SameMergeSpace,
-        *,
-        alpha: optimizable(Hyper) = 1.0,
-        **kwargs,
+            a: Tensor | SameMergeSpace,
+            b: Tensor | SameMergeSpace,
+            c: Tensor | SameMergeSpace,
+            *,
+            alpha: Hyper = 1.0,
+            **kwargs,
     ) -> Tensor | SameMergeSpace:
         bc_corr = torch.corrcoef(torch.stack([
             (b - b.mean()).flatten(),
@@ -440,30 +439,32 @@ class MergeMethods:
 
         min_corr = 0.9999
         if bc_corr < min_corr:
-            bc_scale = torch.sqrt(b_var + c_var - 2 * min_corr * torch.sqrt(b_var * c_var)) / torch.sqrt(b_var + c_var - 2 * bc_cov)
+            bc_scale = torch.sqrt(b_var + c_var - 2 * min_corr * torch.sqrt(b_var * c_var)) / torch.sqrt(
+                b_var + c_var - 2 * bc_cov)
         else:
             bc_scale = 1.0
 
         bc = b - c
         bc = (bc - bc.mean()) * bc_scale + bc.mean()
-        res = a + alpha*bc
+        res = a + alpha * bc
         return (res - res.mean()) * a.std(correction=0) / res.std(correction=0) + a.mean()
 
     @convert_to_recipe
     def gram_schmidt_ortho(
-        a: Tensor | SameMergeSpace,
-        b: Tensor | SameMergeSpace,
-        c: Tensor | SameMergeSpace,
-        *,
-        alpha: optimizable(Hyper) = 1.0,
-        **kwargs,
+            a: Tensor | SameMergeSpace,
+            b: Tensor | SameMergeSpace,
+            c: Tensor | SameMergeSpace,
+            *,
+            alpha: Hyper = 1.0,
+            **kwargs,
     ) -> Tensor | SameMergeSpace:
         # Calculate the vectors
         vector_a = a - c
         vector_b = b - c
 
         # Calculate the projection of B onto A
-        projection_b_on_a = (torch.dot(vector_b.flatten(), vector_a.flatten()) / torch.dot(vector_a.flatten(), vector_a.flatten())) * vector_a
+        projection_b_on_a = (torch.dot(vector_b.flatten(), vector_a.flatten()) / torch.dot(vector_a.flatten(),
+                                                                                           vector_a.flatten())) * vector_a
 
         # Magnitude adjustment based on the difference between A and C
         magnitude_ratio = torch.norm(projection_b_on_a) / torch.norm(vector_a)
@@ -474,16 +475,16 @@ class MergeMethods:
 
     @convert_to_recipe
     def orth_pro(
-        a: Tensor | SameMergeSpace,
-        b: Tensor | SameMergeSpace,
-        c: Tensor | SameMergeSpace,
-        *,
-        alpha: optimizable(Hyper) = 1.0,
-        use_perp: Hyper = 0,
-        ab_only: Hyper = 0,
-        noisy_c: Hyper = 0,
-        noisy_c_sgn_flt: Hyper = 0,
-        **kwargs,
+            a: Tensor | SameMergeSpace,
+            b: Tensor | SameMergeSpace,
+            c: Tensor | SameMergeSpace,
+            *,
+            alpha: Hyper = 1.0,
+            use_perp: Hyper = 0,
+            ab_only: Hyper = 0,
+            noisy_c: Hyper = 0,
+            noisy_c_sgn_flt: Hyper = 0,
+            **kwargs,
     ) -> Tensor | SameMergeSpace:
         """
         Merges tensors 'a' and 'b' using Orthogonal Procrustes alignment with options for perpendicular
@@ -519,7 +520,9 @@ class MergeMethods:
 
         a = a.reshape(shape_2d)
         b = b.reshape(shape_2d)
-        c = c.reshape(shape_2d) if not noisy_c else MergeMethods.create_noisy_tensor(c.reshape(shape_2d), sign_filter=noisy_c_sgn_flt, seed=0)
+        c = c.reshape(shape_2d) if not noisy_c else MergeMethods.create_noisy_tensor(c.reshape(shape_2d),
+                                                                                     sign_filter=noisy_c_sgn_flt,
+                                                                                     seed=0)
         ac = a if ab_only else (a - c)
         bc = b if ab_only else (b - c)
 
@@ -546,9 +549,9 @@ class MergeMethods:
         return mapped_tensor
 
     def create_noisy_tensor(
-        a: Tensor,
-        seed = 218,
-        sign_filter = False,
+            a: Tensor,
+            seed=218,
+            sign_filter=False,
     ) -> Tensor:
         torch.manual_seed(seed)
 
@@ -573,24 +576,26 @@ class MergeMethods:
 
     @staticmethod
     @convert_to_recipe
-    def lu_merge_actual(a, b, c, *, alpha: Hyper, theta: Hyper, **kwargs):
-        # Access device from kwargs
-        device = kwargs["device"]
+    def lu_merge_actual(a: Tensor | SameMergeSpace,
+                        b: Tensor | SameMergeSpace,
+                        c: Tensor | SameMergeSpace,
+                        *, alpha: Hyper, theta: Hyper,
+                        use_perp: Hyper, ab_only: Hyper,
+                        **kwargs) -> Tensor | SameMergeSpace:
 
-        # Directly call the sd-mecha lu_merge function
-        return MergeMethods.lu_merge(a, b, c, alpha=alpha, theta=theta, device=device, **kwargs)
+        return MergeMethods.lu_merge(a, b, c, alpha=alpha, theta=theta, use_perp=use_perp, ab_only=ab_only, **kwargs)
 
     @convert_to_recipe
     def lu_merge(
-        a: Tensor | SameMergeSpace,
-        b: Tensor | SameMergeSpace,
-        c: Tensor | SameMergeSpace,
-        *,
-        alpha: Hyper = 1.0,
-        theta: Hyper = 1.0,
-        use_perp: Hyper = 0,
-        ab_only: Hyper = 0,
-        **kwargs,
+            a: Tensor | SameMergeSpace,
+            b: Tensor | SameMergeSpace,
+            c: Tensor | SameMergeSpace,
+            *,
+            alpha: Hyper = 1.0,
+            theta: Hyper = 1.0,
+            use_perp: Hyper = 0,
+            ab_only: Hyper = 0,
+            **kwargs,
     ) -> Tensor | SameMergeSpace:
         """
         Merges tensors 'a' and 'b' using LU decomposition interpolation with optional alignment adjustments.
@@ -672,14 +677,14 @@ class MergeMethods:
 
     @convert_to_recipe
     def clyb_merge(
-        a: Tensor | SameMergeSpace,
-        b: Tensor | SameMergeSpace,
-        c: Tensor | SameMergeSpace,
-        *,
-        alpha: optimizable(Hyper) = 1.0,
-        use_perp: Hyper = 0,
-        ab_only: Hyper = 0,
-        **kwargs,
+            a: Tensor | SameMergeSpace,
+            b: Tensor | SameMergeSpace,
+            c: Tensor | SameMergeSpace,
+            *,
+            alpha: Hyper = 1.0,
+            use_perp: Hyper = 0,
+            ab_only: Hyper = 0,
+            **kwargs,
     ) -> Tensor | SameMergeSpace:
         """
         Merges tensors 'a' and 'b' using a combination of low-rank approximation, orthogonal projection,
@@ -763,11 +768,11 @@ class MergeMethods:
 
     @convert_to_recipe
     def decompose_merge(
-        a: Tensor | SameMergeSpace,
-        b: Tensor | SameMergeSpace,
-        *,
-        alpha: optimizable(Hyper) = 1.0,
-        **kwargs,
+            a: Tensor | SameMergeSpace,
+            b: Tensor | SameMergeSpace,
+            *,
+            alpha: Hyper = 1.0,
+            **kwargs,
     ) -> Tensor | SameMergeSpace:
         """
         Merges tensors 'a' and 'b' by decomposing 'b' using SVD, aligning the difference
@@ -834,7 +839,7 @@ class MergeMethods:
             a: Tensor | SameMergeSpace,
             b: Tensor | SameMergeSpace,
             *,
-            alpha: optimizable(Hyper) = 1.0,
+            alpha: Hyper = 1.0,
             **kwargs,
     ) -> Tensor | SameMergeSpace:
         """
@@ -901,12 +906,12 @@ class MergeMethods:
 
     @convert_to_recipe
     def weighted_sum_projection_v2(
-        a: Tensor | SameMergeSpace,
-        b: Tensor | SameMergeSpace,
-        c: Tensor | SameMergeSpace,
-        *,
-        perplexity: optimizable(Hyper) = 0.0,
-        **kwargs,
+            a: Tensor | SameMergeSpace,
+            b: Tensor | SameMergeSpace,
+            c: Tensor | SameMergeSpace,
+            *,
+            perplexity: Hyper = 0.0,
+            **kwargs,
     ) -> Tensor | SameMergeSpace:
         """
         Merges tensors 'a' and 'b' using a weighted sum based on vector projection, with the 'perplexity'
@@ -935,8 +940,8 @@ class MergeMethods:
                 k_kwargs = kwargs.copy()
                 k_kwargs["key"] = key.replace("in_proj_", f"{k}.")
                 dim = a.shape[0] // 3
-                t_start = dim*i
-                t_end = dim*(i+1)
+                t_start = dim * i
+                t_end = dim * (i + 1)
                 k_a = a[t_start:t_end]
                 k_b = b[t_start:t_end]
                 k_c = c[t_start:t_end]
@@ -978,11 +983,11 @@ class MergeMethods:
 
     @convert_to_recipe
     def qr_swap(
-        a: Tensor | SameMergeSpace,
-        b: Tensor | SameMergeSpace,
-        *,
-        alpha: optimizable(Hyper) = 1.0,
-        **kwargs,
+            a: Tensor | SameMergeSpace,
+            b: Tensor | SameMergeSpace,
+            *,
+            alpha: Hyper = 1.0,
+            **kwargs,
     ) -> Tensor | SameMergeSpace:
         """
         Merges tensors 'a' and 'b' by performing QR decomposition on both tensors,

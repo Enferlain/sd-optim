@@ -4,6 +4,7 @@ import inspect
 
 from typing import Dict, List, Tuple, get_origin
 from omegaconf import DictConfig, OmegaConf
+from sd_webui_bayesian_merger.mapping import OPTIMIZABLE_HYPERPARAMETERS
 
 from sd_webui_bayesian_merger.merge_methods import MergeMethods
 import sd_mecha
@@ -30,19 +31,19 @@ class Bounds:
         ]
         block_count = len(unet_block_identifiers)
 
+        # Get the default hyperparameters from the merging method
         mecha_merge_method = sd_mecha.extensions.merge_method.resolve(cfg.merge_mode)
+        default_hypers = mecha_merge_method.get_hyper_names()  # changed to get_hyper_names
 
-        # Use get_hyper_names to get the hyperparameter names
-        hyper_names = mecha_merge_method.get_hyper_names()
+        # Get optimizable parameters from the mapping
+        optimizable_params = OPTIMIZABLE_HYPERPARAMETERS.get(cfg.merge_mode, default_hypers)
 
-        # Construct a flattened dictionary for parameter bounds
+        # Create a flattened dictionary for parameter bounds, including only optimizable parameters
         bounds = {}
-        for param_name in hyper_names:
+        for param_name in optimizable_params:
             for i in range(block_count):
-                # Construct a unique key for each block and parameter combination
                 key = f"block_{i}_{param_name}"
                 bounds[key] = (0.0, 1.0)
-            # Add bounds for base parameters
             bounds[f"base_{param_name}"] = (0.0, 1.0)
 
         # Override with custom ranges
@@ -150,12 +151,14 @@ class Bounds:
         weights_list = {}
         base_values = {}
 
-        # Get hyperparameter names from the merging method
+        # Get the expected number of parameters from the merging method
         mecha_merge_method = sd_mecha.extensions.merge_method.resolve(cfg.merge_mode)
-        hyper_names = mecha_merge_method.get_hyper_names()
+        default_hypers = mecha_merge_method.get_hyper_names()  # Get all hyperparameter names
+        optimizable_params = OPTIMIZABLE_HYPERPARAMETERS.get(cfg.merge_mode,
+                                                             default_hypers)  # Get optimizable parameters from the mapping
 
-        # Iterate over hyperparameter names
-        for param_name in hyper_names:
+        # Iterate over optimizable parameter names
+        for param_name in optimizable_params:
             # Initialize weights_list for the current parameter
             weights_list[param_name] = {}
             for i in range(block_count):
@@ -165,7 +168,8 @@ class Bounds:
             base_name = f"base_{param_name}"
             base_values[base_name] = Bounds.get_value(params, base_name, frozen, groups)
 
-        assert len(weights_list) == len(hyper_names)  # Check against hyper_names
+        # Assert that the number of weights matches the number of optimizable parameters
+        assert len(weights_list) == len(optimizable_params)
         print(f"Assembled Weights List: {weights_list}")
         print(f"Assembled Base Values: {base_values}")
         return weights_list, base_values

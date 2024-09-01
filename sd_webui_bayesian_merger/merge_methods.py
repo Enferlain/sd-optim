@@ -91,7 +91,10 @@ class MergeMethods:
     def distribution_crossover(a, b, c, alpha: Hyper, tilt: Hyper, device=None):
         return sd_mecha.distribution_crossover(a, b, c, alpha=alpha, tilt=tilt, device=device)
 
-    # custom methods
+
+    ### CUSTOM METHODS ###
+
+    @staticmethod
     @convert_to_recipe
     def determinant_sum(
             a: Tensor | SameMergeSpace,
@@ -150,6 +153,7 @@ class MergeMethods:
 
         return (a * (1 - alpha) + b * alpha) * ab_rescale
 
+    @staticmethod
     @convert_to_recipe
     def wavelet_merge(
             a: Tensor | SameMergeSpace,
@@ -206,6 +210,7 @@ class MergeMethods:
 
         return merged_tensor.reshape(original_shape)
 
+    @staticmethod
     @convert_to_recipe
     def anchored_guided_alignment(
             a: Tensor | SameMergeSpace,
@@ -418,6 +423,7 @@ class MergeMethods:
         centroid = (frequencies * magnitudes).sum() / (magnitudes.sum() + EPSILON)
         return centroid.item()
 
+    @staticmethod
     @convert_to_recipe
     def add_difference_var_clip(
             a: Tensor | SameMergeSpace,
@@ -449,6 +455,7 @@ class MergeMethods:
         res = a + alpha * bc
         return (res - res.mean()) * a.std(correction=0) / res.std(correction=0) + a.mean()
 
+    @staticmethod
     @convert_to_recipe
     def gram_schmidt_ortho(
             a: Tensor | SameMergeSpace,
@@ -473,6 +480,7 @@ class MergeMethods:
         # Add the adjusted projection to the base model
         return a + adjusted_projection
 
+    @staticmethod
     @convert_to_recipe
     def orth_pro(
             a: Tensor | SameMergeSpace,
@@ -576,16 +584,6 @@ class MergeMethods:
 
     @staticmethod
     @convert_to_recipe
-    def lu_merge_actual(a: Tensor | SameMergeSpace,
-                        b: Tensor | SameMergeSpace,
-                        c: Tensor | SameMergeSpace,
-                        *, alpha: Hyper, theta: Hyper,
-                        use_perp: Hyper, ab_only: Hyper,
-                        **kwargs) -> Tensor | SameMergeSpace:
-
-        return MergeMethods.lu_merge(a, b, c, alpha=alpha, theta=theta, use_perp=use_perp, ab_only=ab_only, **kwargs)
-
-    @convert_to_recipe
     def lu_merge(
             a: Tensor | SameMergeSpace,
             b: Tensor | SameMergeSpace,
@@ -675,6 +673,7 @@ class MergeMethods:
 
         return A_interpolated
 
+    @staticmethod
     @convert_to_recipe
     def clyb_merge(
             a: Tensor | SameMergeSpace,
@@ -766,6 +765,7 @@ class MergeMethods:
 
         return b + a_diff_projected
 
+    @staticmethod
     @convert_to_recipe
     def decompose_merge(
             a: Tensor | SameMergeSpace,
@@ -834,6 +834,7 @@ class MergeMethods:
         # Add the scaled projected difference to A to create the merged tensor
         return a + b_diff_projected * alpha
 
+    @staticmethod
     @convert_to_recipe
     def svd_replace_merge(
             a: Tensor | SameMergeSpace,
@@ -904,6 +905,7 @@ class MergeMethods:
         # Interpolate between the original tensor 'b' and the merged tensor
         return torch.lerp(b, merged_tensor, alpha)
 
+    @staticmethod
     @convert_to_recipe
     def weighted_sum_projection_v2(
             a: Tensor | SameMergeSpace,
@@ -981,6 +983,7 @@ class MergeMethods:
         # Perform weighted sum using the interpolated alpha
         return ((1 - alpha) * a + alpha * b).reshape(original_shape)
 
+    @staticmethod
     @convert_to_recipe
     def qr_swap(
             a: Tensor | SameMergeSpace,

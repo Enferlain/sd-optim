@@ -573,12 +573,12 @@ class MergeMethods:
 
     @staticmethod
     @convert_to_recipe
-    def lu_merge_actual(a, b, c, alpha: Hyper, theta: Hyper, **kwargs):  # Remove device parameter
+    def lu_merge_actual(a, b, c, *, alpha: Hyper, theta: Hyper, **kwargs):
         # Access device from kwargs
         device = kwargs["device"]
 
-        return MergeMethods.lu_merge.__wrapped__(a, b, c, alpha=alpha, theta=theta, use_perp=0, ab_only=0,
-                                                 device=device, **kwargs)
+        # Directly call the sd-mecha lu_merge function
+        return MergeMethods.lu_merge(a, b, c, alpha=alpha, theta=theta, device=device, **kwargs)
 
     @convert_to_recipe
     def lu_merge(

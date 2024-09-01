@@ -5,7 +5,7 @@ import inspect
 from typing import Dict, List, Tuple, get_origin
 from omegaconf import DictConfig, OmegaConf
 
-from sd_webui_bayesian_merger.merge_methods import MergeMethods, optimizable
+from sd_webui_bayesian_merger.merge_methods import MergeMethods
 import sd_mecha
 
 logger = logging.getLogger(__name__)
@@ -30,25 +30,20 @@ class Bounds:
         ]
         block_count = len(unet_block_identifiers)
 
-        # Get the default hyperparameters from the merging method
         mecha_merge_method = sd_mecha.extensions.merge_method.resolve(cfg.merge_mode)
-        default_hypers = mecha_merge_method.get_default_hypers()
 
-        # Create a flattened dictionary for parameter bounds
+        # Use get_hyper_names to get the hyperparameter names
+        hyper_names = mecha_merge_method.get_hyper_names()
+
+        # Construct a flattened dictionary for parameter bounds
         bounds = {}
-
-        # Add bounds for base parameters
-        for param_name in default_hypers:
+        for param_name in hyper_names:
+            for i in range(block_count):
+                # Construct a unique key for each block and parameter combination
+                key = f"block_{i}_{param_name}"
+                bounds[key] = (0.0, 1.0)
+            # Add bounds for base parameters
             bounds[f"base_{param_name}"] = (0.0, 1.0)
-
-        # Add bounds for optimizable parameters (from redirected function)
-        redirected_function = getattr(MergeMethods, cfg.merge_mode)
-        signature = inspect.signature(redirected_function)
-        for param_name, param in signature.parameters.items():
-            if param.kind == inspect.Parameter.KEYWORD_ONLY and get_origin(param.annotation) is optimizable:
-                for i in range(block_count):
-                    key = f"block_{i}_{param_name}"
-                    bounds[key] = (0.0, 1.0)
 
         # Override with custom ranges
         bounds.update(OmegaConf.to_object(custom_ranges))

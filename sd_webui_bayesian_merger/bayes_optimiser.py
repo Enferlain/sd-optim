@@ -10,6 +10,7 @@ from sd_webui_bayesian_merger.optimiser import Optimiser
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.DEBUG)
 
+
 class BayesOptimiser(Optimiser):
     bounds_transformer = SequentialDomainReductionTransformer()
 
@@ -56,6 +57,7 @@ class BayesOptimiser(Optimiser):
         # No need to assign scores, best_weights, or best_bases here
 
         self.artist.visualize_optimization()  # Call the Artist's visualize_optimization method
+
 
 def parse_scores(iterations: List[Dict]) -> List[float]:
     return [r["target"] for r in iterations]

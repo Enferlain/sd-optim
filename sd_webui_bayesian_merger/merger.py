@@ -3,6 +3,7 @@ import sd_mecha
 import torch
 import os
 import requests
+import inspect
 
 from hydra.core.hydra_config import HydraConfig
 from dataclasses import dataclass
@@ -67,6 +68,13 @@ class Merger:
                 relative_path = os.path.relpath(self.cfg[model_key], models_dir)
                 model = sd_mecha.model(relative_path, self.cfg.model_arch)
                 models.append(model)
+
+        # Determine the number of models supported by the merging method
+        num_supported_models = len(inspect.signature(getattr(MergeMethods, self.cfg.merge_mode)).parameters)
+
+        # Adjust the models list based on the supported model count
+        if len(models) > num_supported_models:
+            models = models[:num_supported_models]  # Truncate the list if too many models are provided
 
         # Get the merging method's default hyperparameters
         mecha_merge_method = sd_mecha.extensions.merge_method.resolve(self.cfg.merge_mode)

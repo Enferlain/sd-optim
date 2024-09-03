@@ -18,31 +18,28 @@ logging.basicConfig(level=logging.INFO)
 def on_app_started(_gui, api):
     @api.post("/bbwm/merge-models")
     async def merge_models_api(
-            base_values: dict = fastapi.Body(..., title="Base Values"),
-            weights_list: dict = fastapi.Body(..., title="Weights List"),
-            model_paths: list = fastapi.Body(..., title="Paths to Models"),  # Accept a list of model paths
-            merge_method: str = fastapi.Body(..., title="Merge Method"),
-            model_arch: str = fastapi.Body(..., title="Model Architecture"),
-            save_path: str = fastapi.Body(None, title="Save Path"),
-            webui: str = fastapi.Body(..., title="WebUI Type"),
+        base_values: dict = fastapi.Body(..., title="Base Values"),
+        weights_list: dict = fastapi.Body(..., title="Weights List"),
+        model_paths: list[str] = fastapi.Body(..., title="Paths to Models"),
+        merge_method: str = fastapi.Body(..., title="Merge Method"),
+        model_arch: str = fastapi.Body(..., title="Model Architecture"),
+        save_path: str = fastapi.Body(None, title="Save Path"),
+        webui: str = fastapi.Body(..., title="WebUI Type"),  # Add webui parameter
     ):
         """Merges models using sd-mecha and saves the result."""
 
         # Create the configuration object
         cfg = {
+            "model_paths": model_paths,  # Use the model_paths list directly
             "model_arch": model_arch,
             "merge_mode": merge_method,
             "webui": webui,
         }
 
-        # Add model paths to the configuration
-        for i, model_path in enumerate(model_paths, start=1):
-            cfg[f"model_{i}"] = model_path
-
         # Create a list of sd-mecha models
         models = [
-            sd_mecha.model(cfg[f"model_{i}"], model_arch)
-            for i in range(1, len(model_paths) + 1)  # Iterate based on the number of model paths
+            sd_mecha.model(model_path, model_arch)
+            for model_path in cfg["model_paths"]
         ]
 
         # Call the merging method using MergeMethods class

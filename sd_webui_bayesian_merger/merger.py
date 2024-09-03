@@ -12,6 +12,7 @@ from typing import Dict
 from omegaconf import DictConfig
 from sd_webui_bayesian_merger.merge_methods import MergeMethods
 
+logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO)
 
 
@@ -30,37 +31,42 @@ class Merger:
             if not getattr(self.cfg, field, None):
                 raise ValueError(f"Configuration missing required field: {field}")
 
+    def _get_expected_num_models(self, models: list):
+        mecha_merge_method = sd_mecha.extensions.merge_method.resolve(self.cfg.merge_mode)
+        if mecha_merge_method.get_model_varargs_name() is not None:
+            return 2  # Assume a minimum of 2 models for variable-length methods
+        else:
+            expected_num_models = len(inspect.signature(mecha_merge_method.__call__).parameters)
+            num_models = len(models)
+            if num_models != expected_num_models:  # Use != for inequality check
+                models = models[:expected_num_models]  # Slice the models list
+                num_models = len(models)  # Update num_models after slicing
+                logger.warning(
+                    f"Merging method '{self.cfg.merge_mode}' expects {expected_num_models} models, but {num_models} were provided. Using the first {expected_num_models} models."
+                )
+            return expected_num_models
+
     def create_model_out_name(self, it: int = 0) -> None:
-        max_filename_length = 255  # Set the maximum filename length
-        reserved_length = len("bbwm-") + len(f"-it_{it}") + len(".safetensors")  # Length of reserved components
+        max_filename_length = 255
+        reserved_length = len(f"bbwm--it_{it}.safetensors")  # Calculate reserved length dynamically
         max_model_name_length = max_filename_length - reserved_length
 
-        model_names = [Path(path).stem for path in self.cfg.model_paths]
-        combined_name = '-'.join(model_names)
+        model_names = [Path(path).stem for path in self.cfg.model_paths[:self._get_expected_num_models(models)]]
+        combined_name = '-'.join(model_names)[:max_model_name_length]  # Truncate within the join
 
-        # Truncate the combined name if it exceeds the limit
-        if len(combined_name) > max_model_name_length:
-            combined_name = combined_name[:max_model_name_length]
-
-        model_out_name = f"bbwm-{combined_name}-it_{it}.safetensors"
-        self.model_out_name = model_out_name
-        self.output_file = Path(Path(self.cfg.model_paths[0]).parent, model_out_name)
+        self.model_out_name = f"bbwm-{combined_name}-it_{it}.safetensors"
+        self.output_file = Path(Path(self.cfg.model_paths[0]).parent, self.model_out_name)
 
     def create_best_model_out_name(self, it: int = 0) -> None:
-        max_filename_length = 255  # Set the maximum filename length
-        reserved_length = len("bbwm-") + len(f"-it_{it}_best") + len(f"-fp{self.cfg.best_precision}") + len(
-            ".safetensors")  # Length of reserved components
+        max_filename_length = 255
+        reserved_length = len(f"bbwm--it_{it}_best-fp{self.cfg.best_precision}.safetensors")
         max_model_name_length = max_filename_length - reserved_length
 
-        model_names = [Path(path).stem for path in self.cfg.model_paths]
-        combined_name = '-'.join(model_names)
+        model_names = [Path(path).stem for path in self.cfg.model_paths[:self._get_expected_num_models(models)]]
+        combined_name = '-'.join(model_names)[:max_model_name_length]
 
-        # Truncate the combined name if it exceeds the limit
-        if len(combined_name) > max_model_name_length:
-            combined_name = combined_name[:max_model_name_length]
-
-        model_out_name = f"bbwm-{combined_name}-it_{it}_best-fp{self.cfg.best_precision}.safetensors"
-        self.best_output_file = Path(Path(self.cfg.model_paths[0]).parent, model_out_name)
+        self.best_output_file = Path(Path(self.cfg.model_paths[0]).parent,
+                                     f"bbwm-{combined_name}-it_{it}_best-fp{self.cfg.best_precision}.safetensors")
 
     def merge(
             self,
@@ -72,30 +78,36 @@ class Merger:
             models_dir=None,  # Add models_dir as a parameter
     ) -> Path:  # Return the model path
 
-        # Use the correct model output path based on save_best
-        if save_best:
-            model_path = self.best_output_file
-        else:
-            model_path = self.output_file
-
-        models = []
-        i = 1
-        while f"model_{i}" in self.cfg:
-            model_key = f"model_{i}"
-            relative_path = os.path.relpath(self.cfg[model_key], models_dir)
-            model = sd_mecha.model(relative_path, self.cfg.model_arch)
-            models.append(model)
-            i += 1
-
         # Get the merging method's default hyperparameters
         mecha_merge_method = sd_mecha.extensions.merge_method.resolve(self.cfg.merge_mode)
         default_hypers = mecha_merge_method.get_default_hypers()
+
+        # Use the correct model output path based on save_best
+        model_path = self.best_output_file if save_best else self.output_file
+
+        # Dynamically create ModelRecipeNodes for all models in cfg, using sd_mecha.model
+        models = [sd_mecha.model(os.path.relpath(model_path, models_dir), self.cfg.model_arch) for model_path in
+                  self.cfg.get("model_paths", [])]
+
+        # Check if the number of models is compatible with the merging method
+        num_models = len(models)
+
+        # Get the expected number of models using the helper function
+        expected_num_models = self._get_expected_num_models(models)
+
+        # Only slice the models list if the method does NOT accept a variable number of models
+        if mecha_merge_method.get_model_varargs_name() is None and num_models != expected_num_models:
+            models = models[:expected_num_models]  # Slice the models list
+            num_models = len(models)  # Update num_models after slicing
+            logger.warning(
+                f"Merging method '{self.cfg.merge_mode}' expects {expected_num_models} models, but {num_models} were provided. Using the first {expected_num_models} models."
+            )
 
         # Merge base_values and weights_list into a single dictionary, using the mapping
         all_hypers = {}
         for param_name in weights_list:
             # Get the base value for the current parameter from sd-mecha's defaults
-            base_value = base_values.get(f"base_{param_name}", default_hypers.get(param_name, 0.5)) # Remove [0]
+            base_value = base_values.get(f"base_{param_name}", default_hypers.get(param_name, 0.5))
 
             print(f"param_name: {param_name}, base_value: {base_value}")
 

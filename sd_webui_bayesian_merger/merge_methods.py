@@ -91,10 +91,13 @@ class MergeMethods:
     def distribution_crossover(a, b, c, alpha: Hyper, tilt: Hyper, device=None):
         return sd_mecha.distribution_crossover(a, b, c, alpha=alpha, tilt=tilt, device=device)
 
-
+    @staticmethod
+    def geometric_median(*models, eps: Hyper, maxiter: Hyper, ftol: Hyper, **kwargs):
+        return sd_mecha.geometric_median(*models, eps=eps, maxiter=maxiter, ftol=ftol, **kwargs)
 
 
     ### CUSTOM METHODS ###
+
 
     @staticmethod
     @convert_to_recipe

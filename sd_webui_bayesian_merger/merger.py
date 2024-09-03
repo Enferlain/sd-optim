@@ -25,24 +25,42 @@ class Merger:
         self.create_best_model_out_name()
 
     def validate_config(self):
-        required_fields = ['model_a', 'model_b', 'merge_mode', 'model_arch']
+        required_fields = ['model_paths', 'merge_mode', 'model_arch']  # Update required fields
         for field in required_fields:
             if not getattr(self.cfg, field, None):
                 raise ValueError(f"Configuration missing required field: {field}")
 
     def create_model_out_name(self, it: int = 0) -> None:
-        model_out_name = f"bbwm-{Path(self.cfg.model_a).stem}-{Path(self.cfg.model_b).stem}"
-        model_out_name += f"-it_{it}"
-        model_out_name += ".safetensors"
-        self.model_out_name = model_out_name
-        self.output_file = Path(Path(self.cfg.model_a).parent, model_out_name)
+        max_filename_length = 255  # Set the maximum filename length
+        reserved_length = len("bbwm-") + len(f"-it_{it}") + len(".safetensors")  # Length of reserved components
+        max_model_name_length = max_filename_length - reserved_length
 
-    def create_best_model_out_name(self, it: int = 0) -> None:  # Accept the iteration number as an argument
-        model_out_name = f"bbwm-{Path(self.cfg.model_a).stem}-{Path(self.cfg.model_b).stem}"
-        model_out_name += f"-it_{it}_best"  # Include the iteration number in the filename
-        model_out_name += f"-fp{self.cfg.best_precision}"
-        model_out_name += f".safetensors"
-        self.best_output_file = Path(Path(self.cfg.model_a).parent, model_out_name)
+        model_names = [Path(path).stem for path in self.cfg.model_paths]
+        combined_name = '-'.join(model_names)
+
+        # Truncate the combined name if it exceeds the limit
+        if len(combined_name) > max_model_name_length:
+            combined_name = combined_name[:max_model_name_length]
+
+        model_out_name = f"bbwm-{combined_name}-it_{it}.safetensors"
+        self.model_out_name = model_out_name
+        self.output_file = Path(Path(self.cfg.model_paths[0]).parent, model_out_name)
+
+    def create_best_model_out_name(self, it: int = 0) -> None:
+        max_filename_length = 255  # Set the maximum filename length
+        reserved_length = len("bbwm-") + len(f"-it_{it}_best") + len(f"-fp{self.cfg.best_precision}") + len(
+            ".safetensors")  # Length of reserved components
+        max_model_name_length = max_filename_length - reserved_length
+
+        model_names = [Path(path).stem for path in self.cfg.model_paths]
+        combined_name = '-'.join(model_names)
+
+        # Truncate the combined name if it exceeds the limit
+        if len(combined_name) > max_model_name_length:
+            combined_name = combined_name[:max_model_name_length]
+
+        model_out_name = f"bbwm-{combined_name}-it_{it}_best-fp{self.cfg.best_precision}.safetensors"
+        self.best_output_file = Path(Path(self.cfg.model_paths[0]).parent, model_out_name)
 
     def merge(
             self,
@@ -60,21 +78,14 @@ class Merger:
         else:
             model_path = self.output_file
 
-        # Dynamically create ModelRecipeNodes for all models in cfg, using sd_mecha.model
         models = []
-        for model_key in ["model_a", "model_b", "model_c"]:
-            if model_key in self.cfg:
-                # Use the passed models_dir for relative path calculation
-                relative_path = os.path.relpath(self.cfg[model_key], models_dir)
-                model = sd_mecha.model(relative_path, self.cfg.model_arch)
-                models.append(model)
-
-        # Determine the number of models supported by the merging method
-        num_supported_models = len(inspect.signature(getattr(MergeMethods, self.cfg.merge_mode)).parameters)
-
-        # Adjust the models list based on the supported model count
-        if len(models) > num_supported_models:
-            models = models[:num_supported_models]  # Truncate the list if too many models are provided
+        i = 1
+        while f"model_{i}" in self.cfg:
+            model_key = f"model_{i}"
+            relative_path = os.path.relpath(self.cfg[model_key], models_dir)
+            model = sd_mecha.model(relative_path, self.cfg.model_arch)
+            models.append(model)
+            i += 1
 
         # Get the merging method's default hyperparameters
         mecha_merge_method = sd_mecha.extensions.merge_method.resolve(self.cfg.merge_mode)
@@ -120,7 +131,7 @@ class Merger:
             f.write(sd_mecha.recipe_serializer.serialize(merged_model))
 
         # Execute the merge using sd-mecha and save to the determined model path
-        recipe_merger = sd_mecha.RecipeMerger(models_dir=Path(self.cfg.model_a).parent)
+        recipe_merger = sd_mecha.RecipeMerger(models_dir=Path(self.cfg.model_paths[0]).parent)
         recipe_merger.merge_and_save(
             merged_model,
             output=model_path,

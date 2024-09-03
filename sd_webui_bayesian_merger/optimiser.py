@@ -102,7 +102,7 @@ class Optimiser:
 
         # Pass the models directory to the merge function
         model_path = self.merger.merge(weights_list, base_values, cfg=self.cfg, device=self.cfg.device,
-                                       models_dir=Path(self.cfg.model_a).parent)
+                                       models_dir=Path(self.cfg.model_paths[0]).parent)
 
         # Send a request to the API to load the merged model
         r = requests.post(url=f"{self.cfg.url}/bbwm/load-model",

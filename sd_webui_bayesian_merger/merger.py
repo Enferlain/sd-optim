@@ -9,7 +9,7 @@ from hydra.core.hydra_config import HydraConfig
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict
-from omegaconf import DictConfig
+from omegaconf import DictConfig, open_dict
 from sd_webui_bayesian_merger.merge_methods import MergeMethods
 
 logger = logging.getLogger(__name__)
@@ -22,6 +22,12 @@ class Merger:
 
     def __post_init__(self) -> None:
         self.validate_config()
+
+        # Add models_dir to the configuration object
+        with open_dict(self.cfg):
+            self.cfg.models_dir = str(Path(self.cfg.model_paths[0]).parent)
+
+        self.models = self._create_models()
         self.create_model_out_name()
         self.create_best_model_out_name()
 
@@ -31,27 +37,19 @@ class Merger:
             if not getattr(self.cfg, field, None):
                 raise ValueError(f"Configuration missing required field: {field}")
 
-    def _get_expected_num_models(self, models: list):
-        mecha_merge_method = sd_mecha.extensions.merge_method.resolve(self.cfg.merge_mode)
-        if mecha_merge_method.get_model_varargs_name() is not None:
-            return 2  # Assume a minimum of 2 models for variable-length methods
-        else:
-            expected_num_models = len(inspect.signature(mecha_merge_method.__call__).parameters)
-            num_models = len(models)
-            if num_models != expected_num_models:  # Use != for inequality check
-                models = models[:expected_num_models]  # Slice the models list
-                num_models = len(models)  # Update num_models after slicing
-                logger.warning(
-                    f"Merging method '{self.cfg.merge_mode}' expects {expected_num_models} models, but {num_models} were provided. Using the first {expected_num_models} models."
-                )
-            return expected_num_models
+    def _create_models(self) -> list:
+        """Dynamically creates ModelRecipeNodes for all models in cfg, using sd_mecha.model."""
+        models = [sd_mecha.model(os.path.relpath(model_path, self.cfg.models_dir), self.cfg.model_arch) for model_path
+                  in
+                  self.cfg.get("model_paths", [])]
+        return models
 
     def create_model_out_name(self, it: int = 0) -> None:
         max_filename_length = 255
         reserved_length = len(f"bbwm--it_{it}.safetensors")  # Calculate reserved length dynamically
         max_model_name_length = max_filename_length - reserved_length
 
-        model_names = [Path(path).stem for path in self.cfg.model_paths[:self._get_expected_num_models(models)]]
+        model_names = [Path(path).stem for path in self.cfg.model_paths[:self._get_expected_num_models(self.models)]]
         combined_name = '-'.join(model_names)[:max_model_name_length]  # Truncate within the join
 
         self.model_out_name = f"bbwm-{combined_name}-it_{it}.safetensors"
@@ -62,11 +60,18 @@ class Merger:
         reserved_length = len(f"bbwm--it_{it}_best-fp{self.cfg.best_precision}.safetensors")
         max_model_name_length = max_filename_length - reserved_length
 
-        model_names = [Path(path).stem for path in self.cfg.model_paths[:self._get_expected_num_models(models)]]
+        model_names = [Path(path).stem for path in self.cfg.model_paths[:self._get_expected_num_models(self.models)]]
         combined_name = '-'.join(model_names)[:max_model_name_length]
 
         self.best_output_file = Path(Path(self.cfg.model_paths[0]).parent,
                                      f"bbwm-{combined_name}-it_{it}_best-fp{self.cfg.best_precision}.safetensors")
+
+    def _get_expected_num_models(self, models: list) -> int:  # Add models as an argument
+        mecha_merge_method = sd_mecha.extensions.merge_method.resolve(self.cfg.merge_mode)
+        if mecha_merge_method.get_model_varargs_name() is not None:
+            return 2  # Assume a minimum of 2 models for variable-length methods
+        else:
+            return len(mecha_merge_method.get_model_names())
 
     def merge(
             self,
@@ -85,20 +90,15 @@ class Merger:
         # Use the correct model output path based on save_best
         model_path = self.best_output_file if save_best else self.output_file
 
-        # Dynamically create ModelRecipeNodes for all models in cfg, using sd_mecha.model
-        models = [sd_mecha.model(os.path.relpath(model_path, models_dir), self.cfg.model_arch) for model_path in
-                  self.cfg.get("model_paths", [])]
-
         # Check if the number of models is compatible with the merging method
-        num_models = len(models)
+        num_models = len(self.models)  # Access models from self.models
 
         # Get the expected number of models using the helper function
-        expected_num_models = self._get_expected_num_models(models)
+        expected_num_models = self._get_expected_num_models(self.models)  # Pass self.models to the helper function
 
         # Only slice the models list if the method does NOT accept a variable number of models
         if mecha_merge_method.get_model_varargs_name() is None and num_models != expected_num_models:
-            models = models[:expected_num_models]  # Slice the models list
-            num_models = len(models)  # Update num_models after slicing
+            self.models = self.models[:expected_num_models]  # Slice self.models
             logger.warning(
                 f"Merging method '{self.cfg.merge_mode}' expects {expected_num_models} models, but {num_models} were provided. Using the first {expected_num_models} models."
             )
@@ -126,7 +126,7 @@ class Merger:
         r.raise_for_status()
 
         # Call the merging method from MergeMethods directly, passing device and default_dtype
-        merged_model = getattr(MergeMethods, self.cfg.merge_mode)(*models, device=self.cfg.device, **all_hypers)
+        merged_model = getattr(MergeMethods, self.cfg.merge_mode)(*self.models, device=self.cfg.device, **all_hypers)
 
         # Get the Hydra log directory
         log_dir = Path(HydraConfig.get().runtime.output_dir)

@@ -840,12 +840,13 @@ class MergeMethods:
         return a + b_diff_projected * alpha
 
     @staticmethod
-    @convert_to_recipe
+    @convert_to_recipe(volatile_hypers=["cache"])
     def svd_replace_merge(
             a: Tensor | SameMergeSpace,
             b: Tensor | SameMergeSpace,
             *,
             alpha: Hyper = 1.0,
+            cache: Optional[Dict[str, Dict[str, Tensor]]] = None,
             **kwargs,
     ) -> Tensor | SameMergeSpace:
         """
@@ -856,6 +857,7 @@ class MergeMethods:
             a (Tensor): The first tensor, whose singular values will be used to modify 'b'.
             b (Tensor): The second tensor, whose structure will be retained but modified with 'a's singular values .
             alpha (float): The interpolation factor between the original tensor 'b' and the merged tensor (0 <= alpha <= 1).
+            cache: Cache svd results to reuse and skip computation in subsequent iterations.
             **kwargs: Additional keyword arguments.
 
         Returns:
@@ -877,35 +879,42 @@ class MergeMethods:
         a = a.reshape(shape_2d)
         b = b.reshape(shape_2d)
 
-        res = MergeMethods.SVD_Replace(a, b, alpha)
+        res = MergeMethods.SVD_Replace(a, b, alpha, cache=cache, **kwargs)
 
         return res.reshape(original_shape)
 
-    def SVD_Replace(a, b, alpha):
+    def SVD_Replace(a, b, alpha, cache: Optional[Dict[str, Dict[str, Tensor]]] = None, **kwargs):
         """
-        Performs the core merging operation using SVD.
+        Performs the core merging operation using SVD, with caching for optimization.
 
         Args:
             a (Tensor): The source tensor (2D), providing the singular values.
             b (Tensor): The target tensor (2D), whose structure is retained.
-            alpha (float): The interpolation factor between the original tensor 'b' and the merged tensor.
+            alpha (float): The interpolation factor.
+            cache:  A dictionary for caching SVD results.
 
         Returns:
             Tensor: The merged tensor (2D).
         """
-        Ua, Sa, Va = None, None, None
-        Ub, Sb, Vb = None, None, None
-        if a.shape[0] + 10 < a.shape[1]:
-            svd_driver = "gesvdj" if a.is_cuda else None
-            Ua, Sa, Va = torch.linalg.svd(a, full_matrices=False, driver=svd_driver)
-            Ub, Sb, Vb = torch.linalg.svd(b, full_matrices=False, driver=svd_driver)
-        else:
-            svd_driver = "gesvd" if a.is_cuda else None
-            Ua, Sa, Va = torch.linalg.svd(a, full_matrices=False, driver=svd_driver)
-            Ub, Sb, Vb = torch.linalg.svd(b, full_matrices=False, driver=svd_driver)
+        # Determine the SVD driver based on CUDA availability
+        svd_driver = "gesvdj" if a.is_cuda else "gesvd"
+        Ua, Sa, Va = torch.linalg.svd(a, full_matrices=False, driver=svd_driver)
+        Ub, Sb, Vb = torch.linalg.svd(b, full_matrices=False, driver=svd_driver)
 
-        # Reconstruct 'b' using the singular values from 'a'
-        merged_tensor = torch.mm(Ub, torch.mm(torch.diag(Sa), Vb.t()))
+        # Check if merged_tensor is already cached
+        if cache is not None:
+            key = kwargs["key"]
+            if key not in cache:
+                cache[key] = {}
+            cache = cache[key]
+
+        if cache is not None and "merged_tensor" in cache:
+            merged_tensor = cache["merged_tensor"].to(a.device, a.dtype)
+        else:
+            # Reconstruct 'b' using the singular values from 'a' (Vb is already transposed)
+            merged_tensor = torch.mm(Ub, torch.mm(torch.diag(Sa), Vb))
+            if cache is not None:
+                cache["merged_tensor"] = merged_tensor.to("cpu")
 
         # Interpolate between the original tensor 'b' and the merged tensor
         return torch.lerp(b, merged_tensor, alpha)

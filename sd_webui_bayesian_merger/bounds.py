@@ -38,13 +38,17 @@ class Bounds:
         # Get optimizable parameters from the mapping
         optimizable_params = OPTIMIZABLE_HYPERPARAMETERS.get(cfg.merge_mode, default_hypers)
 
+        # Get volatile hyperparameters
+        volatile_hypers = mecha_merge_method.get_volatile_hyper_names()
+
         # Create a flattened dictionary for parameter bounds, including only optimizable parameters
         bounds = {}
         for param_name in optimizable_params:
-            for i in range(block_count):
-                key = f"block_{i}_{param_name}"
-                bounds[key] = (0.0, 1.0)
-            bounds[f"base_{param_name}"] = (0.0, 1.0)
+            if param_name not in volatile_hypers:  # Exclude volatile hyperparameters
+                for i in range(block_count):
+                    key = f"block_{i}_{param_name}"
+                    bounds[key] = (0.0, 1.0)
+                bounds[f"base_{param_name}"] = (0.0, 1.0)
 
         # Override with custom ranges
         bounds.update(OmegaConf.to_object(custom_ranges))
@@ -154,22 +158,22 @@ class Bounds:
         # Get the expected number of parameters from the merging method
         mecha_merge_method = sd_mecha.extensions.merge_method.resolve(cfg.merge_mode)
         default_hypers = mecha_merge_method.get_hyper_names()  # Get all hyperparameter names
-        optimizable_params = OPTIMIZABLE_HYPERPARAMETERS.get(cfg.merge_mode,
-                                                             default_hypers)  # Get optimizable parameters from the mapping
+        optimizable_params = OPTIMIZABLE_HYPERPARAMETERS.get(cfg.merge_mode, default_hypers)  # Get optimizable parameters from the mapping
+        volatile_hypers = mecha_merge_method.get_volatile_hyper_names()  # Get volatile hyperparameters
 
         # Iterate over optimizable parameter names
         for param_name in optimizable_params:
-            # Initialize weights_list for the current parameter
-            weights_list[param_name] = {}
-            for i in range(block_count):
-                key = f"block_{i}_{param_name}"
-                weights_list[param_name][unet_block_identifiers[i]] = Bounds.get_value(params, key, frozen, groups)
+            if param_name not in volatile_hypers:  # Exclude volatile hyperparameters
+                # Initialize weights_list for the current parameter
+                weights_list[param_name] = {}
+                for i in range(block_count):
+                    key = f"block_{i}_{param_name}"
+                    weights_list[param_name][unet_block_identifiers[i]] = Bounds.get_value(params, key, frozen, groups)
 
-            base_name = f"base_{param_name}"
-            base_values[base_name] = Bounds.get_value(params, base_name, frozen, groups)
+                base_name = f"base_{param_name}"
+                base_values[base_name] = Bounds.get_value(params, base_name, frozen, groups)
 
-        # Assert that the number of weights matches the number of optimizable parameters
-        assert len(weights_list) == len(optimizable_params)
+        assert len(weights_list) == len(optimizable_params) - len(volatile_hypers)  # Adjust assertion
         print(f"Assembled Weights List: {weights_list}")
         print(f"Assembled Base Values: {base_values}")
         return weights_list, base_values

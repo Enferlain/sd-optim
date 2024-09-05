@@ -40,6 +40,7 @@ class Optimiser:
         self.prompter = Prompter(self.cfg)
         self.iteration = 0
         self.best_model_path = None
+        self.cache = {}
 
         # import artist inside
         from sd_webui_bayesian_merger.artist import Artist
@@ -101,7 +102,7 @@ class Optimiser:
         r.raise_for_status()
 
         # Pass the models directory to the merge function
-        model_path = self.merger.merge(weights_list, base_values, cfg=self.cfg, device=self.cfg.device,
+        model_path = self.merger.merge(weights_list, base_values, cfg=self.cfg, device=self.cfg.device, cache=self.cache,
                                        models_dir=Path(self.cfg.model_paths[0]).parent)
 
         # Send a request to the API to load the merged model

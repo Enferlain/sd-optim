@@ -66,10 +66,11 @@ class Merger:
         self.best_output_file = Path(Path(self.cfg.model_paths[0]).parent,
                                      f"bbwm-{combined_name}-it_{it}_best-fp{self.cfg.best_precision}.safetensors")
 
-    def _get_expected_num_models(self, models: list) -> int:  # Add models as an argument
+    def _get_expected_num_models(self, models: list) -> int:
         mecha_merge_method = sd_mecha.extensions.merge_method.resolve(self.cfg.merge_mode)
         if mecha_merge_method.get_model_varargs_name() is not None:
-            return 2  # Assume a minimum of 2 models for variable-length methods
+            # Return the actual number of models in the configuration, but at least 2
+            return max(2, len(self.cfg.model_paths))  # Use self.cfg.model_paths for the actual count
         else:
             return len(mecha_merge_method.get_model_names())
 
@@ -80,6 +81,7 @@ class Merger:
             save_best: bool = False,
             cfg=None,
             device=None,
+            cache=None,
             models_dir=None,  # Add models_dir as a parameter
     ) -> Path:  # Return the model path
 
@@ -126,7 +128,7 @@ class Merger:
         r.raise_for_status()
 
         # Call the merging method from MergeMethods directly, passing device and default_dtype
-        merged_model = getattr(MergeMethods, self.cfg.merge_mode)(*self.models, device=self.cfg.device, **all_hypers)
+        merged_model = getattr(MergeMethods, self.cfg.merge_mode)(*self.models, device=self.cfg.device, cache=cache, **all_hypers)
 
         # Get the Hydra log directory
         log_dir = Path(HydraConfig.get().runtime.output_dir)

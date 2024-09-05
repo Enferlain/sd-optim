@@ -13,12 +13,14 @@ webui: a1111  # or "forge"
 
 wildcards_dir: path/to/wildcards/folder
 
-model_a: path/to/model_a/file
-model_b: path/to/model_b/file
-model_c: path/to/model_c/file
+model_paths:  # Use a list to specify model paths (first 3 are treated as abc)
+  - path/to/model_a.safetensors
+  - path/to/model_b.safetensors
+  - path/to/model_c.safetensors
+  - path/to/model_n.safetensors
 
 device: cpu # specify device to merge on (cpu, cuda)
-threads: 6
+threads: 4
 
 merge_mode: weighted_sum # specify merge method https://github.com/ljleb/sd-mecha/blob/main/sd_mecha/merge_methods/__init__.py
 model_arch: sdxl  # specify model architecture (sd1, sdxl, sd3)
@@ -72,7 +74,7 @@ save_best: True
 best_precision: 16 # 32
 
 visualizations:
-  scatter_plot: True
+  scatter_plot: True # not implemented
   unet_diagram: True
   convergence_plot: True
-  heatmap: True
+  heatmap: True # not implemented

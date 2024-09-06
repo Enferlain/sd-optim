@@ -896,12 +896,8 @@ class MergeMethods:
         Returns:
             Tensor: The merged tensor (2D).
         """
-        # Determine the SVD driver based on CUDA availability
-        svd_driver = "gesvdj" if a.is_cuda else "gesvd"
-        Ua, Sa, Va = torch.linalg.svd(a, full_matrices=False, driver=svd_driver)
-        Ub, Sb, Vb = torch.linalg.svd(b, full_matrices=False, driver=svd_driver)
 
-        # Check if merged_tensor is already cached
+        # Check if merged_tensor is already cached BEFORE performing SVD
         if cache is not None:
             key = kwargs["key"]
             if key not in cache:
@@ -911,6 +907,11 @@ class MergeMethods:
         if cache is not None and "merged_tensor" in cache:
             merged_tensor = cache["merged_tensor"].to(a.device, a.dtype)
         else:
+            # Determine the SVD driver based on CUDA availability
+            svd_driver = "gesvdj" if a.is_cuda else "gesvd"
+            Ua, Sa, Va = torch.linalg.svd(a, full_matrices=False, driver=svd_driver)
+            Ub, Sb, Vb = torch.linalg.svd(b, full_matrices=False, driver=svd_driver)
+
             # Reconstruct 'b' using the singular values from 'a' (Vb is already transposed)
             merged_tensor = torch.mm(Ub, torch.mm(torch.diag(Sa), Vb))
             if cache is not None:

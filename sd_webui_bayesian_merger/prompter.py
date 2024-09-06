@@ -8,6 +8,7 @@ from omegaconf import DictConfig, ListConfig, OmegaConf
 
 PathT = os.PathLike
 
+
 class CardDealer:
     def __init__(self, wildcards_dir: str):
         self.wildcards_dir = Path(wildcards_dir)

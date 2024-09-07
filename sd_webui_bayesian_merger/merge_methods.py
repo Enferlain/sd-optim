@@ -19,20 +19,13 @@ EPSILON = 1e-10
 DeltaMergeSpace = TypeVar("DeltaMergeSpace", bound=LiftFlag[MergeSpace.DELTA])
 
 
-def optimizable(hyper_type):
-    return hyper_type
-
-
 class MergeMethods:
     @staticmethod
     def weighted_sum(a, b, alpha: Hyper, device=None):
         return sd_mecha.weighted_sum(a, b, alpha=alpha, device=device)
 
     @staticmethod
-    def rotate(a, b, alignment: Hyper, alpha: Hyper, device=None, cache=None):  # Use None as default
-        if cache is None:
-            cache = {}  # Create a new dictionary if cache is None
-
+    def rotate(a, b, alignment: Hyper, alpha: Hyper, device=None, cache=None):
         return sd_mecha.rotate(a, b, alignment=alignment, alpha=alpha, device=device, cache=cache)
 
     @staticmethod

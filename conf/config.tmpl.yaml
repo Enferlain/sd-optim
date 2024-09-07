@@ -18,6 +18,7 @@ model_paths:  # Use a list to specify model paths (first 3 are treated as abc)
   - path/to/model_b.safetensors
   - path/to/model_c.safetensors
   - path/to/model_n.safetensors
+base_model_index: 2  # Use 3rd model as the base (0, 1, 2, ...)
 
 device: cpu # specify device to merge on (cpu, cuda)
 threads: 4

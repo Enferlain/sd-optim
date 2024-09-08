@@ -88,6 +88,9 @@ class MergeMethods:
     def geometric_median(*models, eps: Hyper, maxiter: Hyper, ftol: Hyper, **kwargs):
         return sd_mecha.geometric_median(*models, eps=eps, maxiter=maxiter, ftol=ftol, **kwargs)
 
+    @staticmethod
+    def ties_sum_extended(*models, k: Hyper, **kwargs):
+        return sd_mecha.ties_sum_extended(*models, k=k, **kwargs)
 
     ### CUSTOM METHODS ###
 
@@ -990,63 +993,3 @@ class MergeMethods:
 
         # Perform weighted sum using the interpolated alpha
         return ((1 - alpha) * a + alpha * b).reshape(original_shape)
-
-    @staticmethod
-    @convert_to_recipe
-    def qr_swap(
-            a: Tensor | SameMergeSpace,
-            b: Tensor | SameMergeSpace,
-            *,
-            alpha: Hyper = 1.0,
-            **kwargs,
-    ) -> Tensor | SameMergeSpace:
-        """
-        Merges tensors 'a' and 'b' by performing QR decomposition on both tensors,
-        interpolating the resulting 'Q' and 'R' matrices, and then multiplying the
-        interpolated matrices to obtain the merged tensor.
-
-        Args:
-            a (Tensor): The first tensor.
-            b (Tensor): The second tensor.
-            alpha (float): The interpolation factor between the 'Q' and 'R' matrices of 'a' and 'b'
-                           (0 <= alpha <= 1).
-            **kwargs: Additional keyword arguments.
-
-        Returns:
-            Tensor: The merged tensor).
-        """
-        if a.dim() == 0:
-            print("Skipping 0 dim tensor (returns a)\n")
-            return a
-
-        # Reshape tensors to 2D
-        is_conv_3x3 = len(a.shape) == 4 and a.shape[-1] != 1
-        is_conv_1x1 = len(a.shape) == 4 and a.shape[-1] == 1
-        original_shape = a.shape
-        if is_conv_3x3:
-            shape_2d = (-1, functools.reduce(operator.mul, a.shape[1:]))
-        elif is_conv_1x1:
-            shape_2d = (-1, functools.reduce(operator.mul, a.shape[1:]))
-        elif not a.shape:
-            shape_2d = (1, 1)
-        else:
-            shape_2d = (-1, a.shape[-1])
-
-        a = a.reshape(shape_2d)
-        b = b.reshape(shape_2d)
-
-        # Perform reduced QR decomposition on both tensors
-        Qa, Ra = torch.linalg.qr(a, mode='reduced')
-        Qb, Rb = torch.linalg.qr(b, mode='reduced')
-
-        # Interpolate the Q and R matrices using alpha
-        Q_merged = Qb * alpha + Qa * (1 - alpha)
-        R_merged = Ra * alpha + Rb * (1 - alpha)
-
-        # Multiply the interpolated matrices to get the merged tensor
-        merged_tensor_2D = Q_merged @ R_merged
-
-        # Reshape the merged tensor back to its original shape
-        merged_tensor = merged_tensor_2D.view(original_shape)
-
-        return merged_tensor

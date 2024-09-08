@@ -45,26 +45,15 @@ class Merger:
         return models
 
     def create_model_out_name(self, it: int = 0) -> None:
-        max_filename_length = 255
-        reserved_length = len(f"bbwm--it_{it}.safetensors")  # Calculate reserved length dynamically
-        max_model_name_length = max_filename_length - reserved_length
-
-        model_names = [Path(path).stem for path in self.cfg.model_paths[:self._get_expected_num_models()]]
-        combined_name = '-'.join(model_names)[:max_model_name_length]  # Truncate within the join
-
-        self.model_out_name = f"bbwm-{combined_name}-it_{it}.safetensors"
+        model_names = [Path(path).stem for path in self.cfg.model_paths]
+        combined_name = f"{model_names[0]}-{model_names[1]}-{self.cfg.merge_mode}-it_{it}"
+        self.model_out_name = f"bbwm-{combined_name}.safetensors"
         self.output_file = Path(Path(self.cfg.model_paths[0]).parent, self.model_out_name)
 
     def create_best_model_out_name(self, it: int = 0) -> None:
-        max_filename_length = 255
-        reserved_length = len(f"bbwm--it_{it}_best-fp{self.cfg.best_precision}.safetensors")
-        max_model_name_length = max_filename_length - reserved_length
-
-        model_names = [Path(path).stem for path in self.cfg.model_paths[:self._get_expected_num_models()]]
-        combined_name = '-'.join(model_names)[:max_model_name_length]
-
-        self.best_output_file = Path(Path(self.cfg.model_paths[0]).parent,
-                                     f"bbwm-{combined_name}-it_{it}_best-fp{self.cfg.best_precision}.safetensors")
+        model_names = [Path(path).stem for path in self.cfg.model_paths]
+        combined_name = f"{model_names[0]}-{model_names[1]}-{self.cfg.merge_mode}-it_{it}_best-fp{self.cfg.best_precision}"
+        self.best_output_file = Path(Path(self.cfg.model_paths[0]).parent, f"bbwm-{combined_name}.safetensors")
 
     def _get_expected_num_models(self) -> int:
         mecha_merge_method = sd_mecha.extensions.merge_method.resolve(self.cfg.merge_mode)
@@ -122,12 +111,16 @@ class Merger:
             return sd_mecha.add_difference(base_model, merged_model, alpha=1.0)
         return merged_model
 
-    def _serialize_and_save_recipe(self, merged_model):
+    def _serialize_and_save_recipe(self, merged_model, it: int = 0):
         """Serializes and saves the merged model recipe to a file."""
         log_dir = Path(HydraConfig.get().runtime.output_dir)
         recipes_dir = log_dir / "recipes"
         os.makedirs(recipes_dir, exist_ok=True)
-        recipe_file_path = recipes_dir / f"{self.model_out_name}.mecha"
+
+        model_names = [Path(path).stem for path in self.cfg.model_paths]
+        model_name = f"bbwm-{model_names[0]}-{model_names[1]}-{self.cfg.merge_mode}-it_{it + 1}"  # Increment iteration
+        recipe_file_path = recipes_dir / f"{model_name}.mecha"
+
         with open(recipe_file_path, "w", encoding="utf-8") as f:
             f.write(sd_mecha.recipe_serializer.serialize(merged_model))
 
@@ -174,12 +167,10 @@ class Merger:
                 **weights_list[param_name]
             }
 
-            print(f"Constructing all_hypers: {all_hypers[param_name]}")  # Move the print statement here
-
-        print(f"Final all_hypers: {all_hypers}")  # Move this print statement outside the loop
+        print(f"Final all_hypers: {all_hypers}")
 
         # Unload the currently loaded model
-        r = requests.post(url=f"{self.cfg.url}/bbwm/unload-model?webui={self.cfg.webui}")  # Use query parameter
+        r = requests.post(url=f"{self.cfg.url}/bbwm/unload-model?webui={self.cfg.webui}")
         r.raise_for_status()
 
         updated_models = self._create_updated_models(base_model, input_merge_spaces)
@@ -196,6 +187,13 @@ class Merger:
             logger.warning(
                 f"Merging method '{self.cfg.merge_mode}' expects {expected_num_models} models, but {num_models} were provided. Using the first {expected_num_models} models."
             )
+
+        # Convert models to deltas if the method requires delta space for *args
+        if mecha_merge_method.get_model_varargs_name() is not None and all(
+            space == sd_mecha.recipe_nodes.MergeSpace.DELTA for space in input_merge_spaces
+        ):
+            # Exclude the base model from delta conversion
+            updated_models = [sd_mecha.subtract(model, base_model) for i, model in enumerate(updated_models) if i != self.cfg.base_model_index]
 
         merged_model = self._merge_models(updated_models, all_hypers, cache)
         merged_model = self._handle_delta_output(merged_model, mecha_merge_method, updated_models, base_model)

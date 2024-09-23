@@ -3,7 +3,7 @@ from pathlib import Path
 import launch
 
 root_dir = Path.cwd()
-extension_dir = Path(root_dir, "extensions", "sd-webui-bayesian-merger")
+extension_dir = Path(root_dir, "extensions", "sd-interim-bayesian-merger")
 
 
 with open(Path(extension_dir, "requirements.txt"), "r", encoding="utf-8") as f:

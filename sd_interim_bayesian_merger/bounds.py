@@ -4,9 +4,8 @@ import inspect
 
 from typing import Dict, List, Tuple, get_origin
 from omegaconf import DictConfig, OmegaConf
-from sd_webui_bayesian_merger.mapping import OPTIMIZABLE_HYPERPARAMETERS
+from sd_interim_bayesian_merger.mapping import OPTIMIZABLE_HYPERPARAMETERS
 
-from sd_webui_bayesian_merger.merge_methods import MergeMethods
 import sd_mecha
 
 logger = logging.getLogger(__name__)
@@ -57,32 +56,27 @@ class Bounds:
 
     @staticmethod
     def freeze_bounds(bounds: Dict, frozen: Dict[str, float] = None) -> Dict:
+        if frozen is None:
+            frozen = {}
         return {b: r for b, r in bounds.items() if b not in frozen}
 
     @staticmethod
     def group_bounds(bounds: Dict, groups: List[List[str]] = None) -> Dict:
+        if groups is None:
+            groups = []
+
         for group in groups:
             if not group:
                 continue
-            ranges = {bounds[b] for b in group if b in bounds}
-            if len(ranges) > 1:
-                w = (
-                    f"different values for the same group: {group}"
-                    + f" we're picking {group[0]} range: {bounds[group[0]]}"
-                )
-                warnings.warn(w)
-                group_range = bounds[group[0]]
-            elif ranges:
-                group_range = ranges.pop()
-            else:
-                # all frozen
-                continue
 
             group_name = "-".join(group)
-            bounds[group_name] = group_range
-            for b in group:
-                if b in bounds:
-                    del bounds[b]
+            group_range = next((bounds[b] for b in group if b in bounds), None)  # Find the first available range
+
+            if group_range is not None:
+                bounds[group_name] = group_range
+                for b in group:
+                    bounds.pop(b, None)  # Remove individual bounds, ignoring errors if not found
+
         return bounds
 
     @staticmethod

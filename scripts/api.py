@@ -9,7 +9,7 @@ from modules import script_callbacks, sd_models, shared
 from modules_forge import main_entry
 from backend import memory_management
 
-from sd_webui_bayesian_merger.merge_methods import MergeMethods
+from sd_interim_bayesian_merger.merge_methods import MergeMethods
 
 logger = logging.getLogger("api")
 logging.basicConfig(level=logging.INFO)

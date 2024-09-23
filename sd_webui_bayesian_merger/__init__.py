@@ -1,4 +1,0 @@
-from sd_webui_bayesian_merger.atpe_optimiser import ATPEOptimiser
-from sd_webui_bayesian_merger.bayes_optimiser import BayesOptimiser
-from sd_webui_bayesian_merger.tpe_optimiser import TPEOptimiser
-

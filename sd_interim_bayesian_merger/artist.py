@@ -15,20 +15,20 @@ from sklearn.preprocessing import StandardScaler
 from hydra.core.hydra_config import HydraConfig
 
 from sd_mecha.extensions.model_arch import resolve
-from sd_webui_bayesian_merger.optimiser import Optimiser
+from sd_interim_bayesian_merger.optimizer import Optimizer
 
 
 class Artist:
-    def __init__(self, optimiser: Optimiser):
-        self.optimiser = optimiser
-        self.cfg = optimiser.cfg
+    def __init__(self, optimizer: Optimizer):
+        self.optimizer = optimizer
+        self.cfg = optimizer.cfg
         self.data = []
         self.unet_block_identifiers = None  # Initialize the attribute
 
     def collect_data(self, score, params, weights_list, base_values):  # Accept the dictionaries as arguments
         """Collects data for each optimization iteration."""
         self.data.append({
-            "iteration": self.optimiser.iteration,
+            "iteration": self.optimizer.iteration,
             "score": score,
             "params": params.copy(),
             "weights_list": weights_list,

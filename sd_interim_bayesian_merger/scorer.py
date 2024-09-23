@@ -2,25 +2,29 @@ import platform
 import subprocess
 import threading
 import requests
+import logging
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, List
+from typing import Dict, List, Optional, Tuple
 
 from hydra.core.hydra_config import HydraConfig
 from omegaconf import DictConfig, open_dict
 from PIL import Image, PngImagePlugin
-from sd_webui_bayesian_merger.models.Laion import Laion as AES
-from sd_webui_bayesian_merger.models.ImageReward import ImageReward as IMGR
-from sd_webui_bayesian_merger.models.CLIPScore import CLIPScore as CLP
-from sd_webui_bayesian_merger.models.BLIPScore import BLIPScore as BLP
-from sd_webui_bayesian_merger.models.HPSv2 import HPSv2 as HPS
-from sd_webui_bayesian_merger.models.PickScore import PickScore as PICK
-from sd_webui_bayesian_merger.models.WDAes import WDAes as WDA
-from sd_webui_bayesian_merger.models.ShadowScore import ShadowScore as SS
-from sd_webui_bayesian_merger.models.CafeScore import CafeScore as CAFE
-from sd_webui_bayesian_merger.models.NoAIScore import NoAIScore as NOAI
-from sd_webui_bayesian_merger.models.CityAesthetics import CityAesthetics as CITY
+from sd_interim_bayesian_merger.models.Laion import Laion as AES
+from sd_interim_bayesian_merger.models.ImageReward import ImageReward as IMGR
+from sd_interim_bayesian_merger.models.CLIPScore import CLIPScore as CLP
+from sd_interim_bayesian_merger.models.BLIPScore import BLIPScore as BLP
+from sd_interim_bayesian_merger.models.HPSv2 import HPSv2 as HPS
+from sd_interim_bayesian_merger.models.PickScore import PickScore as PICK
+from sd_interim_bayesian_merger.models.WDAes import WDAes as WDA
+from sd_interim_bayesian_merger.models.ShadowScore import ShadowScore as SS
+from sd_interim_bayesian_merger.models.CafeScore import CafeScore as CAFE
+from sd_interim_bayesian_merger.models.NoAIScore import NoAIScore as NOAI
+from sd_interim_bayesian_merger.models.CityAesthetics import CityAesthetics as CITY
+
+logger = logging.getLogger(__name__)
+logging.basicConfig(level=logging.INFO)
 
 MODEL_DATA = {
     "laion": {
@@ -246,14 +250,26 @@ class AestheticScorer:
     def score(self, image: Image.Image, prompt) -> float:
         values = []
         scorer_weights = []
+        logger.info("Entering score method.")
+
+        def show_image():
+            try:
+                image.show()
+            except Exception as e:
+                logger.error(f"Error displaying image: {e}")
+
         for evaluator in self.cfg.scorer_method:
             scorer_weights.append(int(self.cfg.scorer_weight[evaluator]))
             if evaluator == 'manual':
                 # Display the image in a separate thread
-                threading.Thread(target=image.show, daemon=True).start()
+                threading.Thread(target=show_image, daemon=True).start()
                 values.append(self.get_user_score())
             else:
-                values.append(self.model[evaluator].score(prompt, image))
+                try:
+                    values.append(self.model[evaluator].score(prompt, image))
+                except Exception as e:
+                    logger.error(f"Error scoring image with {evaluator}: {e}")
+                    values.append(0.0)
 
             if self.cfg.scorer_print_individual:
                 print(f"{evaluator}:{values[-1]}")
@@ -267,15 +283,42 @@ class AestheticScorer:
             payload_names: List[str],
             payloads: Dict,
             it: int,
-    ) -> List[float]:
+    ) -> Tuple[List[float], List[float]]:
+        logger.info("Entering batch_score method.")
         scores = []
         norm = []  # Restore the norm list
+        fake_score = 0.0
 
         for i, (img, name, payload) in enumerate(zip(images, payload_names, payloads)):
             score = self.score(img, payload["prompt"])
             if self.cfg.save_imgs:
-                self.save_img(img, name, score, it, i, payload)
+                img_path = self.save_img(img, name, score, it, i, payload)
+                if img_path is None:
+                    logger.warning(f"Failed to save image for {name}-{i}")
+                    continue  # Skip to the next image
 
+            # Check for override signal and handle it
+            if score == -1:
+                logger.warning("Score override activated! Using fake average score for the entire batch.")
+                while True:
+                    fake_score_input = input("\tEnter the fake average score (0-10): ")
+                    if fake_score_input:
+                        try:
+                            fake_score = float(fake_score_input)
+                            if 0 <= fake_score <= 10:
+                                break
+                            else:
+                                print("\tInvalid fake score. Please enter a number between 0 and 10.")
+                        except ValueError:
+                            print("\tInvalid input. Please enter a number between 0 and 10.")
+                    else:
+                        print("\tInput cannot be empty. Please enter a fake average score.")
+
+                scores = [fake_score] * len(images)
+                norm = [1.0] * len(images)
+                return scores, norm  # Exit early
+
+            # Proceed with normal scoring
             if "score_weight" in payload:
                 norm.append(payload["score_weight"])
             else:
@@ -287,30 +330,20 @@ class AestheticScorer:
         return scores, norm  # Return both scores and norm
 
     def average_calc(self, values: List[float], scorer_weights: List[float], average_type: str) -> float:
-        norm = 0
-        for weight in scorer_weights:  # Use scorer_weights in the loop
-            norm += weight
-        avg = 0
+        norm = sum(scorer_weights)  # Calculate norm directly using sum
+
         if average_type == 'geometric':
             avg = 1
-        elif average_type == 'arithmetic' or average_type == 'quadratic':
-            avg = 0
-
-        for value, weight in zip(values, scorer_weights):
-            if average_type == 'arithmetic':
-                avg += value * weight
-            elif average_type == 'geometric':
+            for value, weight in zip(values, scorer_weights):
                 avg *= value ** weight
-            elif average_type == 'quadratic':
-                avg += (value ** 2) * weight
-
-        if average_type == 'arithmetic':
-            avg = avg / norm
-        elif average_type == 'geometric':
-            avg = avg ** (1 / norm)
+            return avg ** (1 / norm)
+        elif average_type == 'arithmetic':
+            return sum(value * weight for value, weight in zip(values, scorer_weights)) / norm
         elif average_type == 'quadratic':
-            avg = (avg / norm) ** (1 / 2)
-        return avg
+            avg = sum((value ** 2) * weight for value, weight in zip(values, scorer_weights))
+            return (avg / norm) ** (1 / 2)
+        else:
+            raise ValueError(f"Invalid average type: {average_type}")
 
     def image_path(self, name: str, score: float, it: int, batch_n: int) -> Path:
         return Path(
@@ -326,44 +359,64 @@ class AestheticScorer:
             it: int,
             batch_n: int,
             payload: Dict,
-    ) -> Path:
+    ) -> Optional[Path]:
         img_path = self.image_path(name, score, it, batch_n)
         pnginfo = PngImagePlugin.PngInfo()
         for k, v in payload.items():
             pnginfo.add_text(k, str(v))
 
-        image.save(img_path, pnginfo=pnginfo)
+        try:
+            image.save(img_path, pnginfo=pnginfo)
+        except (OSError, IOError) as e:
+            logger.error(f"Error saving image to {img_path}: {e}")
+            return None  # Return None to signal failure
         return img_path
 
     def open_image(self, image_path: Path) -> None:
         system = platform.system()
 
-        if system == "Windows":
-            subprocess.run(["start", str(image_path)], shell=True, check=True)
-        elif system == "Linux":
-            global printWSLFlag
-            if ("microsoft-standard" in platform.uname().release) and printWSLFlag == 0:
+        try:
+            if system == "Windows":
+                subprocess.run(["start", str(image_path)], shell=True, check=True)
+            elif system == "Linux":
+                if "microsoft-standard" in platform.uname().release:
+                    if not hasattr(self, "wsl_instructions_printed"):
+                        print(
+                            "Make sure to install xdg-open-wsl from here: https://github.com/cpbotha/xdg-open-wsl otherwise the images will NOT open."
+                        )
+                        self.wsl_instructions_printed = True  # Set a flag to avoid printing multiple times
+                subprocess.run(["xdg-open", str(image_path)], check=True)
+            elif system == "Darwin":  # macOS
+                subprocess.run(["open", str(image_path)], check=True)
+            else:
                 print(
-                    "Make sure to install xdg-open-wsl from here: https://github.com/cpbotha/xdg-open-wsl otherwise the images will NOT open."
+                    f"Sorry, automatic image opening is not yet supported on '{system}'. Please open the image manually: {image_path}"
                 )
-                printWSLFlag = 1
-            subprocess.run(["xdg-open", str(image_path)], check=True)
-        elif system == "Darwin":  # macOS
-            subprocess.run(["open", str(image_path)], check=True)
-        else:
+        except FileNotFoundError:
             print(
-                f"Sorry, we do not support opening images on '{system}' operating system."
-            )
+                f"Error: Could not find the default image viewer. Please ensure it's installed and configured correctly.")
+        except (subprocess.CalledProcessError, OSError) as e:
+            print(f"Error opening image: {e}")
+            print(f"Please try opening the image manually: {image_path}")
 
     @staticmethod
     def get_user_score() -> float:
         while True:
+            user_input = input(
+                f"\n\tPlease enter the score for the shown image (a number between 0 and 10)\n\t> "
+            )
+
+            # Cheat code handling
+            if user_input == "OVERRIDE_SCORE":  # Check for the cheat code
+                return -1.0  # Signal override to batch_score
+
+            # Input validation
+            if not user_input.replace(".", "", 1).isdigit():  # Allow one decimal point
+                print("\tInvalid input. Please enter a number between 0 and 10.")
+                continue
+
             try:
-                score = float(
-                    input(
-                        f"\n\tPlease enter the score for the shown image (a number between 0 and 10)\n\t> "
-                    )
-                )
+                score = float(user_input)
                 if 0 <= score <= 10:
                     return score
                 else:

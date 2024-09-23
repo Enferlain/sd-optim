@@ -5,16 +5,16 @@ from bayes_opt import BayesianOptimization, Events
 from bayes_opt.domain_reduction import SequentialDomainReductionTransformer
 from scipy.stats import qmc
 
-from sd_webui_bayesian_merger.optimiser import Optimiser
+from sd_interim_bayesian_merger.optimizer import Optimizer
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.DEBUG)
 
 
-class BayesOptimiser(Optimiser):
+class BayesOptimizer(Optimizer):
     bounds_transformer = SequentialDomainReductionTransformer()
 
-    def optimise(self) -> None:
+    def optimize(self) -> None:
         pbounds = self.init_params()
         logger.info(f"Initial Parameter Bounds: {pbounds}")
 

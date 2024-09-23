@@ -85,12 +85,8 @@ class MergeMethods:
         return sd_mecha.distribution_crossover(a, b, c, alpha=alpha, tilt=tilt, device=device)
 
     @staticmethod
-    def geometric_median(*models, eps: Hyper, maxiter: Hyper, ftol: Hyper, **kwargs):
-        return sd_mecha.geometric_median(*models, eps=eps, maxiter=maxiter, ftol=ftol, **kwargs)
-
-    @staticmethod
-    def ties_sum_extended(*models, k: Hyper, **kwargs):
-        return sd_mecha.ties_sum_extended(*models, k=k, **kwargs)
+    def ties_sum_extended(*models, k: Hyper, apply_stock: Hyper = 0.05, apply_median: Hyper = 0.1, eps: Hyper = 1e-5, ftol: Hyper = 1e-10, maxiter: Hyper = 150, **kwargs):
+        return sd_mecha.ties_sum_extended(*models, k=k, apply_stock=apply_stock, apply_median=apply_median, eps=eps, ftol=ftol, maxiter=maxiter, **kwargs)
 
     ### CUSTOM METHODS ###
 

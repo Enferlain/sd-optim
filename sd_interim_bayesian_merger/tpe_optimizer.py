@@ -2,9 +2,9 @@ from functools import partial
 
 from hyperopt import STATUS_OK, Trials, fmin, hp, tpe
 
-from sd_webui_bayesian_merger.optimiser import Optimiser
+from sd_interim_bayesian_merger.optimizer import Optimizer
 
-class TPEOptimiser(Optimiser):
+class TPEOptimizer(Optimizer):
     def _target_function(self, params):
         res = self.sd_target_function(**params)
         return {
@@ -13,7 +13,7 @@ class TPEOptimiser(Optimiser):
             "params": params,
         }
 
-    def optimise(self) -> None:
+    def optimize(self) -> None:
         bounds = self.init_params()
         space = {p: hp.uniform(p, *b) for p, b in bounds.items()}
 

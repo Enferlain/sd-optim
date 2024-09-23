@@ -3,7 +3,7 @@ defaults:
   - payloads: cargo
   - optimisation_guide: guide
 
-run_name: ${optimiser}_${scorer_method}
+run_name: ${optimizer}_${scorer_method}
 hydra:
   run:
     dir: logs/${now:%Y-%m-%d_%H-%M-%S}_${run_name}
@@ -12,8 +12,9 @@ url: http://127.0.0.1:7860
 webui: a1111  # or "forge"
 
 wildcards_dir: path/to/wildcards/folder
+scorer_model_dir: path/to/scorer/models/folder
 
-model_paths:  # Use a list to specify model paths (first 3 are treated as abc)
+model_paths:  # Use a list to specify model or lora paths 
   - path/to/model_a.safetensors
   - path/to/model_b.safetensors
   - path/to/model_c.safetensors
@@ -26,10 +27,10 @@ threads: 4
 merge_mode: weighted_sum # specify merge method https://github.com/ljleb/sd-mecha/blob/main/sd_mecha/merge_methods/__init__.py
 model_arch: sdxl  # specify model architecture (sd1, sdxl, sd3)
 
-optimiser: bayes                 # tpe
+optimizer: bayes                 # tpe
 bounds_transformer: False        # bayes only
 latin_hypercube_sampling: False  # bayes only
-guided_optimisation: False
+guided_optimization: False
 batch_size: 1
 init_points: 1
 n_iters: 1
@@ -60,7 +61,6 @@ scorer_device:
   #blip: cpu
   #chad: cuda
   # example above, default is scorer default device
-scorer_model_dir: path/to/scorer/models/folder
 scorer_alt_location:
   #blip:
     #model_name: scorer.pth
@@ -69,13 +69,13 @@ scorer_alt_location:
     #model_name: scorer.pt
     #model_dir: path/to/scorer/scorer.pt
   # example above, default downloads them in the scorer_model_dir(this option is here if you already have them downloaded somewhere else)
-scorer_print_individual: False
+scorer_print_individual: True
 
 save_best: True
 best_precision: 16 # 32
 
 visualizations:
-  scatter_plot: True # not implemented
+  scatter_plot: False # not implemented
   unet_diagram: True
   convergence_plot: True
-  heatmap: True # not implemented
+  heatmap: False # not implemented

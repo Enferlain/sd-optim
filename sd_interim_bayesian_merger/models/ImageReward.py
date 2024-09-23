@@ -13,7 +13,7 @@ import os
 import torch
 import torch.nn as nn
 from PIL import Image
-from sd_webui_bayesian_merger.models.BLIP.blip_pretrain import BLIP_Pretrain
+from sd_interim_bayesian_merger.models.BLIP.blip_pretrain import BLIP_Pretrain
 from torchvision.transforms import Compose, Resize, CenterCrop, ToTensor, Normalize
 
 try:

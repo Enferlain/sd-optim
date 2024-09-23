@@ -4,13 +4,14 @@ import torch
 import os
 import requests
 import inspect
+import safetensors
 
 from hydra.core.hydra_config import HydraConfig
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict
 from omegaconf import DictConfig, open_dict
-from sd_webui_bayesian_merger.merge_methods import MergeMethods
+from sd_interim_bayesian_merger.merge_methods import MergeMethods
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO)
@@ -38,10 +39,29 @@ class Merger:
                 raise ValueError(f"Configuration missing required field: {field}")
 
     def _create_models(self) -> list:
-        """Dynamically creates ModelRecipeNodes for all models in cfg, using sd_mecha.model."""
-        models = [sd_mecha.model(os.path.relpath(model_path, self.cfg.models_dir), self.cfg.model_arch) for model_path
-                  in
-                  self.cfg.get("model_paths", [])]
+        """Dynamically creates ModelRecipeNodes, handling Loras based on metadata."""
+        models = []
+        for model_path in self.cfg.get("model_paths", []):
+            relative_path = os.path.relpath(model_path, self.cfg.models_dir)
+
+            # Check if it's a safetensors or pt file and try to load metadata
+            if model_path.endswith(".safetensors"):
+                try:
+                    # Open the file safely and retrieve metadata
+                    with safetensors.safe_open(model_path, framework="pt") as f:
+                        metadata = f.metadata()  # Fetch metadata dictionary
+                        logger.debug(f"Metadata for {model_path}: {metadata}")
+
+                        architecture = metadata.get("modelspec.architecture", "")
+                        if "lora" in architecture.lower():
+                            models.append(sd_mecha.lora(relative_path, self.cfg.model_arch))  # Use sd_mecha.lora
+                            logger.info(f"Detected Lora: {model_path}")
+                            continue  # Skip to the next model
+                except Exception as e:
+                    logger.warning(f"Failed to load metadata for {model_path}: {e}")
+
+            models.append(sd_mecha.model(relative_path, self.cfg.model_arch))
+
         return models
 
     def create_model_out_name(self, it: int = 0) -> None:
@@ -64,18 +84,31 @@ class Merger:
             return len(mecha_merge_method.get_model_names())
 
     def _select_base_model(self, cfg):
-        """Selects the base model based on configuration or defaults to the last model."""
+        """Selects the base model, ensuring it's not a Lora."""
         base_model_index = cfg.get("base_model_index", None)
-        try:
-            return self.models[base_model_index] if base_model_index is not None else self.models[-1]
-        except IndexError:
-            logger.warning(
-                f"Invalid base_model_index: {base_model_index}. Using the last model as the base."
+
+        # Require a valid base_model_index
+        if base_model_index is None:
+            raise ValueError("A base_model_index must be specified in the configuration.")
+
+        # Check if base_model_index is valid for the number of models
+        if base_model_index is not None and base_model_index >= len(self.models):
+            raise ValueError(
+                f"Invalid base_model_index: {base_model_index}. You specified {len(self.models)} models, but the index refers to a non-existent model. Please ensure a valid base_model_index is provided."
             )
-            return self.models[-1]
+
+        base_model = self.models[base_model_index] if base_model_index is not None else self.models[-1]
+
+        # Ensure the base model is not a Lora
+        if base_model.model_type.identifier == "lora":
+            raise ValueError(
+                "The specified base model is a Lora. Loras cannot be used as base models. Please choose a different base model."
+            )
+
+        return base_model
 
     def _create_updated_models(self, base_model, input_merge_spaces):
-        """Dynamically creates deltas based on merging space requirements."""
+        """Dynamically creates deltas, treating Loras as pre-existing deltas."""
         updated_models = [None] * len(self.models)
         updated_models[self.cfg.base_model_index] = base_model
 
@@ -85,7 +118,11 @@ class Merger:
             if i == self.cfg.base_model_index:
                 continue
 
-            if i < len(input_merge_spaces) and input_merge_spaces[i] == sd_mecha.recipe_nodes.MergeSpace.DELTA:
+            if model.model_type.identifier == "lora":  # Treat Loras as pre-existing deltas
+                updated_models[i] = model
+                logger.info(f"Using Lora model {i} as a delta.")
+            elif i < len(input_merge_spaces) and input_merge_spaces[
+                i] == sd_mecha.recipe_nodes.MergeSpace.DELTA:  # Only convert non-Lora models to deltas if required
                 logger.info(f"Creating delta model from model {i} relative to base model.")
                 updated_models[i] = sd_mecha.subtract(model, base_model)
             else:
@@ -148,7 +185,7 @@ class Merger:
 
         model_path = self.best_output_file if save_best else self.output_file
         mecha_merge_method = sd_mecha.extensions.merge_method.resolve(self.cfg.merge_mode)
-        input_merge_spaces, _ = mecha_merge_method.get_input_merge_spaces()
+        input_merge_spaces, varargs_merge_space = mecha_merge_method.get_input_merge_spaces()
         default_hypers = mecha_merge_method.get_default_hypers()
 
         base_model = self._select_base_model(cfg)
@@ -181,19 +218,28 @@ class Merger:
         # Get the expected number of models using the helper function
         expected_num_models = self._get_expected_num_models()
 
+        # Convert models to deltas if the method requires delta space for *args or if they are Loras
+        if mecha_merge_method.get_model_varargs_name() is not None and (
+                all(space == sd_mecha.recipe_nodes.MergeSpace.DELTA for space in input_merge_spaces) or any(
+                model.model_type.identifier == "lora" for model in updated_models if model is not None
+            )
+        ):
+            for i, model in enumerate(updated_models):
+                if i != self.cfg.base_model_index and model is not None:
+                    updated_models[i] = sd_mecha.subtract(model, base_model) if model.model_type.identifier != "lora" else model
+
+        # Exclude the base model if the method requires only deltas
+        if mecha_merge_method.get_model_varargs_name() is not None and all(
+                space == sd_mecha.recipe_nodes.MergeSpace.DELTA for space in input_merge_spaces
+        ):
+            updated_models = [model for i, model in enumerate(updated_models) if i != self.cfg.base_model_index]
+
         # Only slice the models list if the method does NOT accept a variable number of models
         if mecha_merge_method.get_model_varargs_name() is None and num_models != expected_num_models:
             updated_models = updated_models[:expected_num_models]  # Slice self.models
             logger.warning(
                 f"Merging method '{self.cfg.merge_mode}' expects {expected_num_models} models, but {num_models} were provided. Using the first {expected_num_models} models."
             )
-
-        # Convert models to deltas if the method requires delta space for *args
-        if mecha_merge_method.get_model_varargs_name() is not None and all(
-            space == sd_mecha.recipe_nodes.MergeSpace.DELTA for space in input_merge_spaces
-        ):
-            # Exclude the base model from delta conversion
-            updated_models = [sd_mecha.subtract(model, base_model) for i, model in enumerate(updated_models) if i != self.cfg.base_model_index]
 
         merged_model = self._merge_models(updated_models, all_hypers, cache)
         merged_model = self._handle_delta_output(merged_model, mecha_merge_method, updated_models, base_model)

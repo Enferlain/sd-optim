@@ -3,7 +3,17 @@ payloadname:
   prompt: "your prompt, even with __wildcard__"
   negative_prompt: "your negative prompt"
   steps: 20
-  cfg: 7
-  width: 512
-  height: 512
+  cfg_scale: 8
+  width: 768
+  height: 1344
   sampler_name: "Euler a"
+  scheduler: "Automatic"
+  enable_hr: false
+  denoising_strength: 0.35
+  firstphase_width: 0
+  firstphase_height: 0
+  hr_scale: 1.5
+  hr_upscaler: "4x_fatal_Anime_500000_G"
+  hr_second_pass_steps: 0
+  hr_resize_x: 0
+  hr_resize_y: 0

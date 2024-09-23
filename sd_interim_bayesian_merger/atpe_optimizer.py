@@ -1,8 +1,8 @@
 from hyperopt import STATUS_OK, Trials, atpe, fmin, hp
 
-from sd_webui_bayesian_merger.optimiser import Optimiser
+from sd_interim_bayesian_merger.optimizer import Optimizer
 
-class ATPEOptimiser(Optimiser):
+class ATPEOptimizer(Optimizer):
     def _target_function(self, params):
         res = self.sd_target_function(**params)
         return {
@@ -11,7 +11,7 @@ class ATPEOptimiser(Optimiser):
             "params": params,
         }
 
-    def optimise(self) -> None:
+    def optimize(self) -> None:
         bounds = self.init_params()
         space = {p: hp.uniform(p, *b) for p, b in bounds.items()}
 

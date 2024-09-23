@@ -14,11 +14,11 @@ from hydra.core.hydra_config import HydraConfig
 from omegaconf import DictConfig, open_dict
 from tqdm import tqdm
 
-from sd_webui_bayesian_merger.bounds import Bounds
-from sd_webui_bayesian_merger.generator import Generator
-from sd_webui_bayesian_merger.merger import Merger
-from sd_webui_bayesian_merger.prompter import Prompter
-from sd_webui_bayesian_merger.scorer import AestheticScorer
+from sd_interim_bayesian_merger.bounds import Bounds
+from sd_interim_bayesian_merger.generator import Generator
+from sd_interim_bayesian_merger.merger import Merger
+from sd_interim_bayesian_merger.prompter import Prompter
+from sd_interim_bayesian_merger.scorer import AestheticScorer
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.DEBUG)
@@ -27,12 +27,12 @@ PathT = os.PathLike
 
 
 @dataclass
-class Optimiser:
+class Optimizer:
     cfg: DictConfig
     best_rolling_score: float = 0.0
 
     def __post_init__(self) -> None:
-        self.bounds_initialiser = Bounds()
+        self.bounds_initializer = Bounds()
         self.generator = Generator(self.cfg.url, self.cfg.batch_size)
         self.merger = Merger(self.cfg)
         self.start_logging()
@@ -43,12 +43,12 @@ class Optimiser:
         self.cache = {}
 
         # import artist inside
-        from sd_webui_bayesian_merger.artist import Artist
+        from sd_interim_bayesian_merger.artist import Artist
         self.artist = Artist(self)
 
     def start_logging(self) -> None:
         run_name = "-".join(self.merger.output_file.stem.split("-")[:-1])
-        self.log_name = f"{run_name}-{self.cfg.optimiser}"
+        self.log_name = f"{run_name}-{self.cfg.optimizer}"
         self.logger = JSONLogger(
             path=str(
                 Path(
@@ -59,20 +59,18 @@ class Optimiser:
         )
 
     def init_params(self) -> Dict:
+        if self.cfg.optimization_guide is None:  # Handle missing optimization_guide
+            self.cfg.optimization_guide = {}
+
         for guide in ["frozen_params", "custom_ranges", "groups"]:
-            if guide not in self.cfg.optimisation_guide.keys():
+            if guide not in self.cfg.optimization_guide:
                 with open_dict(self.cfg):
-                    self.cfg["optimisation_guide"][guide] = None
-        return self.bounds_initialiser.get_bounds(
-            self.cfg.optimisation_guide.frozen_params
-            if self.cfg.guided_optimisation
-            else None,
-            self.cfg.optimisation_guide.custom_ranges
-            if self.cfg.guided_optimisation
-            else None,
-            self.cfg.optimisation_guide.groups
-            if self.cfg.guided_optimisation
-            else None,
+                    self.cfg.optimization_guide[guide] = {}  # Use empty dictionaries for missing keys
+
+        return self.bounds_initializer.get_bounds(
+            self.cfg.optimization_guide.get("frozen_params", {}),
+            self.cfg.optimization_guide.get("custom_ranges", {}),
+            self.cfg.optimization_guide.get("groups", []),
             self.cfg
         )
 
@@ -81,7 +79,7 @@ class Optimiser:
 
         self.iteration += 1
         iteration_type = (
-            "warmup" if self.iteration <= self.cfg.init_points else "optimisation"
+            "warmup" if self.iteration <= self.cfg.init_points else "optimization"
         )
 
         if self.iteration in {1, self.cfg.init_points + 1}:
@@ -89,9 +87,9 @@ class Optimiser:
 
         logger.info(f"\n{iteration_type} - Iteration: {self.iteration}")
 
-        # Assemble parameters using bounds_initialiser
-        weights_list, base_values = self.bounds_initialiser.assemble_params(
-            params, self.cfg.optimisation_guide.frozen_params, self.cfg.optimisation_guide.groups, self.cfg
+        # Assemble parameters using bounds_initializer
+        weights_list, base_values = self.bounds_initializer.assemble_params(
+            params, self.cfg.optimization_guide.frozen_params, self.cfg.optimization_guide.groups, self.cfg
         )
 
         # Update the output file name with the current iteration
@@ -162,7 +160,7 @@ class Optimiser:
             shutil.move(self.merger.output_file, self.merger.best_output_file)
             logger.info(f"Saved new best model as: {self.merger.best_output_file}")
 
-            Optimiser.save_best_log(base_values, weights_list, self.iteration)
+            Optimizer.save_best_log(base_values, weights_list, self.iteration)
         else:
             # Delete the current iteration's model file if it's not the best
             if os.path.exists(self.merger.output_file):
@@ -170,7 +168,7 @@ class Optimiser:
                 logger.info(f"Deleted non-best model: {self.merger.output_file}")
 
     @abstractmethod
-    def optimise(self) -> None:
+    def optimize(self) -> None:
         raise NotImplementedError("Not implemented")
 
     @abstractmethod

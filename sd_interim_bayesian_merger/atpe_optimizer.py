@@ -2,6 +2,7 @@ from hyperopt import STATUS_OK, Trials, atpe, fmin, hp
 
 from sd_interim_bayesian_merger.optimizer import Optimizer
 
+
 class ATPEOptimizer(Optimizer):
     def _target_function(self, params):
         res = self.sd_target_function(**params)

@@ -4,6 +4,7 @@ from hyperopt import STATUS_OK, Trials, fmin, hp, tpe
 
 from sd_interim_bayesian_merger.optimizer import Optimizer
 
+
 class TPEOptimizer(Optimizer):
     def _target_function(self, params):
         res = self.sd_target_function(**params)

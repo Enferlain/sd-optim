@@ -1,19 +1,14 @@
 # sd-webui-bayesian-merger
 
-[![](https://dcbadge.vercel.app/api/server/EZJuBfNVHh)](https://discord.gg/EZJuBfNVHh)
+Even more opinionated fork of the original repo by s1dlx. 
 
-## NEWS
+Since he's absent, I started updating the project with things that were missing at the time, which eventually built into getting my own ideas, which I'll be gradually introducing into this fork. 
 
-- 2023/06/14 lots of new things, I lost track...join the discord server for discussion and future updates
-- 2023/05/30 introducing [`meh`](https://github.com/s1dlx/meh) engine
-- 2023/05/17 add `scorer_device`; remove `aes` and `cafe_*` scorers; add `score_weight` to payload `.yaml`
-- 2023/05/16 `latin-hypercube-sampling` for `bayes` optimiser
-- 2023/05/15 `adaptive-tpe` optimiser
-- 2023/05/03 `tensor_sum` merging method
-- 2023/04/25 `weighted_subtraction` merging method
-- 2023/04/22 `manual` scoring method
-- 2023/04/18 `group` parameters
-- 2023/04/17 `freeze` parameters or set custom optimisation `ranges`
+Don't expect it to always be in a working state, but I generally try to only push when it is.
+
+wip text
+
+-----------
 
 ## What is this?
 

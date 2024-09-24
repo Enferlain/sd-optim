@@ -989,3 +989,608 @@ class MergeMethods:
 
         # Perform weighted sum using the interpolated alpha
         return ((1 - alpha) * a + alpha * b).reshape(original_shape)
+
+    @staticmethod
+    @convert_to_recipe
+    def neuron_train_difference(
+        a: Tensor | SameMergeSpace,
+        b: Tensor | SameMergeSpace,
+        c: Tensor | SameMergeSpace,
+        *,
+        alpha: Hyper = 1.0,
+        **kwargs,
+    ) -> Tensor | SameMergeSpace:
+        key = kwargs.get("key", "")
+        if key.endswith(("in_proj_weight", "in_proj_bias")):
+            # workaround for concatenated attention projection layers
+            vs = []
+            for i, k in enumerate(("to_q", "to_k", "to_v")):
+                k_kwargs = kwargs.copy()
+                k_kwargs["key"] = key.replace("in_proj_", f"{k}.")
+                dim = a.shape[0] // 3
+                t_start = dim * i
+                t_end = dim * (i + 1)
+                k_a = a[t_start:t_end]
+                k_b = b[t_start:t_end]
+                k_c = c[t_start:t_end]
+                vs.append(MergeMethods.neuron_train_difference.__wrapped__(k_a, k_b, k_c, **k_kwargs))
+            return torch.cat(vs)
+
+        if key.endswith("bias"):
+            return sd_mecha.merge_methods.weighted_sum.__wrapped__(a, b, alpha=alpha)
+
+        # Reshape tensors to 2D
+        is_conv_3x3 = len(a.shape) == 4 and a.shape[-1] != 1
+        is_conv_1x1 = len(a.shape) == 4 and a.shape[-1] == 1
+        original_shape = a.shape
+        if is_conv_3x3:
+            shape_2d = (-1, functools.reduce(operator.mul, a.shape[1:]))
+        elif is_conv_1x1:
+            shape_2d = (-1, functools.reduce(operator.mul, a.shape[1:]))
+        elif not a.shape:
+            shape_2d = (1, 1)
+        else:
+            shape_2d = (-1, a.shape[-1])
+
+        a = a.reshape(*shape_2d)
+        b = b.reshape(*shape_2d)
+        c = c.reshape(*shape_2d)
+
+        threshold = torch.maximum((a - c).norm(dim=1, keepdim=True), (b - c).norm(dim=1, keepdim=True))
+        dissimilarity = (1 - torch.nan_to_num(((a - c) * (b - c)).sum(dim=1, keepdim=True) / threshold**2, nan=0)) / 2
+
+        res = a + (b - c) * alpha * dissimilarity
+        return res.reshape(original_shape)
+
+def advanced_original_merge(tensor1, tensor2, lambda_val=0.5, p=0.5, beta=1.0, gamma=0.5):
+    """
+    Advanced Original method for tensor merging.
+
+    Args:
+    tensor1, tensor2: Input tensors to be merged
+    lambda_val: Blending factor (default: 0.5)
+    p: Probability for the binomial distribution (default: 0.5)
+    beta: Adaptive weight function parameter (default: 1.0)
+    gamma: Weight smoothing parameter (default: 0.5)
+
+    Returns:
+    merged_tensor: The merged tensor
+    """
+    # Ensure tensors are on the same device and have the same dtype
+    device = tensor1.device
+    dtype = tensor1.dtype
+    tensor2 = tensor2.to(device).to(dtype)
+
+    # Compute the difference between the tensors
+    delta = tensor2 - tensor1
+
+    # Compute adaptive weights using a non-linear function (sigmoid)
+    adaptive_weights = torch.sigmoid(beta * delta)
+
+    # Compute the binomial mask
+    m = torch.from_numpy(np.random.binomial(1, p, delta.shape)).to(device).to(dtype)
+
+    # Apply the binomial mask to the adaptive weights
+    weighted_delta = m * adaptive_weights * delta
+
+    # Apply weight smoothing
+    smoothed_weights = gamma * adaptive_weights + (1 - gamma) * 0.5
+
+    # Merge the tensors
+    merged_tensor = tensor1 + lambda_val * smoothed_weights * weighted_delta
+
+    return merged_tensor
+
+
+def auto_adaptive_gradient_based_fusion(tensor1, tensor2, temperature=1.0, min_smoothing_factor=0.1,
+                                        max_smoothing_factor=1.5):
+    """
+    Auto-Adaptive Gradient-Based Fusion method for tensor merging.
+
+    Args:
+    tensor1, tensor2: Input tensors to be merged
+    temperature: Temperature for softmax (default: 1.0)
+    min_smoothing_factor: Minimum smoothing factor (default: 0.1)
+    max_smoothing_factor: Maximum smoothing factor (default: 0.9)
+
+    Returns:
+    merged_tensor: The merged tensor
+    """
+    # Compute gradient difference
+    grad_diff = torch.abs(tensor1 - tensor2)
+
+    # Compute dynamic weights using softmax
+    weights = F.softmax(grad_diff / temperature, dim=-1)
+
+    # Apply weights
+    merged_tensor = weights * tensor1 + (1 - weights) * tensor2
+
+    # Compute adaptive smoothing factor based on gradient difference
+    adaptive_smoothing_factor = min_smoothing_factor + (max_smoothing_factor - min_smoothing_factor) * torch.sigmoid(
+        grad_diff)
+
+    # Apply adaptive smoothing
+    smoothed_tensor = adaptive_smoothing_factor * merged_tensor + (1 - adaptive_smoothing_factor) * (
+                tensor1 + tensor2) / 2
+
+    return smoothed_tensor
+
+
+def quantum_inspired_tensor_fusion(tensor1, tensor2, entanglement_factor=0.5, superposition_threshold=0.1,
+                                   scaling_factor=1.0):
+    """
+    Improved Quantum-Inspired Tensor Fusion method for merging two tensors.
+
+    Args:
+    tensor1, tensor2: Input tensors to be merged
+    entanglement_factor: Controls the strength of entanglement (default: 0.5)
+    superposition_threshold: Threshold for superposition effects (default: 0.1)
+    scaling_factor: Factor to scale the final result (default: 1.0)
+
+    Returns:
+    merged_tensor: The merged tensor
+    """
+    # Ensure tensors are on the same device and have the same dtype
+    dtype = tensor1.dtype
+    tensor1 = tensor1.to(torch.float32)
+    tensor2 = tensor2.to(torch.float32)
+
+    # Normalize input tensors
+    tensor1_norm = tensor1 / (torch.norm(tensor1) + 1e-8)
+    tensor2_norm = tensor2 / (torch.norm(tensor2) + 1e-8)
+
+    # Compute the quantum state representation
+    quantum_state = torch.complex(tensor1_norm, tensor2_norm)
+
+    # Apply entanglement
+    entangled_state = torch.exp(1j * np.pi * entanglement_factor * quantum_state)
+
+    # Compute the interference pattern
+    interference = torch.abs(entangled_state) ** 2
+
+    # Apply superposition effects
+    superposition_mask = (interference > superposition_threshold).float()
+    superposition_state = superposition_mask * quantum_state.real + (1 - superposition_mask) * quantum_state.imag
+
+    # Compute the final merged tensor
+    merged_tensor = torch.real(superposition_state * torch.conj(entangled_state))
+
+    # Rescale to original magnitude
+    original_magnitude = (torch.norm(tensor1) + torch.norm(tensor2)) / 2
+    merged_tensor = merged_tensor * (original_magnitude / (torch.norm(merged_tensor) + 1e-8))
+
+    # Apply additional scaling
+    merged_tensor = merged_tensor * scaling_factor
+
+    # Ensure the output is in the same range as the inputs
+    min_val = torch.min(torch.min(tensor1), torch.min(tensor2))
+    max_val = torch.max(torch.max(tensor1), torch.max(tensor2))
+    merged_tensor = torch.clamp(merged_tensor, min_val, max_val)
+
+    return merged_tensor.to(dtype)
+
+
+def momentum_elastic_fusion(tensor1, tensor2, momentum=0.9, elasticity=0.5, iterations=5):
+    """
+    Momentum-based Elastic Fusion (MEF) method for tensor merging.
+
+    Args:
+    tensor1, tensor2: Input tensors to be merged
+    momentum: Controls the influence of previous iterations (default: 0.9)
+    elasticity: Controls the resistance to change (default: 0.5)
+    iterations: Number of fusion iterations (default: 5)
+
+    Returns:
+    merged_tensor: The merged tensor
+    """
+    # Ensure tensors are on the same device and have the same dtype
+    device = tensor1.device
+    dtype = tensor1.dtype
+    tensor2 = tensor2.to(device).to(dtype)
+
+    # Convert to float32 for calculations if needed
+    if tensor1.dtype in [torch.float16, torch.bfloat16]:
+        tensor1 = tensor1.to(torch.float32)
+        tensor2 = tensor2.to(torch.float32)
+
+    # Initialize merged tensor and velocity
+    merged_tensor = (tensor1 + tensor2) / 2
+    velocity = torch.zeros_like(merged_tensor)
+
+    for _ in range(iterations):
+        # Compute elastic force
+        force1 = elasticity * (tensor1 - merged_tensor)
+        force2 = elasticity * (tensor2 - merged_tensor)
+
+        # Update velocity using momentum
+        velocity = momentum * velocity + (force1 + force2)
+
+        # Update merged tensor
+        merged_tensor = merged_tensor + velocity
+
+    # Ensure the merged tensor stays within the original range
+    min_val = torch.min(torch.min(tensor1), torch.min(tensor2))
+    max_val = torch.max(torch.max(tensor1), torch.max(tensor2))
+    merged_tensor = torch.clamp(merged_tensor, min_val, max_val)
+
+    # Convert back to original dtype if needed
+    merged_tensor = merged_tensor.to(dtype)
+
+    return merged_tensor
+
+
+def adaptive_gradient_based_fusion(tensor1, tensor2, temperature=1.0, smoothing_factor=0.5):
+    """
+    Adaptive Gradient-Based Fusion method for tensor merging.
+
+    Args:
+    tensor1, tensor2: Input tensors to be merged
+    temperature: Temperature for softmax (default: 1.0)
+    smoothing_factor: Smoothing factor for adaptive smoothing (default: 0.5)
+
+    Returns:
+    merged_tensor: The merged tensor
+    """
+    # Compute gradient difference
+    grad_diff = torch.abs(tensor1 - tensor2)
+
+    # Compute dynamic weights using softmax
+    weights = F.softmax(grad_diff / temperature, dim=-1)
+
+    # Apply weights
+    merged_tensor = weights * tensor1 + (1 - weights) * tensor2
+
+    # Apply adaptive smoothing based on gradient difference
+    adaptive_smoothing = smoothing_factor * torch.sigmoid(grad_diff)
+    smoothed_tensor = adaptive_smoothing * merged_tensor + (1 - adaptive_smoothing) * (tensor1 + tensor2) / 2
+
+    return smoothed_tensor
+
+
+def non_linear_activation_merge(tensor1, tensor2, alpha=0.5, activation='tanh'):
+    """
+    Non-linear Activation Merge (NAM) method for tensor merging.
+
+    Args:
+    tensor1, tensor2: Input tensors to be merged
+    alpha: Balance factor between linear and non-linear components (default: 0.5)
+    activation: Non-linear activation function to use ('tanh', 'sigmoid', or 'relu') (default: 'tanh')
+
+    Returns:
+    merged_tensor: The merged tensor
+    """
+    device = tensor1.device
+    dtype = tensor1.dtype
+    tensor2 = tensor2.to(device).to(dtype)
+
+    if activation == 'tanh':
+        act_fn = torch.tanh
+    elif activation == 'sigmoid':
+        act_fn = torch.sigmoid
+    elif activation == 'relu':
+        act_fn = torch.relu
+    else:
+        raise ValueError("Unsupported activation function")
+
+    diff = tensor2 - tensor1
+    activated_diff = act_fn(diff)
+
+    merged_tensor = tensor1 + alpha * diff + (1 - alpha) * activated_diff
+
+    return merged_tensor
+
+
+def statistical_moment_guided_merge(tensor1, tensor2, alpha=0.5, beta=1.0):
+    """
+    Statistical Moment Guided Merge (SMGM) method for tensor merging.
+
+    Args:
+    tensor1, tensor2: Input tensors to be merged
+    alpha: Weight for the first moment (mean) guidance (default: 0.5)
+    beta: Weight for the second moment (variance) guidance (default: 1.0)
+
+    Returns:
+    merged_tensor: The merged tensor
+    """
+    # Ensure tensors are on the same device and have the same dtype
+    device = tensor1.device
+    dtype = tensor1.dtype
+    tensor2 = tensor2.to(device).to(dtype)
+
+    # Compute statistical moments
+    mean1, mean2 = tensor1.mean(), tensor2.mean()
+    var1, var2 = tensor1.var(), tensor2.var()
+
+    # Compute moment-based weights
+    mean_weight = torch.sigmoid(alpha * (mean1 - mean2))
+    var_weight = torch.sigmoid(beta * (var1 - var2))
+
+    # Combine weights
+    combined_weight = (mean_weight + var_weight) / 2
+
+    # Merge tensors
+    merged_tensor = combined_weight * tensor1 + (1 - combined_weight) * tensor2
+
+    # Adjust the merged tensor to preserve the overall statistical properties
+    merged_mean = merged_tensor.mean()
+    merged_var = merged_tensor.var()
+    target_mean = (mean1 + mean2) / 2
+    target_var = (var1 + var2) / 2
+
+    # Scale and shift to match target statistics
+    scaled_tensor = (merged_tensor - merged_mean) * torch.sqrt(target_var / merged_var) + target_mean
+
+    return scaled_tensor
+
+
+def statistical_distribution_alignment_merge(tensor1, tensor2, weight=0.5):
+    """
+    統計分佈對齊合併方法。
+
+    參數：
+    tensor1, tensor2：要合併的輸入張量
+    weight：合併時的權重（默認為0.5）
+
+    返回：
+    merged_tensor：合併後的張量
+    """
+    # 確保張量在同一設備和數據類型上
+    device = tensor1.device
+    dtype = tensor1.dtype
+    tensor2 = tensor2.to(device).to(dtype)
+
+    # 計算第一個張量的均值和標準差
+    mean1 = tensor1.mean()
+    std1 = tensor1.std()
+
+    # 計算第二個張量的均值和標準差
+    mean2 = tensor2.mean()
+    std2 = tensor2.std()
+
+    # 對齊第二個張量的分佈到第一個張量
+    adjusted_tensor2 = (tensor2 - mean2) / (std2 + 1e-6) * (std1 + 1e-6) + mean1
+
+    # 合併張量
+    merged_tensor = weight * tensor1 + (1 - weight) * adjusted_tensor2
+
+    return merged_tensor
+
+
+def local_linear_interpolation_merge(tensor1, tensor2, alpha=0.5, threshold=0.1):
+    """
+    局部線性插值合併方法
+
+    Args:
+        tensor1, tensor2: 要合併的兩個張量
+        alpha: 全局合併係數，範圍 [0, 1]，默認為 0.5
+        threshold: 差異閾值，超過該值的元素會動態調整權重，默認為 0.1
+
+    Returns:
+        merged_tensor: 合併後的張量
+    """
+    # 確保兩個張量形狀相同，否則報錯
+    if tensor1.shape != tensor2.shape:
+        raise ValueError("Input tensors must have the same shape")
+
+    # 計算兩個張量之間的絕對差異
+    diff = torch.abs(tensor1 - tensor2)
+
+    # 根據差異動態計算權重
+    dynamic_weight = torch.where(diff < threshold, torch.tensor(alpha), torch.tensor(0.5))
+
+    # 局部線性插值
+    merged_tensor = dynamic_weight * tensor1 + (1 - dynamic_weight) * tensor2
+
+    return merged_tensor
+
+
+def adaptive_merge_tensors(tensor1, tensor2, alpha):
+    delta = tensor2 - tensor1
+    adaptive_weight = torch.sigmoid(torch.abs(delta))
+    merged_tensor = tensor1 + alpha * adaptive_weight * delta
+    return merged_tensor
+
+
+def enhanced_dynamic_weight_distribution(tensor1, tensor2, gamma=0.5, epsilon=1e-6, temperature=1.0):
+    """
+    Enhanced Dynamic Weight Distribution method for tensor merging.
+
+    Args:
+    tensor1, tensor2: Input tensors to be merged
+    gamma: Global smoothing factor (default: 0.5)
+    epsilon: Small value to avoid division by zero (default: 1e-6)
+    temperature: Temperature for softmax (default: 1.0)
+
+    Returns:
+    merged_tensor: The merged tensor
+    """
+    # Compute relative importance of each element
+    importance1 = torch.abs(tensor1) / (torch.sum(torch.abs(tensor1)) + epsilon)
+    importance2 = torch.abs(tensor2) / (torch.sum(torch.abs(tensor2)) + epsilon)
+
+    # Compute element-wise difference
+    diff = torch.abs(tensor1 - tensor2)
+
+    # Compute dynamic weights using softmax with temperature
+    weights = F.softmax(torch.stack([importance1, importance2]) / temperature, dim=0)
+
+    # Apply dynamic weights
+    merged_tensor = weights[0] * tensor1 + weights[1] * tensor2
+
+    # Apply adaptive smoothing based on element-wise difference
+    adaptive_gamma = gamma * torch.sigmoid(diff)
+    smoothed_tensor = adaptive_gamma * merged_tensor + (1 - adaptive_gamma) * (tensor1 + tensor2) / 2
+
+    return smoothed_tensor
+
+
+def gradient_weighted_merge(tensor1, tensor2, temperature=1.0):
+    """
+    Gradient-Weighted Merge method for tensor merging.
+
+    Args:
+    tensor1, tensor2: Input tensors to be merged
+    temperature: Temperature for softmax (default: 1.0)
+
+    Returns:
+    merged_tensor: The merged tensor
+    """
+    # Compute gradient difference
+    grad_diff = torch.abs(tensor1 - tensor2)
+
+    # Compute weights using softmax
+    weights = F.softmax(grad_diff / temperature, dim=-1)
+
+    # Apply weights
+    merged_tensor = weights * tensor1 + (1 - weights) * tensor2
+
+    return merged_tensor
+
+
+def adaptive_frequency_domain_merge(tensor1, tensor2, alpha=0.5, beta=2.0):
+    """
+    Adaptive Frequency Domain Merge method for tensor merging.
+
+    Args:
+    tensor1, tensor2: Input tensors to be merged
+    alpha: Balance between low and high frequencies (default: 0.5)
+    beta: Sharpness of the frequency response curve (default: 2.0)
+
+    Returns:
+    merged_tensor: The merged tensor
+    """
+    # Ensure tensors are on the same device and have the same dtype
+    device = tensor1.device
+    dtype = tensor1.dtype
+    tensor2 = tensor2.to(device).to(dtype)
+
+    # Compute frequency response in spatial domain
+    diff = torch.abs(tensor1 - tensor2)
+    freq_response = 1 / (1 + torch.exp(-beta * (diff - alpha)))
+
+    # Merge tensors
+    merged_tensor = freq_response * tensor1 + (1 - freq_response) * tensor2
+
+    return merged_tensor
+
+
+def dynamic_element_wise_fusion(tensor1, tensor2, temperature=1.0):
+    """
+    Dynamic Element-wise Fusion method for tensor merging.
+
+    Args:
+    tensor1, tensor2: Input tensors to be merged
+    temperature: Temperature for softmax (default: 1.0)
+
+    Returns:
+    merged_tensor: The merged tensor
+    """
+    # Compute importance of each element
+    importance1 = torch.abs(tensor1) / (torch.sum(torch.abs(tensor1)) + 1e-6)
+    importance2 = torch.abs(tensor2) / (torch.sum(torch.abs(tensor2)) + 1e-6)
+
+    # Compute dynamic weights using softmax with temperature
+    weights = F.softmax(torch.stack([importance1, importance2]) / temperature, dim=0)
+
+    # Apply dynamic weights
+    merged_tensor = weights[0] * tensor1 + weights[1] * tensor2
+
+    return merged_tensor
+
+
+def dual_extremum_merging(tensor1, tensor2):
+    """
+    Dual Extremum Merging method for tensor merging.
+
+    Args:
+    tensor1, tensor2: Input tensors to be merged
+
+    Returns:
+    merged_tensor: The merged tensor
+    """
+    # Ensure tensors are on the same device and have the same dtype
+    device = tensor1.device
+    dtype = tensor1.dtype
+    tensor2 = tensor2.to(device).to(dtype)
+
+    # Compute max and min weights
+    max_weight = torch.max(tensor1) / (torch.max(tensor1) + torch.max(tensor2))
+    min_weight = torch.min(tensor1) / (torch.min(tensor1) + torch.min(tensor2))
+
+    # Compute merging weights
+    weight1 = (max_weight + min_weight) / 2
+    weight2 = 1 - weight1
+
+    # Merge tensors
+    merged_tensor = weight1 * tensor1 + weight2 * tensor2
+
+    return merged_tensor
+
+
+def adaptive_harmonic_blending(tensor1, tensor2, alpha=0.5, beta=1.0, gamma=0.5):
+    """
+    Adaptive Harmonic Blending method for tensor merging.
+
+    Args:
+    tensor1, tensor2: Input tensors to be merged
+    alpha: Blending factor (default: 0.5)
+    beta: Harmonic function parameter (default: 1.0)
+    gamma: Adaptive weight adjustment factor (default: 0.5)
+
+    Returns:
+    merged_tensor: The merged tensor
+    """
+    # Ensure tensors are on the same device and have the same dtype
+    device = tensor1.device
+    dtype = tensor1.dtype
+    tensor2 = tensor2.to(device).to(dtype)
+
+    # Compute the difference between the tensors
+    delta = tensor2 - tensor1
+
+    # Compute harmonic weights using a sinusoidal function
+    harmonic_weights = 0.5 * (1 + torch.sin(beta * delta))
+
+    # Compute adaptive weights based on the difference
+    adaptive_weights = torch.sigmoid(gamma * delta)
+
+    # Combine harmonic and adaptive weights
+    combined_weights = alpha * harmonic_weights + (1 - alpha) * adaptive_weights
+
+    # Apply combined weights to blend the tensors
+    merged_tensor = combined_weights * tensor1 + (1 - combined_weights) * tensor2
+
+    return merged_tensor
+
+
+def synergistic_resonance_amplification(tensor1, tensor2, resonance_factor=0.1, amplification_threshold=0.5):
+    """
+    Synergistic Resonance Amplification (SRA) method for tensor merging.
+
+    Args:
+    tensor1, tensor2: Input tensors to be merged
+    resonance_factor: Factor controlling the strength of resonance (default: 0.1)
+    amplification_threshold: Threshold for amplification (default: 0.5)
+
+    Returns:
+    merged_tensor: The merged tensor
+    """
+    device = tensor1.device
+    dtype = tensor1.dtype
+    tensor2 = tensor2.to(device).to(dtype)
+
+    # Compute the resonance
+    resonance = torch.abs(tensor1 - tensor2) * resonance_factor
+
+    # Compute the amplification mask
+    amplification_mask = (resonance > amplification_threshold).float()
+
+    # Merge tensors with resonance and amplification
+    merged_tensor = (tensor1 + tensor2) / 2 + amplification_mask * resonance * torch.sign(tensor1 + tensor2)
+
+    # Ensure the output is in the same range as the inputs
+    min_val = torch.min(torch.min(tensor1), torch.min(tensor2))
+    max_val = torch.max(torch.max(tensor1), torch.max(tensor2))
+    merged_tensor = torch.clamp(merged_tensor, min_val, max_val)
+
+    return merged_tensor

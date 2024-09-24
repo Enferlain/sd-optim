@@ -21,7 +21,7 @@ from sd_interim_bayesian_merger.models.WDAes import WDAes as WDA
 from sd_interim_bayesian_merger.models.ShadowScore import ShadowScore as SS
 from sd_interim_bayesian_merger.models.CafeScore import CafeScore as CAFE
 from sd_interim_bayesian_merger.models.NoAIScore import NoAIScore as NOAI
-from sd_interim_bayesian_merger.models.CityAesthetics import CityAesthetics as CITY
+from sd_interim_bayesian_merger.models.CityAesthetics import CityAestheticsScorer as CITY
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO)
@@ -96,137 +96,96 @@ class AestheticScorer:
     model: Dict
 
     def __post_init__(self):
+        self.setup_img_saving()
+        self.setup_evaluator_paths()
+        self.get_models()
+        self.load_models()
+
+    def setup_img_saving(self):
         if "manual" in self.cfg.scorer_method:
             self.cfg.save_imgs = True
 
         if self.cfg.save_imgs:
             self.imgs_dir = Path(HydraConfig.get().runtime.output_dir, "imgs")
-            if not self.imgs_dir.exists():
-                self.imgs_dir.mkdir()
+            self.imgs_dir.mkdir(exist_ok=True)
 
+    def setup_evaluator_paths(self):
+        """Sets up model paths and devices for each evaluator."""
         for evaluator in self.cfg.scorer_method:
-            if evaluator != 'manual':
-                if evaluator != 'noai':
-                    if self.cfg.scorer_alt_location is not None and evaluator in self.cfg.scorer_alt_location:
-                        self.scorer_model_name[evaluator] = self.cfg.scorer_alt_location[evaluator]['model_name']
-                        self.model_path[evaluator] = Path(self.cfg.scorer_alt_location[evaluator]['model_dir'])
-                    else:
-                        # Use MODEL_DATA to get file name, dynamically adjusting casing
-                        if evaluator.upper() in MODEL_DATA:
-                            self.scorer_model_name[evaluator] = MODEL_DATA[evaluator.upper()]["file_name"]
-                            self.model_path[evaluator] = Path(
-                                self.cfg.scorer_model_dir,
-                                self.scorer_model_name[evaluator],
-                            )
-                        elif evaluator.lower() in MODEL_DATA:
-                            self.scorer_model_name[evaluator] = MODEL_DATA[evaluator.lower()]["file_name"]
-                            self.model_path[evaluator] = Path(
-                                self.cfg.scorer_model_dir,
-                                self.scorer_model_name[evaluator],
-                            )
-                        else:
-                            raise KeyError(f"Evaluator '{evaluator}' not found in MODEL_DATA")
+            if evaluator in ['manual', 'noai']:
+                continue
 
-                with open_dict(self.cfg):
-                    if self.cfg.scorer_device is None:
-                        self.cfg.scorer_device = {}
-                    if evaluator not in self.cfg.scorer_device:
-                        self.cfg.scorer_device[evaluator] = self.cfg.scorer_default_device
+            self.scorer_model_name[evaluator], self.model_path[evaluator] = self.get_evaluator_model_info(evaluator)
+
             with open_dict(self.cfg):
-                if self.cfg.scorer_weight is None:
-                    self.cfg.scorer_weight = {}
-                if evaluator not in self.cfg.scorer_weight:
-                    self.cfg.scorer_weight[evaluator] = 1
-        if 'clip' not in self.cfg.scorer_method and any(
-                x in ['laion', 'chad'] for x in self.cfg.scorer_method):
-            self.model_path['clip'] = Path(
-                self.cfg.scorer_model_dir,
-                CLIP_MODEL="CLIP-ViT-L-14.pt",
-            )
+                self.cfg.scorer_device = self.cfg.scorer_device or {}
+                self.cfg.scorer_device.setdefault(evaluator, self.cfg.scorer_default_device)
 
-        self.get_models()
-        self.load_models()
+                self.cfg.scorer_weight = self.cfg.scorer_weight or {}
+                self.cfg.scorer_weight.setdefault(evaluator, 1)
+
+        if 'clip' not in self.cfg.scorer_method and any(x in ['laion', 'chad', 'cityaes'] for x in self.cfg.scorer_method):
+            self.model_path['clip'] = Path(self.cfg.scorer_model_dir, "CLIP-ViT-L-14.pt")
+
+    def get_evaluator_model_info(self, evaluator):
+        """Determines the model name and path for each evaluator."""
+        alt_location = self.cfg.scorer_alt_location
+
+        if alt_location and evaluator in alt_location:
+            model_name = alt_location[evaluator]['model_name']
+            model_dir = Path(alt_location[evaluator]['model_dir'])
+        else:
+            model_name = MODEL_DATA.get(evaluator.upper(), MODEL_DATA.get(evaluator.lower(), {})).get("file_name")
+            if not model_name:
+                raise KeyError(f"Evaluator '{evaluator}' not found in MODEL_DATA")
+            model_dir = Path(self.cfg.scorer_model_dir, model_name)
+
+        return model_name, model_dir
 
     def get_models(self) -> None:
-        blip_config = Path(
-            self.cfg.scorer_model_dir,
-            'med_config.json',
-        )
+        """Downloads necessary model files if they do not exist."""
+        blip_config = Path(self.cfg.scorer_model_dir, 'med_config.json')
+
         if not blip_config.is_file():
-            url = "https://huggingface.co/THUDM/ImageReward/resolve/main/med_config.json?download=true"
+            self.download_file("https://huggingface.co/THUDM/ImageReward/resolve/main/med_config.json?download=true", blip_config)
 
-            r = requests.get(url)
-            r.raise_for_status()
+        for evaluator in self.cfg.scorer_method:
+            if evaluator in ['manual', 'noai']:
+                continue
+            if not self.model_path[evaluator].is_file():
+                print(f"Downloading {evaluator.upper()} model")
+                url = MODEL_DATA[evaluator]["url"]
+                self.download_file(url, self.model_path[evaluator])
 
-            with open(blip_config.absolute(), "wb") as f:
-                print(f"saved into {blip_config}")
-                f.write(r.content)
+        # Ensure CLIP model for certain evaluators
+        if 'clip' not in self.cfg.scorer_method and any(x in ['laion', 'chad'] for x in self.cfg.scorer_method):
+            clip_path = self.model_path['clip']
+            if not clip_path.is_file():
+                self.download_file("https://openaipublic.azureedge.net/clip/models/b8cca3fd41ae0c99ba7e8951adf17d267cdb84cd88be6f7c2e0eca1737a03836/ViT-L-14.pt?raw=true", clip_path)
+
+    def download_file(self, url: str, path: Path):
+        """Downloads a file from a URL to the specified path."""
+        r = requests.get(url)
+        r.raise_for_status()
+        with open(path, "wb") as f:
+            f.write(r.content)
+        print(f"Saved into {path}")
+
+    def load_models(self) -> None:
+        """Initializes models for each evaluator."""
+        med_config = Path(self.cfg.scorer_model_dir, "med_config.json")
+        model_loaders = self.get_model_loaders(med_config)  # Get model loader functions here!
 
         for evaluator in self.cfg.scorer_method:
             if evaluator != 'manual':
-                if evaluator != 'noai':
-                    if not self.model_path[evaluator].is_file():
-                        print(f"You do not have the {evaluator.upper()} model, let me download that for you")
-                        # Use MODEL_DATA to get URL
-                        url = MODEL_DATA[evaluator]["url"]
+                print(f"Loading {self.scorer_model_name[evaluator]}")
+                if evaluator in model_loaders:
+                    self.model[evaluator] = model_loaders[evaluator]()  # Load model using the corresponding function
 
-                        r = requests.get(url)
-                        r.raise_for_status()
-
-                        with open(self.model_path[evaluator].absolute(), "wb") as f:
-                            print(f"saved into {self.model_path[evaluator]}")
-                            f.write(r.content)
-                else:
-                    for m_path in self.model_path[evaluator]:
-                        if not self.model_path[evaluator][m_path].is_file():
-                            url = eval(f"{m_path.upper() + '_URL'}")
-
-                            r = requests.get(url)
-                            r.raise_for_status()
-
-                            with open(self.model_path[evaluator][m_path].absolute(), "wb") as f:
-                                print(f"saved into {self.model_path[evaluator][m_path]}")
-                                f.write(r.content)
-
-                if evaluator == 'wdaes':
-                    # Use MODEL_DATA to get file name
-                    clip_vit_b_32 = Path(
-                        self.cfg.scorer_model_dir,
-                        MODEL_DATA["wdaes"]["clip_file_name"],
-                    )
-                    if not clip_vit_b_32.is_file():
-                        print(
-                            f"You do not have the CLIP-ViT-B-32 necessary for the wdaes model, let me download that for you")
-                        url = "https://huggingface.co/openai/clip-vit-base-patch32/resolve/b527df4b30e5cc18bde1cc712833a741d2d8c362/model.safetensors?download=true"
-
-                        r = requests.get(url)
-                        r.raise_for_status()
-
-                        with open(clip_vit_b_32.absolute(), "wb") as f:
-                            print(f"saved into {clip_vit_b_32}")
-                            f.write(r.content)
-
-        if ('clip' not in self.cfg.scorer_method and
-                any(x in ['laion', 'chad'] for x in self.cfg.scorer_method)):
-            if not self.model_path['clip'].is_file():
-                print(f"You do not have the CLIP(which you need) model, let me download that for you")
-                url = "https://openaipublic.azureedge.net/clip/models/b8cca3fd41ae0c99ba7e8951adf17d267cdb84cd88be6f7c2e0eca1737a03836/ViT-L-14.pt?raw=true"
-
-                r = requests.get(url)
-                r.raise_for_status()
-
-                with open(self.model_path['clip'].absolute(), "wb") as f:
-                    print(f"saved into {self.model_path['clip']}")
-                    f.write(r.content)
-
-    def load_models(self) -> None:
-        med_config = Path(
-            self.cfg.scorer_model_dir,
-            "med_config.json"
-        )
-
-        # Create a dictionary mapping evaluator names to model loading functions
-        model_loaders = {
+    # Now place the get_model_loaders method outside load_models
+    def get_model_loaders(self, med_config: Path):
+        """Creates a dictionary of evaluators mapped to their respective model loading functions."""
+        return {
             "wdaes": lambda: WDA(self.model_path["wdaes"], Path(self.cfg.scorer_model_dir, "CLIP-ViT-B-32.safetensors"), self.cfg.scorer_device["wdaes"]),
             "clip": lambda: CLP(self.model_path["clip"], self.cfg.scorer_device["clip"]),
             "blip": lambda: BLP(self.model_path["blip"], med_config, self.cfg.scorer_device["blip"]),
@@ -238,14 +197,8 @@ class AestheticScorer:
             "shadowv2": lambda: SS(self.model_path["shadowv2"], self.cfg.scorer_device["shadowv2"]),
             "cafe": lambda: CAFE(self.model_path["cafe"], self.cfg.scorer_device["cafe"]),
             "noai": lambda: NOAI(self.model_path["noai"]['class'], self.model_path["noai"]['real'], self.model_path["noai"]['anime'], device=self.cfg.scorer_device["noai"]),
-            "cityaes": lambda: CITY(self.model_path["cityaes"], self.model_path['clip'], self.cfg.scorer_device["cityaes"]),
+            "cityaes": lambda: CITY(self.model_path["cityaes"], self.cfg.scorer_device["cityaes"]),
         }
-
-        for evaluator in self.cfg.scorer_method:
-            if evaluator != 'manual':
-                print(f"Loading {self.scorer_model_name[evaluator]}")
-                if evaluator in model_loaders:
-                    self.model[evaluator] = model_loaders[evaluator]()  # Call the appropriate loading function
 
     def score(self, image: Image.Image, prompt) -> float:
         values = []

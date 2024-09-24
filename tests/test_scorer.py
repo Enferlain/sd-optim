@@ -1,4 +1,4 @@
-from sd_webui_bayesian_merger.scorer import AestheticScorer
+from sd_interim_bayesian_merger.scorer import AestheticScorer
 
 
 def test_aesthetic_scorer():

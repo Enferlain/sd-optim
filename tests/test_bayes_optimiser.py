@@ -1,6 +1,6 @@
 from unittest.mock import patch
 
-from sd_webui_bayesian_merger import BayesOptimiser
+from sd_interim_bayesian_merger import BayesOptimiser
 
 
 def mock_target_function(self, **params):

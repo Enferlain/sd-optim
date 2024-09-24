@@ -20,6 +20,7 @@ logging.basicConfig(level=logging.INFO)
 @dataclass
 class Merger:
     cfg: DictConfig
+    iteration: int = 0
 
     def __post_init__(self) -> None:
         self.validate_config()
@@ -148,15 +149,15 @@ class Merger:
             return sd_mecha.add_difference(base_model, merged_model, alpha=1.0)
         return merged_model
 
-    def _serialize_and_save_recipe(self, merged_model, it: int = 0):
+    def _serialize_and_save_recipe(self, merged_model, model_path):  # Add model_path as a parameter
         """Serializes and saves the merged model recipe to a file."""
         log_dir = Path(HydraConfig.get().runtime.output_dir)
         recipes_dir = log_dir / "recipes"
         os.makedirs(recipes_dir, exist_ok=True)
 
-        model_names = [Path(path).stem for path in self.cfg.model_paths]
-        model_name = f"bbwm-{model_names[0]}-{model_names[1]}-{self.cfg.merge_mode}-it_{it + 1}"  # Increment iteration
-        recipe_file_path = recipes_dir / f"{model_name}.mecha"
+        # Extract the iteration file name from model_path
+        iteration_file_name = model_path.stem
+        recipe_file_path = recipes_dir / f"{iteration_file_name}.mecha"  # Use iteration file name for recipe
 
         with open(recipe_file_path, "w", encoding="utf-8") as f:
             f.write(sd_mecha.recipe_serializer.serialize(merged_model))
@@ -244,7 +245,7 @@ class Merger:
         merged_model = self._merge_models(updated_models, all_hypers, cache)
         merged_model = self._handle_delta_output(merged_model, mecha_merge_method, updated_models, base_model)
 
-        self._serialize_and_save_recipe(merged_model)
+        self._serialize_and_save_recipe(merged_model, model_path)
         self._execute_sd_mecha_merge(merged_model, model_path)
 
         return model_path

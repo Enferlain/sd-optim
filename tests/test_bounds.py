@@ -1,8 +1,8 @@
 import pytest
 from omegaconf import DictConfig, ListConfig
 
-from sd_webui_bayesian_merger.bounds import Bounds
-from sd_webui_bayesian_merger.merger import NUM_TOTAL_BLOCKS
+from sd_interim_bayesian_merger.bounds import Bounds
+from sd_interim_bayesian_merger.merger import NUM_TOTAL_BLOCKS
 
 
 def test_set_block_bounds():

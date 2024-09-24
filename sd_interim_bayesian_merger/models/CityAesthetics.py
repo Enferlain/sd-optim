@@ -1,47 +1,102 @@
 import os
-import safetensors
 import torch
+import torch.nn as nn
+from safetensors.torch import load_file
 from PIL import Image
-from transformers import pipeline, AutoConfig, AutoProcessor, CLIPProcessor, CLIPModel
+from transformers import CLIPImageProcessor, CLIPVisionModelWithProjection
 
-class CityAesthetics:
-    def __init__(self, pathname, clip_pathname, device='cpu'):
+
+class ResBlock(nn.Module):
+    """Linear block with residuals"""
+
+    def __init__(self, ch):
         super().__init__()
+        self.join = nn.ReLU()
+        self.long = nn.Sequential(
+            nn.Linear(ch, ch),
+            nn.LeakyReLU(0.1),
+            nn.Linear(ch, ch),
+            nn.LeakyReLU(0.1),
+            nn.Linear(ch, ch),
+        )
+
+    def forward(self, x):
+        return self.join(self.long(x) + x)
+
+
+class PredictorModel(nn.Module):
+    """Main predictor class"""
+
+    def __init__(self, features=768, outputs=1, hidden=1024):
+        super().__init__()
+        self.features = features
+        self.outputs = outputs
+        self.hidden = hidden
+        self.up = nn.Sequential(
+            nn.Linear(self.features, self.hidden),
+            ResBlock(ch=self.hidden),
+        )
+        self.down = nn.Sequential(
+            nn.Linear(self.hidden, 128),
+            nn.Linear(128, 64),
+            nn.Dropout(0.1),
+            nn.LeakyReLU(),
+            nn.Linear(64, 32),
+            nn.Linear(32, self.outputs),
+        )
+        self.out = nn.Softmax(dim=1) if self.outputs > 1 else nn.Tanh()
+
+    def forward(self, x):
+        y = self.up(x)
+        z = self.down(y)
+        if self.outputs > 1:
+            return self.out(z)
+        else:
+            return (self.out(z) + 1.0) / 2.0
+
+
+class CityAestheticsScorer:
+    def __init__(self, pathname, device='cpu'):
         self.device = device
-        if self.device == 'cuda':
-            self.device += ':0'
         self.pathname = pathname
-        self.clip_pathname = clip_pathname
         self.initialize_model()
 
     def initialize_model(self):
-        # Load the model and processor
-        self.config = AutoConfig.from_pretrained("city96/CityAesthetics")
-        self.processor = AutoProcessor.from_pretrained("city96/CityAesthetics")
-        self.model = CLIPModel.from_pretrained("city96/CityAesthetics", torch_dtype=torch.float16).to(self.device)
-        self.clip_processor = CLIPProcessor.from_pretrained("openai/clip-vit-large-patch14")
-        self.clip_model = CLIPModel.from_pretrained("openai/clip-vit-large-patch14").to(self.device)
-        self.pipe = pipeline("image-classification", model=self.model, image_processor=self.processor, device=self.device)
+        # Initialize CLIP model and processor
+        self.clip_processor = CLIPImageProcessor.from_pretrained("openai/clip-vit-large-patch14-336")
+        self.clip_model = CLIPVisionModelWithProjection.from_pretrained(
+            "openai/clip-vit-large-patch14-336",
+            torch_dtype=torch.float32,
+        ).to(self.device)
+        self.clip_model.eval()
+
+        # Load the custom PredictorModel with state_dict from safetensors
+        statedict = load_file(self.pathname)  # Load safetensor file
+        assert tuple(statedict["up.0.weight"].shape) == (1024, 768), "Unexpected model architecture."
+        self.city_model = PredictorModel(outputs=1)  # Initialize PredictorModel
+        self.city_model.load_state_dict(statedict)  # Load weights into the model
+        self.city_model.to(self.device)  # Move model to the device
+        self.city_model.eval()  # Set model to evaluation mode
 
     def score(self, prompt, image):
         if isinstance(image, Image.Image):
             pil_image = image
         elif isinstance(image, str):
             if os.path.isfile(image):
-                pil_image = Image.open(image)
+                pil_image = Image.open(image).convert("RGB")
+            else:
+                raise ValueError(f"Image file {image} does not exist.")
+        else:
+            raise TypeError("Image must be a PIL.Image.Image instance or a valid file path.")
 
-        # Process image and text with CLIP
-        inputs = self.clip_processor(text=[prompt], images=pil_image, return_tensors="pt", padding=True)
-        inputs = inputs.to(self.device)
-        text_embeds = self.clip_model.get_text_features(**inputs)
-        image_embeds = self.clip_model.get_image_features(**inputs)
+        # Extract CLIP embeddings
+        inputs = self.clip_processor(images=pil_image, return_tensors="pt").to(self.device, dtype=torch.float32)
+        with torch.no_grad():
+            clip_embeddings = self.clip_model(**inputs).image_embeds
 
-        # Normalize embeddings
-        text_embeds = text_embeds / text_embeds.norm(dim=-1, keepdim=True)
-        image_embeds = image_embeds / image_embeds.norm(dim=-1, keepdim=True)
+        # Obtain CityAesthetics score using CLIP embeddings
+        with torch.no_grad():
+            score = self.city_model(clip_embeddings)
 
-        # Concatenate embeddings and get aesthetic score
-        global_features = torch.cat([text_embeds, image_embeds], dim=-1)
-        score = self.model(global_features)[0][0].item() * 10
-
-        return score
+        # Scale score from [0, 1] to [0, 10]
+        return score.detach().cpu().item() * 10.0

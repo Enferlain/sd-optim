@@ -1,26 +1,27 @@
-# sd-webui-bayesian-merger
+# sd-interim-bayesian-merger
 
-Even more opinionated fork of the original repo by s1dlx. 
+Even more opinionated fork of the original repo by s1dlx currently undergoing a transformation hence the name
 
 Since he's absent, I started updating the project with things that were missing at the time, which eventually built into getting my own ideas, which I'll be gradually introducing into this fork. 
 
 Don't expect it to always be in a working state, but I generally try to only push when it is.
 
-Stuff that's new:
+### Stuff that's new:
 - entirely different merge backend [mecha](https://github.com/ljleb/sd-mecha) (everyone say thank you to ljleb for boosting the merge game)
 - you get to pick what hypers to optimize
 - new juicer scorer
 - both a1111 and forge support (comfy and swarm eventually)
 - ability to skip during manual scoring
 
-planned
+### Planned:
 - more (and better) visualizations
 - ability to define custom bounds/behavior to a hyper of choice (optimizing false/true behaving hypers)
 - switching between manual and automatic scoring
 - adjusting batch size and payload selection during optimization
 - scoring rethinking potentially based on categories and not just simple avg
+- possibily pivot to hyperactive and others for way more optimization options
 - more that I can't remember or will randomly come up with
-  
+
 wip text
 
 -----------

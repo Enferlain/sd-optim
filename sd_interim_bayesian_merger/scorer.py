@@ -124,9 +124,6 @@ class AestheticScorer:
                 self.cfg.scorer_weight = self.cfg.scorer_weight or {}
                 self.cfg.scorer_weight.setdefault(evaluator, 1)
 
-        if 'clip' not in self.cfg.scorer_method and any(x in ['laion', 'chad', 'cityaes'] for x in self.cfg.scorer_method):
-            self.model_path['clip'] = Path(self.cfg.scorer_model_dir, "CLIP-ViT-L-14.pt")
-
     def get_evaluator_model_info(self, evaluator):
         """Determines the model name and path for each evaluator."""
         alt_location = self.cfg.scorer_alt_location
@@ -147,7 +144,10 @@ class AestheticScorer:
         blip_config = Path(self.cfg.scorer_model_dir, 'med_config.json')
 
         if not blip_config.is_file():
-            self.download_file("https://huggingface.co/THUDM/ImageReward/resolve/main/med_config.json?download=true", blip_config)
+            self.download_file(
+                "https://huggingface.co/THUDM/ImageReward/resolve/main/med_config.json?download=true",
+                blip_config,
+            )
 
         for evaluator in self.cfg.scorer_method:
             if evaluator in ['manual', 'noai']:
@@ -157,11 +157,15 @@ class AestheticScorer:
                 url = MODEL_DATA[evaluator]["url"]
                 self.download_file(url, self.model_path[evaluator])
 
-        # Ensure CLIP model for certain evaluators
-        if 'clip' not in self.cfg.scorer_method and any(x in ['laion', 'chad'] for x in self.cfg.scorer_method):
-            clip_path = self.model_path['clip']
+        # Download CLIP model if needed by Laion or Chad scorers
+        if any(x in ['laion', 'chad'] for x in self.cfg.scorer_method):
+            clip_path = Path(self.cfg.scorer_model_dir, "CLIP-ViT-L-14.pt")
             if not clip_path.is_file():
-                self.download_file("https://openaipublic.azureedge.net/clip/models/b8cca3fd41ae0c99ba7e8951adf17d267cdb84cd88be6f7c2e0eca1737a03836/ViT-L-14.pt?raw=true", clip_path)
+                print("Downloading CLIP model (required for Laion or Chad scorers)")
+                self.download_file(
+                    "https://openaipublic.azureedge.net/clip/models/b8cca3fd41ae0c99ba7e8951adf17d267cdb84cd88be6f7c2e0eca1737a03836/ViT-L-14.pt?raw=true",
+                    clip_path,
+                )
 
     def download_file(self, url: str, path: Path):
         """Downloads a file from a URL to the specified path."""

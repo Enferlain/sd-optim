@@ -42,13 +42,14 @@ img_average_type: arithmetic # geometric, arithmetic, quadratic
 # Prompt-Image Alignment:               blip, clip
 # Aesthetic:                            chad, laion
 # Hybrid(PIA + AES):                    ir, hpsv2, pick
-# Anime/Illustration:                   shadow, cafe, wdaes
+# Anime/Illustration:                   cityaes, shadow, cafe, wdaes
 # Misc:                                 manual, noai, iqa
 #
 # !!!! IQA ARE NOT IMPLEMENTED YET !!!!
 #
 # Notes:
-# 1) recomended tested safe setup is [laion, chad, clip, blip, ir] with weights 0.5, 0.5, 1, 1, 1
+# 1) recommended tested safe setup is [laion, chad, clip, blip, ir] with weights 0.5, 0.5, 1, 1, 1 <- whitewipe's setup
+# 2) personal (imi) recommendation is cityaes for anime, also good to filter out broken images and is very fast and small
 
 scorer_method: [clip, blip, laion, chad, ir]
 scorer_average_type: arithmetic # geometric, arithmetic, quadratic
@@ -72,7 +73,7 @@ scorer_alt_location:
 scorer_print_individual: True
 
 save_best: True
-best_precision: 16 # 32
+precision: fp16  # "fp16", "bf16", "fp32", or "fp64"
 
 visualizations:
   scatter_plot: False # not implemented

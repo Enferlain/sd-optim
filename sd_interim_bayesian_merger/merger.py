@@ -16,11 +16,18 @@ from sd_interim_bayesian_merger.merge_methods import MergeMethods
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO)
 
+# Map precision strings to torch.dtype objects
+precision_mapping = {
+    "fp16": torch.float16,
+    "bf16": torch.bfloat16,
+    "fp32": torch.float32,
+    "fp64": torch.float64,
+}
+
 
 @dataclass
 class Merger:
     cfg: DictConfig
-    iteration: int = 0
 
     def __post_init__(self) -> None:
         self.validate_config()
@@ -73,7 +80,7 @@ class Merger:
 
     def create_best_model_out_name(self, it: int = 0) -> None:
         model_names = [Path(path).stem for path in self.cfg.model_paths]
-        combined_name = f"{model_names[0]}-{model_names[1]}-{self.cfg.merge_mode}-it_{it}_best-fp{self.cfg.best_precision}"
+        combined_name = f"{model_names[0]}-{model_names[1]}-{self.cfg.merge_mode}-it_{it}_best-{self.cfg.precision.lower()}"
         self.best_output_file = Path(Path(self.cfg.model_paths[0]).parent, f"bbwm-{combined_name}.safetensors")
 
     def _get_expected_num_models(self) -> int:
@@ -169,7 +176,7 @@ class Merger:
             merged_model,
             output=model_path,
             threads=self.cfg.threads,
-            save_dtype=torch.float16 if self.cfg.best_precision == 16 else torch.float32,
+            save_dtype=precision_mapping[self.cfg.precision]
         )
         logging.info(f"Merged model using sd-mecha.")
 
@@ -188,7 +195,6 @@ class Merger:
         mecha_merge_method = sd_mecha.extensions.merge_method.resolve(self.cfg.merge_mode)
         input_merge_spaces, varargs_merge_space = mecha_merge_method.get_input_merge_spaces()
         default_hypers = mecha_merge_method.get_default_hypers()
-
         base_model = self._select_base_model(cfg)
 
         # Merge base_values and weights_list into a single dictionary, using the mapping

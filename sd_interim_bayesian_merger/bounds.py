@@ -49,8 +49,9 @@ class Bounds:
                     bounds[key] = (0.0, 1.0)
                 bounds[f"base_{param_name}"] = (0.0, 1.0)
 
-        # Override with custom ranges
-        bounds.update(OmegaConf.to_object(custom_ranges))
+        # Override with custom ranges only if guided optimization is enabled
+        if cfg.guided_optimization:  # Add conditional check here
+            bounds.update(OmegaConf.to_object(custom_ranges))
 
         return bounds
 

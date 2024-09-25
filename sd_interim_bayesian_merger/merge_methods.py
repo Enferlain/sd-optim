@@ -92,12 +92,13 @@ class MergeMethods:
 
 
     @staticmethod
-    @convert_to_recipe
+    @convert_to_recipe(volatile_hypers=["cache"])
     def determinant_sum(
             a: Tensor | SameMergeSpace,
             b: Tensor | SameMergeSpace,
             *,
             alpha: Hyper = 0.5,
+            cache: Optional[Dict[str, Dict[str, Tensor]]] = None,
             **kwargs,
     ) -> Tensor | SameMergeSpace:
         key = kwargs.get("key", "")
@@ -132,11 +133,28 @@ class MergeMethods:
 
         a_neurons = a.reshape(*shape_2d)
         b_neurons = b.reshape(*shape_2d)
-        ab_neurons = a_neurons * (1 - alpha) + b_neurons * alpha
 
         svd_driver = "gesvd" if a.is_cuda else None
-        a_s = torch.linalg.svdvals(a_neurons, driver=svd_driver)
-        b_s = torch.linalg.svdvals(b_neurons, driver=svd_driver)
+
+        # Cache handling
+        if cache is not None:
+            key = kwargs["key"]
+            if key not in cache:
+                cache[key] = {}
+            cache = cache[key]
+
+        if cache is not None and "a_s" in cache and "b_s" in cache:
+            a_s = cache["a_s"].to(a.device, a.dtype)
+            b_s = cache["b_s"].to(a.device, a.dtype)
+        else:
+            a_s = torch.linalg.svdvals(a_neurons, driver=svd_driver)
+            b_s = torch.linalg.svdvals(b_neurons, driver=svd_driver)
+
+            if cache is not None:
+                cache["a_s"] = a_s.to("cpu")
+                cache["b_s"] = b_s.to("cpu")
+
+        ab_neurons = a_neurons * (1 - alpha) + b_neurons * alpha
         ab_s = torch.linalg.svdvals(ab_neurons, driver=svd_driver)
 
         def pdet(s):

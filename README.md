@@ -1,19 +1,30 @@
-# sd-webui-bayesian-merger
+# sd-interim-bayesian-merger
 
-[![](https://dcbadge.vercel.app/api/server/EZJuBfNVHh)](https://discord.gg/EZJuBfNVHh)
+Even more opinionated fork of the original repo by s1dlx currently undergoing a transformation hence the name
 
-## NEWS
+Since he's absent, I started updating the project with things that were missing at the time, which eventually built into getting my own ideas, which I'll be gradually introducing into this fork. 
 
-- 2023/06/14 lots of new things, I lost track...join the discord server for discussion and future updates
-- 2023/05/30 introducing [`meh`](https://github.com/s1dlx/meh) engine
-- 2023/05/17 add `scorer_device`; remove `aes` and `cafe_*` scorers; add `score_weight` to payload `.yaml`
-- 2023/05/16 `latin-hypercube-sampling` for `bayes` optimiser
-- 2023/05/15 `adaptive-tpe` optimiser
-- 2023/05/03 `tensor_sum` merging method
-- 2023/04/25 `weighted_subtraction` merging method
-- 2023/04/22 `manual` scoring method
-- 2023/04/18 `group` parameters
-- 2023/04/17 `freeze` parameters or set custom optimisation `ranges`
+Don't expect it to always be in a working state, but I generally try to only push when it is.
+
+### Stuff that's new:
+- entirely different merge backend [mecha](https://github.com/ljleb/sd-mecha) (everyone say thank you to ljleb for boosting the merge game)
+- you get to pick what hypers to optimize
+- new juicer scorer
+- both a1111 and forge support (comfy and swarm eventually)
+- ability to skip during manual scoring
+
+### Planned:
+- more (and better) visualizations
+- ability to define custom bounds/behavior to a hyper of choice (optimizing false/true behaving hypers)
+- switching between manual and automatic scoring
+- adjusting batch size and payload selection during optimization
+- scoring rethinking potentially based on categories and not just simple avg
+- possibily pivot to hyperactive and others for way more optimization options
+- more that I can't remember or will randomly come up with
+
+wip text
+
+-----------
 
 ## What is this?
 

@@ -30,10 +30,11 @@ model_arch: sdxl  # specify model architecture (sd1, sdxl, sd3)
 optimizer: bayes                 # tpe
 bounds_transformer: False        # bayes only
 latin_hypercube_sampling: False  # bayes only
-guided_optimization: False
-batch_size: 1
-init_points: 1
-n_iters: 1
+random_state: 1                  # seed for optimization run
+guided_optimization: False       # custom stuff, untested
+batch_size: 1                    # amount of images per payload
+init_points: 1                   # exploration
+n_iters: 1                       # exploitation
 
 save_imgs: False
 img_average_type: arithmetic # geometric, arithmetic, quadratic
@@ -42,7 +43,7 @@ img_average_type: arithmetic # geometric, arithmetic, quadratic
 # Prompt-Image Alignment:               blip, clip
 # Aesthetic:                            chad, laion
 # Hybrid(PIA + AES):                    ir, hpsv2, pick
-# Anime/Illustration:                   cityaes, shadow, cafe, wdaes
+# Anime/Illustration:                   cityaes, shadowv2, cafe, wdaes
 # Misc:                                 manual, noai, iqa
 #
 # !!!! IQA ARE NOT IMPLEMENTED YET !!!!
@@ -51,7 +52,7 @@ img_average_type: arithmetic # geometric, arithmetic, quadratic
 # 1) recommended tested safe setup is [laion, chad, clip, blip, ir] with weights 0.5, 0.5, 1, 1, 1 <- whitewipe's setup
 # 2) personal (imi) recommendation is cityaes for anime, also good to filter out broken images and is very fast and small
 
-scorer_method: [clip, blip, laion, chad, ir]
+scorer_method: [cityaes]
 scorer_average_type: arithmetic # geometric, arithmetic, quadratic
 scorer_weight:
   #blip: 0.5

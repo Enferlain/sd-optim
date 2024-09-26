@@ -22,7 +22,8 @@ class BayesOptimizer(Optimizer):
         self.optimizer = BayesianOptimization(
             f=self.sd_target_function,
             pbounds=pbounds,
-            random_state=1,
+            verbose=2,
+            random_state=self.cfg.random_state,
             bounds_transformer=self.bounds_transformer
             if self.cfg.bounds_transformer
             else None,

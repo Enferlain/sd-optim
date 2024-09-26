@@ -97,7 +97,11 @@ class AestheticScorer:
 
     def __post_init__(self):
         self.setup_img_saving()
-        self.setup_evaluator_paths()
+
+        with open_dict(self.cfg):  # Make sure scorer_weight exists
+            self.cfg.scorer_weight = self.cfg.scorer_weight or {}
+
+        self.setup_evaluator_paths()  # Now safe to call this method
         self.get_models()
         self.load_models()
 
@@ -216,17 +220,19 @@ class AestheticScorer:
                 logger.error(f"Error displaying image: {e}")
 
         for evaluator in self.cfg.scorer_method:
-            scorer_weights.append(int(self.cfg.scorer_weight[evaluator]))
             if evaluator == 'manual':
                 # Display the image in a separate thread
                 threading.Thread(target=show_image, daemon=True).start()
                 values.append(self.get_user_score())
-            else:
+                scorer_weights.append(1)  # Append default weight for manual scoring
+            else:  # Only access scorer_weight for automatic scorers
                 try:
                     values.append(self.model[evaluator].score(prompt, image))
+                    scorer_weights.append(int(self.cfg.scorer_weight[evaluator]))  # Access weight here
                 except Exception as e:
                     logger.error(f"Error scoring image with {evaluator}: {e}")
                     values.append(0.0)
+                    scorer_weights.append(0)  # Append 0 for errors
 
             if self.cfg.scorer_print_individual:
                 print(f"{evaluator}:{values[-1]}")

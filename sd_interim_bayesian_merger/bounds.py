@@ -168,7 +168,7 @@ class Bounds:
                 base_name = f"base_{param_name}"
                 base_values[base_name] = Bounds.get_value(params, base_name, frozen, groups)
 
-        assert len(weights_list) == len(optimizable_params) - len(volatile_hypers)  # Adjust assertion
+        assert len(weights_list) == len(optimizable_params) - len(set(optimizable_params) & volatile_hypers)
         print(f"Assembled Weights List: {weights_list}")
         print(f"Assembled Base Values: {base_values}")
         return weights_list, base_values

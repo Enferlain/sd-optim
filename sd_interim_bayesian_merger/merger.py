@@ -86,10 +86,16 @@ class Merger:
     def _get_expected_num_models(self) -> int:
         mecha_merge_method = sd_mecha.extensions.merge_method.resolve(self.cfg.merge_mode)
         if mecha_merge_method.get_model_varargs_name() is not None:
-            # Return the actual number of models in the configuration, but at least 2
-            return max(2, len(self.cfg.model_paths))
+            return len(self.cfg.model_paths)  # Use the actual number of models for *args
         else:
             return len(mecha_merge_method.get_model_names())
+
+    def _requires_base_model(self, mecha_merge_method, input_merge_spaces, varargs_merge_space):
+        """Checks if the merging method requires a base model for delta operations."""
+        if mecha_merge_method.get_model_varargs_name() is not None:
+            return varargs_merge_space == sd_mecha.recipe_nodes.MergeSpace.DELTA
+        else:
+            return any(space == sd_mecha.recipe_nodes.MergeSpace.DELTA for space in input_merge_spaces)
 
     def _select_base_model(self, cfg):
         """Selects the base model, ensuring it's not a Lora."""
@@ -115,27 +121,48 @@ class Merger:
 
         return base_model
 
-    def _create_updated_models(self, base_model, input_merge_spaces):
-        """Dynamically creates deltas, treating Loras as pre-existing deltas."""
-        updated_models = [None] * len(self.models)
-        updated_models[self.cfg.base_model_index] = base_model
+    def _get_expected_num_models(self) -> int:
+        mecha_merge_method = sd_mecha.extensions.merge_method.resolve(self.cfg.merge_mode)
+        if mecha_merge_method.get_model_varargs_name() is not None:
+            return len(self.cfg.model_paths)  # Use the actual number of models for *args
+        else:
+            return len(mecha_merge_method.get_model_names())
 
-        input_merge_spaces = input_merge_spaces[:len(self.models)]
+    def _prepare_models(self, base_model, input_merge_spaces, varargs_merge_space):
+        """Handles Lora integration, delta conversion, and ensures correct model order."""
+        updated_models = []
+        mecha_merge_method = sd_mecha.extensions.merge_method.resolve(self.cfg.merge_mode)
+        requires_delta = self._requires_base_model(mecha_merge_method, input_merge_spaces, varargs_merge_space)
 
         for i, model in enumerate(self.models):
-            if i == self.cfg.base_model_index:
+            # Only add base_model to updated_models if the merge method requires it
+            if i == self.cfg.base_model_index and mecha_merge_method.get_model_names()[i] != "base_model":
                 continue
 
-            if model.model_type.identifier == "lora":  # Treat Loras as pre-existing deltas
-                updated_models[i] = model
+            if model.model_type.identifier == "lora":
+                updated_models.append(model)
                 logger.info(f"Using Lora model {i} as a delta.")
-            elif i < len(input_merge_spaces) and input_merge_spaces[
-                i] == sd_mecha.recipe_nodes.MergeSpace.DELTA:  # Only convert non-Lora models to deltas if required
+            elif requires_delta:
                 logger.info(f"Creating delta model from model {i} relative to base model.")
-                updated_models[i] = sd_mecha.subtract(model, base_model)
+                updated_models.append(sd_mecha.subtract(model, base_model))
             else:
-                updated_models[i] = model
+                updated_models.append(model)
 
+        return updated_models
+
+    def _slice_models(self, updated_models):
+        """Slices the model list, preserving the base model."""
+        mecha_merge_method = sd_mecha.extensions.merge_method.resolve(self.cfg.merge_mode)
+        num_models = len(updated_models)
+        expected_num_models = self._get_expected_num_models()
+
+        if mecha_merge_method.get_model_varargs_name() is None and num_models > expected_num_models:
+            # Exclude the base model from slicing
+            updated_models = [model for i, model in enumerate(updated_models) if
+                              i < expected_num_models or i == self.cfg.base_model_index]
+            logger.warning(
+                f"Merging method '{self.cfg.merge_mode}' expects {expected_num_models} models, but {num_models} were provided. Using the necessary models, including the base model."
+            )
         return updated_models
 
     def _merge_models(self, updated_models, all_hypers, cache):
@@ -195,61 +222,33 @@ class Merger:
         mecha_merge_method = sd_mecha.extensions.merge_method.resolve(self.cfg.merge_mode)
         input_merge_spaces, varargs_merge_space = mecha_merge_method.get_input_merge_spaces()
         default_hypers = mecha_merge_method.get_default_hypers()
-        base_model = self._select_base_model(cfg)
+
+        requires_base = self._requires_base_model(mecha_merge_method, input_merge_spaces, varargs_merge_space)
+        if requires_base:
+            base_model = self._select_base_model(cfg)
+        else:
+            base_model = None  # or a dummy object, depending on how exactly you want to use it
 
         # Merge base_values and weights_list into a single dictionary, using the mapping
         all_hypers = {}
         for param_name in weights_list:
-            # Get the base value for the current parameter from sd-mecha's defaults
             base_value = base_values.get(f"base_{param_name}", default_hypers.get(param_name, 0.5))
-
-            print(f"param_name: {param_name}, base_value: {base_value}")
-
-            # Merge the base value and block weights into a single dictionary
             all_hypers[param_name] = {
                 **{f"{self.cfg.model_arch}_{component}_default": base_value for component in ["txt", "txt2"]},
                 **weights_list[param_name]
             }
 
-        print(f"Final all_hypers: {all_hypers}")
-
-        # Unload the currently loaded model
         r = requests.post(url=f"{self.cfg.url}/bbwm/unload-model?webui={self.cfg.webui}")
         r.raise_for_status()
 
-        updated_models = self._create_updated_models(base_model, input_merge_spaces)
+        updated_models = self._prepare_models(base_model, input_merge_spaces, varargs_merge_space)
 
-        # Check if the number of models is compatible with the merging method, now with updated_models
-        num_models = len(updated_models)  # Access models from self.models
-
-        # Get the expected number of models using the helper function
-        expected_num_models = self._get_expected_num_models()
-
-        # Convert models to deltas if the method requires delta space for *args or if they are Loras
-        if mecha_merge_method.get_model_varargs_name() is not None and (
-                all(space == sd_mecha.recipe_nodes.MergeSpace.DELTA for space in input_merge_spaces) or any(
-                model.model_type.identifier == "lora" for model in updated_models if model is not None
-            )
-        ):
-            for i, model in enumerate(updated_models):
-                if i != self.cfg.base_model_index and model is not None:
-                    updated_models[i] = sd_mecha.subtract(model, base_model) if model.model_type.identifier != "lora" else model
-
-        # Exclude the base model if the method requires only deltas
-        if mecha_merge_method.get_model_varargs_name() is not None and all(
-                space == sd_mecha.recipe_nodes.MergeSpace.DELTA for space in input_merge_spaces
-        ):
-            updated_models = [model for i, model in enumerate(updated_models) if i != self.cfg.base_model_index]
-
-        # Only slice the models list if the method does NOT accept a variable number of models
-        if mecha_merge_method.get_model_varargs_name() is None and num_models != expected_num_models:
-            updated_models = updated_models[:expected_num_models]  # Slice self.models
-            logger.warning(
-                f"Merging method '{self.cfg.merge_mode}' expects {expected_num_models} models, but {num_models} were provided. Using the first {expected_num_models} models."
-            )
+        updated_models = self._slice_models(updated_models)
 
         merged_model = self._merge_models(updated_models, all_hypers, cache)
-        merged_model = self._handle_delta_output(merged_model, mecha_merge_method, updated_models, base_model)
+
+        if requires_base:
+            merged_model = self._handle_delta_output(merged_model, mecha_merge_method, updated_models, base_model)
 
         self._serialize_and_save_recipe(merged_model, model_path)
         self._execute_sd_mecha_merge(merged_model, model_path)

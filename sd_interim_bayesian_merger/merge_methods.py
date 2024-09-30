@@ -689,15 +689,16 @@ class MergeMethods:
         return A_interpolated
 
     @staticmethod
-    @convert_to_recipe
+    @convert_to_recipe(volatile_hypers=["cache"])
     def clyb_merge(
             a: Tensor | SameMergeSpace,
             b: Tensor | SameMergeSpace,
             c: Tensor | SameMergeSpace,
             *,
             alpha: Hyper = 1.0,
-            use_perp: Hyper = 0,
+            use_perp: Hyper = 1.0,
             ab_only: Hyper = 0,
+            cache: Optional[Dict[str, Dict[str, Tensor]]] = None,
             **kwargs,
     ) -> Tensor | SameMergeSpace:
         """
@@ -712,6 +713,7 @@ class MergeMethods:
                            tensor (0 <= alpha <= 1).
             use_perp (bool): If True, projects 'a' onto the perpendicular component of 'b' before merging.
             ab_only (bool): If True, performs merging only between 'a' and 'b', ignoring 'c'.
+            cache (dict): Cache svd and qr for performance
             **kwargs: Additional keyword arguments.
 
         Returns:
@@ -744,7 +746,7 @@ class MergeMethods:
             ac = ac - bc * (bc / norm_bc * (ac / norm_bc)).sum()
 
         # Perform the core merging operation
-        res = MergeMethods.clyb_align(ac, bc)
+        res = MergeMethods.clyb_align(ac, bc, cache=cache, **kwargs)
 
         # Interpolate between original tensor 'b' and the merged result based on 'alpha'
         if ab_only:
@@ -752,25 +754,48 @@ class MergeMethods:
         else:
             return torch.lerp(b.reshape(original_shape), (c + res).reshape(original_shape), alpha)
 
-    def clyb_align(a, b):
+    def clyb_align(a, b, cache: Optional[Dict[str, Dict[str, Tensor]]] = None, **kwargs):
         """
         Performs the core merging operation using QR decomposition, low-rank approximation, and orthogonal projection.
 
         Args:
             a (Tensor): The source tensor (2D).
             b (Tensor): The target tensor (2D).
+            cache (dict): A dictionary for caching intermediate results.
 
         Returns:
             Tensor: The merged tensor (2D).
         """
-        compression = 16
-        Qb, _ = torch.qr(b)
-        q_size = max(int(torch.linalg.matrix_rank(Qb)) // compression, 1)
-        iters = min(max(int(math.exp(math.log(640 / q_size))), 2), 64)
+        if cache is not None:
+            key = kwargs["key"]
+            if key not in cache:
+                cache[key] = {}
+            cache = cache[key]
 
-        print(q_size, iters)
+            if "Qb" in cache:
+                Qb = cache["Qb"].to(b.device, b.dtype)  # Reuse cached Qb
+            else:
+                Qb, _ = torch.qr(b)  # Calculate and cache Qb
+                cache["Qb"] = Qb.to("cpu")
 
-        Ua, Sa, Va = torch.svd_lowrank(a, q=q_size, niter=iters)
+            if "Ua" in cache and "Sa" in cache and "Va" in cache:
+                Ua = cache["Ua"].to(a.device, a.dtype)  # Reuse cached Ua
+                Sa = cache["Sa"].to(a.device, a.dtype)  # Reuse cached Sa
+                Va = cache["Va"].to(a.device, a.dtype)  # Reuse cached Va
+            else:
+                compression = 16
+                q_size = max(int(torch.linalg.matrix_rank(Qb)) // compression, 1)
+                iters = min(max(int(math.exp(math.log(640 / q_size))), 2), 64)
+                Ua, Sa, Va = torch.svd_lowrank(a, q=q_size, niter=iters)  # Calculate and cache SVD components
+                cache["Ua"] = Ua.to("cpu")
+                cache["Sa"] = Sa.to("cpu")
+                cache["Va"] = Va.to("cpu")
+        else:  # No caching, calculate everything
+            compression = 16
+            Qb, _ = torch.qr(b)
+            q_size = max(int(torch.linalg.matrix_rank(Qb)) // compression, 1)
+            iters = min(max(int(math.exp(math.log(640 / q_size))), 2), 64)
+            Ua, Sa, Va = torch.svd_lowrank(a, q=q_size, niter=iters)
 
         a_lowrank = torch.mm(Ua, torch.mm(torch.diag(Sa), Va.t()))
         a_diff = a - a_lowrank
@@ -940,26 +965,7 @@ class MergeMethods:
             perplexity: Hyper = 0.0,
             **kwargs,
     ) -> Tensor | SameMergeSpace:
-        """
-        Merges tensors 'a' and 'b' using a weighted sum based on vector projection, with the 'perplexity'
-        hyperparameter controlling the level of granularity in the projection calculation.
 
-        Args:
-            a (Tensor): The first tensor.
-            b (Tensor): The second tensor.
-            c (Tensor): The reference tensor.
-            perplexity (float): A hyperparameter that controls the blending between different levels of
-                                projection granularity (0.0 <= perplexity <= 1.0).
-
-                                - perplexity = 0.0: Merging is based on a single alpha value calculated for the entire key.
-                                - perplexity = 0.5: Merging is based on alpha values calculated for each neuron.
-                                - perplexity = 1.0: Merging is based on alpha values calculated for each individual parameter.
-            **kwargs: Additional keyword arguments.
-
-        Returns:
-            Tensor: The merged tensor.
-        """
-        # Handle special case for concatenated attention projection layers
         key = kwargs.get("key", "")
         if key.endswith(("in_proj_weight", "in_proj_bias")):
             vs = []

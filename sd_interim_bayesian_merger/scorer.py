@@ -257,8 +257,9 @@ class AestheticScorer:
             if self.cfg.save_imgs:
                 img_path = self.save_img(img, name, score, it, i, payload)
                 if img_path is None:
-                    logger.warning(f"Failed to save image for {name}-{i}")
-                    continue  # Skip to the next image
+                    logger.warning(f"Failed to save image for {name}-{i}. Skipping...")
+                    scores.append(0.0)  # Assign a default score or handle the error appropriately
+                    continue
 
             # Check for override signal and handle it
             if score == -1:
@@ -328,11 +329,23 @@ class AestheticScorer:
         for k, v in payload.items():
             pnginfo.add_text(k, str(v))
 
+        # Image validation
+        try:
+            image.verify()
+        except Exception as e:
+            logger.error(f"Image verification failed: {e}")
+            return None
+
+        if image.size[0] <= 1 or image.size[1] <= 1:
+            logger.warning(f"Image size is too small: {image.size}")
+            return None
+
         try:
             image.save(img_path, pnginfo=pnginfo)
         except (OSError, IOError) as e:
             logger.error(f"Error saving image to {img_path}: {e}")
-            return None  # Return None to signal failure
+            return None
+
         return img_path
 
     def open_image(self, image_path: Path) -> None:

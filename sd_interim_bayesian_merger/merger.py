@@ -32,7 +32,7 @@ class Merger:
     def __post_init__(self) -> None:
         self.validate_config()
 
-        # Add models_dir to the configuration object
+        # Add models_dir to the configuration object for easy access to the model directory
         with open_dict(self.cfg):
             self.cfg.models_dir = str(Path(self.cfg.model_paths[0]).parent)
 
@@ -41,10 +41,10 @@ class Merger:
         self.create_best_model_out_name()
 
     def validate_config(self):
-        required_fields = ['model_paths', 'merge_mode', 'model_arch']  # Update required fields
-        for field in required_fields:
-            if not getattr(self.cfg, field, None):
-                raise ValueError(f"Configuration missing required field: {field}")
+        required_fields = ['model_paths', 'merge_mode', 'model_arch']
+        missing_fields = [field for field in required_fields if not getattr(self.cfg, field, None)]
+        if missing_fields:
+            raise ValueError(f"Configuration missing required fields: {', '.join(missing_fields)}")
 
     def _create_models(self) -> list:
         """Dynamically creates ModelRecipeNodes, handling Loras based on metadata."""
@@ -72,16 +72,19 @@ class Merger:
 
         return models
 
-    def create_model_out_name(self, it: int = 0) -> None:
+    def _create_model_output_name(self, it: int = 0, best: bool = False) -> Path:
+        """Generates the output file name for the merged model."""
         model_names = [Path(path).stem for path in self.cfg.model_paths]
         combined_name = f"{model_names[0]}-{model_names[1]}-{self.cfg.merge_mode}-it_{it}"
-        self.model_out_name = f"bbwm-{combined_name}.safetensors"
-        self.output_file = Path(Path(self.cfg.model_paths[0]).parent, self.model_out_name)
+        if best:
+            combined_name += f"_best-{self.cfg.precision.lower()}"
+        return Path(Path(self.cfg.model_paths[0]).parent, f"bbwm-{combined_name}.safetensors")
+
+    def create_model_out_name(self, it: int = 0) -> None:
+        self.output_file = self._create_model_output_name(it=it)
 
     def create_best_model_out_name(self, it: int = 0) -> None:
-        model_names = [Path(path).stem for path in self.cfg.model_paths]
-        combined_name = f"{model_names[0]}-{model_names[1]}-{self.cfg.merge_mode}-it_{it}_best-{self.cfg.precision.lower()}"
-        self.best_output_file = Path(Path(self.cfg.model_paths[0]).parent, f"bbwm-{combined_name}.safetensors")
+        self.best_output_file = self._create_model_output_name(it=it, best=True)
 
     def _get_expected_num_models(self) -> int:
         mecha_merge_method = sd_mecha.extensions.merge_method.resolve(self.cfg.merge_mode)
@@ -101,42 +104,35 @@ class Merger:
         """Selects the base model, ensuring it's not a Lora."""
         base_model_index = cfg.get("base_model_index", None)
 
-        # Require a valid base_model_index
         if base_model_index is None:
-            raise ValueError("A base_model_index must be specified in the configuration.")
+            raise ValueError(
+                "A base_model_index must be specified in the configuration. "
+                "Please provide the index (starting from 0) of the desired base model in your configuration file."
+            )
 
-        # Check if base_model_index is valid for the number of models
-        if base_model_index is not None and base_model_index >= len(self.models):
+        if base_model_index >= len(self.models):
             raise ValueError(
                 f"Invalid base_model_index: {base_model_index}. You specified {len(self.models)} models, but the index refers to a non-existent model. Please ensure a valid base_model_index is provided."
             )
 
-        base_model = self.models[base_model_index] if base_model_index is not None else self.models[-1]
+        base_model = self.models[base_model_index]
 
-        # Ensure the base model is not a Lora
         if base_model.model_type.identifier == "lora":
             raise ValueError(
-                "The specified base model is a Lora. Loras cannot be used as base models. Please choose a different base model."
+                f"The selected base model ({base_model.path}) is a Lora. Loras cannot be used as base models. Please choose a different base model from the list."
             )
 
         return base_model
 
-    def _get_expected_num_models(self) -> int:
-        mecha_merge_method = sd_mecha.extensions.merge_method.resolve(self.cfg.merge_mode)
-        if mecha_merge_method.get_model_varargs_name() is not None:
-            return len(self.cfg.model_paths)  # Use the actual number of models for *args
-        else:
-            return len(mecha_merge_method.get_model_names())
-
     def _prepare_models(self, base_model, input_merge_spaces, varargs_merge_space):
-        """Handles Lora integration, delta conversion, and ensures correct model order."""
+        """Handles Lora integration and delta conversion."""
         updated_models = []
         mecha_merge_method = sd_mecha.extensions.merge_method.resolve(self.cfg.merge_mode)
         requires_delta = self._requires_base_model(mecha_merge_method, input_merge_spaces, varargs_merge_space)
 
         for i, model in enumerate(self.models):
-            # Only add base_model to updated_models if the merge method requires it
-            if i == self.cfg.base_model_index and mecha_merge_method.get_model_names()[i] != "base_model":
+            # Skip the base model only if it's required for delta operations
+            if i == self.cfg.base_model_index and requires_delta:
                 continue
 
             if model.model_type.identifier == "lora":
@@ -151,17 +147,15 @@ class Merger:
         return updated_models
 
     def _slice_models(self, updated_models):
-        """Slices the model list, preserving the base model."""
+        """Slices the model list to match the expected number of models."""
         mecha_merge_method = sd_mecha.extensions.merge_method.resolve(self.cfg.merge_mode)
         num_models = len(updated_models)
         expected_num_models = self._get_expected_num_models()
 
         if mecha_merge_method.get_model_varargs_name() is None and num_models > expected_num_models:
-            # Exclude the base model from slicing
-            updated_models = [model for i, model in enumerate(updated_models) if
-                              i < expected_num_models or i == self.cfg.base_model_index]
+            updated_models = updated_models[:expected_num_models]  # Slice the list
             logger.warning(
-                f"Merging method '{self.cfg.merge_mode}' expects {expected_num_models} models, but {num_models} were provided. Using the necessary models, including the base model."
+                f"Merging method '{self.cfg.merge_mode}' expects {expected_num_models} models, but {num_models} were provided. Using the first {expected_num_models} models."
             )
         return updated_models
 

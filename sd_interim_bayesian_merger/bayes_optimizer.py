@@ -1,7 +1,8 @@
 from typing import Dict, List
 import logging
 
-from bayes_opt import BayesianOptimization, Events
+from bayes_opt import BayesianOptimization, Events, UtilityFunction
+from bayes_opt.util import load_logs
 from bayes_opt.domain_reduction import SequentialDomainReductionTransformer
 from scipy.stats import qmc
 
@@ -18,23 +19,40 @@ class BayesOptimizer(Optimizer):
         pbounds = self.init_params()
         logger.info(f"Initial Parameter Bounds: {pbounds}")
 
+        # Acquisition Function Configuration with Defaults
+        acq_config = self.cfg.optimizer.get("acquisition_function", {})  # Access acquisition function settings, defaulting to empty dict
+        acquisition_function = UtilityFunction(
+            kind=acq_config.get("kind", "ucb"),  # Default to UCB
+            kappa=acq_config.get("kappa", 3.0),  # Default kappa for UCB
+            xi=acq_config.get("xi", 0.05),  # Default xi for EI and PI
+            kappa_decay=acq_config.get("kappa_decay", 0.98),
+            kappa_decay_delay=acq_config.get("kappa_decay_delay", self.cfg.optimizer.init_points)
+        )
+
         # TODO: fork bayesian-optimisation and add LHS
         self.optimizer = BayesianOptimization(
             f=self.sd_target_function,
             pbounds=pbounds,
-            verbose=2,
-            random_state=self.cfg.random_state,
+            random_state=self.cfg.optimizer.random_state,
             bounds_transformer=self.bounds_transformer
-            if self.cfg.bounds_transformer
+            if self.cfg.optimizer.bounds_transformer
             else None,
         )
 
+        # Load logs if a log file is specified in the configuration
+        if self.cfg.get("load_log_file", None):
+            try:
+                load_logs(self.optimizer, logs=self.cfg.optimizer.load_log_file)
+                logger.info(f"Loaded previous optimization data from {self.cfg.optimizer.load_log_file}")
+            except Exception as e:
+                logger.warning(f"Failed to load optimization logs: {e}")
+
         self.optimizer.subscribe(Events.OPTIMIZATION_STEP, self.logger)
 
-        init_points = self.cfg.init_points
-        if self.cfg.latin_hypercube_sampling:
+        init_points = self.cfg.optimizer.init_points
+        if self.cfg.optimizer.latin_hypercube_sampling:
             sampler = qmc.LatinHypercube(d=len(pbounds))
-            samples = sampler.random(self.cfg.init_points)
+            samples = sampler.random(self.cfg.optimizer.init_points)
             l_bounds = [b[0] for b in pbounds.values()]
             u_bounds = [b[1] for b in pbounds.values()]
             scaled_samples = qmc.scale(samples, l_bounds, u_bounds)
@@ -47,17 +65,15 @@ class BayesOptimizer(Optimizer):
 
         self.optimizer.maximize(
             init_points=init_points,
-            n_iter=self.cfg.n_iters,
+            n_iter=self.cfg.optimizer.n_iters,
         )
 
     def postprocess(self) -> None:
         logger.info("\nRecap!")
         for i, res in enumerate(self.optimizer.res):
-            logger.info(f"Iteration {i + 1}: \n\t{res}")  # Add 1 to the iteration number
+            logger.info(f"Iteration {i + 1}: \n\t{res}")
 
-        # No need to assign scores, best_weights, or best_bases here
-
-        self.artist.visualize_optimization()  # Call the Artist's visualize_optimization method
+        self.artist.visualize_optimization()
 
 
 def parse_scores(iterations: List[Dict]) -> List[float]:

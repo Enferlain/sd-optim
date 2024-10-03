@@ -47,28 +47,27 @@ class Merger:
             raise ValueError(f"Configuration missing required fields: {', '.join(missing_fields)}")
 
     def _create_models(self) -> list:
-        """Dynamically creates ModelRecipeNodes, handling Loras based on metadata."""
+        """Dynamically creates ModelRecipeNodes, handling Loras based on key prefixes."""
         models = []
         for model_path in self.cfg.get("model_paths", []):
             relative_path = os.path.relpath(model_path, self.cfg.models_dir)
 
-            # Check if it's a safetensors or pt file and try to load metadata
-            if model_path.endswith(".safetensors"):
+            if model_path.endswith((".safetensors", ".ckpt")):  # Handle both safetensors and .ckpt files
                 try:
-                    # Open the file safely and retrieve metadata
                     with safetensors.safe_open(model_path, framework="pt") as f:
-                        metadata = f.metadata()  # Fetch metadata dictionary
-                        logger.debug(f"Metadata for {model_path}: {metadata}")
-
-                        architecture = metadata.get("modelspec.architecture", "")
-                        if "lora" in architecture.lower():
-                            models.append(sd_mecha.lora(relative_path, self.cfg.model_arch))  # Use sd_mecha.lora
-                            logger.info(f"Detected Lora: {model_path}")
-                            continue  # Skip to the next model
+                        for key in f.keys():
+                            if key.startswith(("lora_unet", "lora_te")):
+                                models.append(sd_mecha.lora(relative_path, self.cfg.model_arch))
+                                logger.info(f"Detected Lora: {model_path}")
+                                break  # Move to the next model after detecting a Lora
                 except Exception as e:
-                    logger.warning(f"Failed to load metadata for {model_path}: {e}")
+                    logger.warning(f"Failed to open or read model file {model_path}: {e}")
+            else:
+                logger.warning(f"Unsupported model file format: {model_path}")
 
-            models.append(sd_mecha.model(relative_path, self.cfg.model_arch))
+            # If not detected as a Lora, create a regular model node
+            if relative_path not in [model.path for model in models]:
+                models.append(sd_mecha.model(relative_path, self.cfg.model_arch))
 
         return models
 

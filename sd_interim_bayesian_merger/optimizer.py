@@ -48,7 +48,7 @@ class Optimizer:
 
     def start_logging(self) -> None:
         run_name = "-".join(self.merger.output_file.stem.split("-")[:-1])
-        self.log_name = f"{run_name}-{self.cfg.optimizer}"
+        self.log_name = run_name
         self.logger = JSONLogger(
             path=str(
                 Path(
@@ -79,10 +79,10 @@ class Optimizer:
 
         self.iteration += 1
         iteration_type = (
-            "warmup" if self.iteration <= self.cfg.init_points else "optimization"
+            "warmup" if self.iteration <= self.cfg.optimizer.init_points else "optimization"
         )
 
-        if self.iteration in {1, self.cfg.init_points + 1}:
+        if self.iteration in {1, self.cfg.optimizer.init_points + 1}:
             logger.info("\n" + "-" * 10 + f" {iteration_type} " + "-" * 10 + ">")
 
         logger.info(f"\n{iteration_type} - Iteration: {self.iteration}")

@@ -7,14 +7,14 @@ from sd_interim_bayesian_merger import ATPEOptimizer, BayesOptimizer, TPEOptimiz
 def main(cfg: DictConfig) -> None:
     # Remove the draw_unet_weights and draw_unet_base_alpha block, handled by artist
 
-    if cfg["optimizer"] == "bayes":
+    if cfg["optimizer"]["bayes"]:  # Access the 'bayes' key within the optimizer dictionary
         cls = BayesOptimizer
-    elif cfg["optimizer"] == "tpe":
+    elif cfg["optimizer"]["tpe"]:
         cls = TPEOptimizer
-    elif cfg["optimizer"] == "atpe":
+    elif cfg["optimizer"]["atpe"]:
         cls = ATPEOptimizer
     else:
-        exit(f"Invalid optimizer:{cfg['optimizer']}")
+        exit(f"Invalid optimizer configuration: {cfg['optimizer']}")  # Use a more informative error message
 
     bo = cls(cfg)
     bo.optimize()

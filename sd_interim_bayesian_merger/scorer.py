@@ -278,7 +278,8 @@ class AestheticScorer:
                     else:
                         print("\tInput cannot be empty. Please enter a fake average score.")
 
-                scores = [fake_score] * len(images)
+                scores = [fake_score] * len(
+                    images)
                 norm = [1.0] * len(images)
                 return scores, norm  # Exit early
 
@@ -328,17 +329,6 @@ class AestheticScorer:
         pnginfo = PngImagePlugin.PngInfo()
         for k, v in payload.items():
             pnginfo.add_text(k, str(v))
-
-        # Image validation
-        try:
-            image.verify()
-        except Exception as e:
-            logger.error(f"Image verification failed: {e}")
-            return None
-
-        if image.size[0] <= 1 or image.size[1] <= 1:
-            logger.warning(f"Image size is too small: {image.size}")
-            return None
 
         try:
             image.save(img_path, pnginfo=pnginfo)

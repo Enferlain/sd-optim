@@ -4,7 +4,9 @@ import operator
 import torch
 import math
 import torch.nn.functional as F
+import numpy as np
 
+from scipy.stats import binom, rankdata
 from torch import Tensor
 from typing import Optional, Callable, Dict, Tuple, TypeVar, Generic, get_type_hints, get_origin, Union, get_args, List, Set, Iterable
 from pytorch_wavelets import DWTForward, DWTInverse
@@ -20,6 +22,7 @@ DeltaMergeSpace = TypeVar("DeltaMergeSpace", bound=LiftFlag[MergeSpace.DELTA])
 
 
 class MergeMethods:
+
     @staticmethod
     def weighted_sum(a, b, alpha: Hyper, device=None):
         return sd_mecha.weighted_sum(a, b, alpha=alpha, device=device)
@@ -87,6 +90,55 @@ class MergeMethods:
     @staticmethod
     def ties_sum_extended(*models, k: Hyper, apply_stock: Hyper = 0.05, apply_median: Hyper = 0.1, eps: Hyper = 1e-5, ftol: Hyper = 1e-10, maxiter: Hyper = 150, **kwargs):
         return sd_mecha.ties_sum_extended(*models, k=k, apply_stock=apply_stock, apply_median=apply_median, eps=eps, ftol=ftol, maxiter=maxiter, **kwargs)
+
+    @staticmethod
+    @convert_to_recipe
+    def ties_sum_with_dropout(
+            *deltas: Tensor | LiftFlag[MergeSpace.DELTA],
+            probability: Hyper = 0.9,
+            della_eps: Hyper = 0.0,
+            rescale: Hyper = 1.0,
+            k: Hyper = 0.2,
+            vote_sgn: Hyper = 0.0,
+            apply_stock: Hyper = 0.0,
+            cos_eps: Hyper = 1e-6,
+            apply_median: Hyper = 0.0,
+            eps: Hyper = 1e-6,
+            maxiter: Hyper = 100,
+            ftol: Hyper = 1e-20,
+            seed: Hyper = 218,
+            **kwargs,
+    ) -> Tensor | LiftFlag[MergeSpace.DELTA]:
+        if not deltas or probability == 1:
+            return 0
+
+        generator = torch.Generator(deltas[0].device)
+        if seed is not None and seed >= 0:
+            generator.manual_seed(round(seed))
+
+        deltas = [delta * MergeMethods.find_della_dropout(delta, probability, della_eps, generator) for delta in deltas]
+
+        deltas = sd_mecha.merge_methods.ties_sum_extended.__wrapped__(*deltas, k=k, vote_sgn=vote_sgn, apply_stock=apply_stock,
+                                               cos_eps=cos_eps, apply_median=apply_median, eps=eps, maxiter=maxiter,
+                                               ftol=ftol)
+
+        if probability == 1.0:
+            rescalar = 1.0
+        else:
+            rescalar = (1.0 - probability) ** rescale
+            rescalar = rescalar if math.isfinite(rescalar) else 1
+        return deltas / rescalar
+
+    def find_della_dropout(delta, probability, della_eps, generator):
+        p_min = torch.full(delta.shape, 1 - probability, device=delta.device, dtype=delta.dtype)
+        if della_eps != 0.0:
+            rank_per_element = torch.from_numpy(rankdata(delta.abs(), method="ordinal").reshape(delta.shape))
+            ne = delta.numel()
+            delta_i = (rank_per_element / ne - ((ne + 1) / (ne * 2))) * della_eps
+        else:
+            delta_i = 0.0
+        return torch.bernoulli(torch.clamp(p_min + delta_i, 0.0, 1.0), generator=generator)
+
 
     ### CUSTOM METHODS ###
 

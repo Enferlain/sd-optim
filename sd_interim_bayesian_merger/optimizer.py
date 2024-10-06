@@ -1,4 +1,3 @@
-import json
 import os
 import shutil
 
@@ -55,17 +54,18 @@ class Optimizer:
                     HydraConfig.get().runtime.output_dir,
                     f"{self.log_name}.json",
                 )
-            )
+            ),
+            reset=False  # Add reset=False here!
         )
 
     def init_params(self) -> Dict:
-        if self.cfg.optimization_guide is None:  # Handle missing optimization_guide
-            self.cfg.optimization_guide = {}
-
-        for guide in ["frozen_params", "custom_ranges", "groups"]:
-            if guide not in self.cfg.optimization_guide:
-                with open_dict(self.cfg):
-                    self.cfg.optimization_guide[guide] = {}  # Use empty dictionaries for missing keys
+        with open_dict(self.cfg):
+            self.cfg.setdefault("optimization_guide", {
+                "frozen_params": {},
+                "custom_ranges": {},
+                "custom_bounds": {},
+                "groups": []
+            })  # Set default values directly
 
         return self.bounds_initializer.get_bounds(
             self.cfg.optimization_guide.get("frozen_params", {}),
@@ -135,7 +135,8 @@ class Optimizer:
 
     def score_images(self, images, gen_paths, payloads) -> List[float]:
         logger.info("\nScoring")
-        return self.scorer.batch_score(images, gen_paths, payloads, self.iteration)
+        scores, _ = self.scorer.batch_score(images, gen_paths, payloads, self.iteration)  # Unpack the tuple
+        return scores  # Return only the scores list
 
     def update_best_score(self, base_values, weights_list, avg_score):
         logger.info(f"{'-' * 10}\nRun score: {avg_score}")
@@ -191,15 +192,3 @@ class Optimizer:
                 f.write(f"Parameter: {clean_param_name}\n")
                 f.write(f"Base Value: {base_values[param_name]}\n")
                 f.write(f"Weights: {weights_list.get(clean_param_name, [])}\n\n")
-
-    @staticmethod
-    def load_log(log: PathT) -> List[Dict]:
-        iterations = []
-        with open(log, "r") as j:
-            while True:
-                try:
-                    iteration = next(j)
-                except StopIteration:
-                    break
-                iterations.append(json.loads(iteration))
-        return iterations

@@ -4,8 +4,10 @@ import logging
 from bayes_opt import BayesianOptimization, Events, UtilityFunction
 from bayes_opt.util import load_logs
 from bayes_opt.domain_reduction import SequentialDomainReductionTransformer
+from omegaconf import OmegaConf
 from scipy.stats import qmc
 
+from sd_interim_bayesian_merger.bounds import Bounds
 from sd_interim_bayesian_merger.optimizer import Optimizer
 
 logger = logging.getLogger(__name__)
@@ -18,6 +20,15 @@ class BayesOptimizer(Optimizer):
     def optimize(self) -> None:
         pbounds = self.init_params()
         logger.info(f"Initial Parameter Bounds: {pbounds}")
+
+        # Load and validate custom bounds
+        custom_bounds = Bounds.validate_custom_bounds(self.cfg.optimization_guide.custom_bounds)
+
+        # Apply custom bounds to the existing pbounds dictionary
+        for param_name, bound in custom_bounds.items():
+            for key in pbounds:
+                if param_name in key:
+                    pbounds[key] = bound
 
         # Acquisition Function Configuration with Defaults
         acq_config = self.cfg.optimizer.get("acquisition_function", {})  # Access acquisition function settings, defaulting to empty dict

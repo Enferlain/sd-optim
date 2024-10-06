@@ -1,9 +1,7 @@
-import warnings
 import logging
-import inspect
 
-from typing import Dict, List, Tuple, get_origin, Union, Optional
-from omegaconf import DictConfig, OmegaConf
+from typing import Dict, List, Tuple, Union, Optional
+from omegaconf import DictConfig, OmegaConf, ListConfig
 from sd_interim_bayesian_merger.mapping import OPTIMIZABLE_HYPERPARAMETERS
 
 import sd_mecha
@@ -42,21 +40,28 @@ class Bounds:
         return bounds
 
     @staticmethod
-    def validate_custom_bounds(custom_bounds: Dict[str, Union[Tuple[float, float], List[int]]]) -> None:
+    def validate_custom_bounds(custom_bounds: Dict[str, Union[List[float], List[int], ListConfig]]) -> Dict:  # Add ListConfig to type hint
         """Validates the custom_bounds dictionary."""
         for param_name, bound in custom_bounds.items():
-            if not isinstance(bound, (tuple, list)):
-                raise ValueError(f"Invalid bound for '{param_name}': {bound}. Bounds must be lists or tuples.")
-            if isinstance(bound, tuple) and len(bound) != 2:
-                raise ValueError(f"Invalid range bound for '{param_name}': {bound}. Range bounds must have two elements.")
-            if isinstance(bound, tuple) and not all(isinstance(v, float) for v in bound):
-                raise ValueError(f"Invalid range bound for '{param_name}': {bound}. Range bounds must contain floats.")
-            if isinstance(bound, tuple) and bound[0] > bound[1]:
-                raise ValueError(f"Invalid range bound for '{param_name}': {bound}. Lower bound cannot be greater than upper bound.")
-            if isinstance(bound, list) and len(bound) != 2:
-                raise ValueError(f"Invalid binary bound for '{param_name}': {bound}. Binary bounds must have two elements (0 and 1).")
-            if isinstance(bound, list) and not all(v in [0, 1] for v in bound):
-                raise ValueError(f"Invalid binary bound for '{param_name}': {bound}. Binary bounds must contain only 0 and 1.")
+            if isinstance(bound, (list, ListConfig)):
+                if len(bound) == 2:
+                    if all(isinstance(v, (int, float)) for v in bound):  # Handle both float and int range bounds
+                        if bound[0] > bound[1]:
+                            raise ValueError(
+                                f"Invalid range bound for '{param_name}': {bound}. Lower bound cannot be greater than upper bound.")
+                    elif all(v in [0, 1] for v in bound):  # Handle binary bounds
+                        pass  # Valid binary bound
+                    else:
+                        raise ValueError(
+                            f"Invalid bound for '{param_name}': {bound}. Range bounds must contain floats or binary bounds must be integers 0 and 1.")
+                else:
+                    raise ValueError(
+                        f"Invalid bound for '{param_name}': {bound}. Must contain either two floats (range) or one integer (binary).")
+
+            else:
+                raise ValueError(f"Invalid bound for '{param_name}': {bound}. Bounds must be lists.")
+
+        return custom_bounds
 
     @staticmethod
     def apply_custom_bounds(bounds: Dict, custom_bounds: Dict) -> Dict:
@@ -103,13 +108,18 @@ class Bounds:
             groups: List[List[str]] = None,
             cfg=None,
     ) -> Dict:
-        """Gets the final bounds after applying freezing and grouping."""
+        """Gets the final bounds after applying custom bounds, freezing and grouping."""
+
         frozen_params = frozen_params or {}
         custom_ranges = custom_ranges or DictConfig({})
         groups = groups or []
-        custom_bounds = cfg.get("custom_bounds", {})
+        bounds = Bounds.create_default_bounds(custom_ranges, cfg)
+
+        # Validate and apply custom bounds if guided optimization is enabled
         if cfg.optimizer.guided_optimization:
-            Bounds.validate_custom_bounds(custom_bounds)
+            custom_bounds = Bounds.validate_custom_bounds(cfg.optimization_guide.custom_bounds)
+        else:
+            custom_bounds = {}
 
         logger.debug("Input Parameters:")
         logger.debug(f"Frozen Params: {frozen_params}")
@@ -117,11 +127,12 @@ class Bounds:
         logger.debug(f"Custom Bounds: {custom_bounds}")
         logger.debug(f"Groups: {groups}")
 
-        # Create default block bounds
-        bounds = Bounds.create_default_bounds(custom_ranges, cfg)
+        # Apply custom_bounds
+        for param_name, custom_bound in custom_bounds.items():
+            for key in bounds:
+                if param_name in key:
+                    bounds[key] = custom_bound
 
-        # Apply custom bounds to the hyperparameter space
-        bounds = Bounds.apply_custom_bounds(bounds, custom_bounds)
         not_frozen_bounds = Bounds.freeze_bounds(bounds, frozen_params)
         grouped_bounds = Bounds.group_bounds(not_frozen_bounds, groups)
 

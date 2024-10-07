@@ -1,3 +1,4 @@
+import json
 import os
 import shutil
 
@@ -135,8 +136,7 @@ class Optimizer:
 
     def score_images(self, images, gen_paths, payloads) -> List[float]:
         logger.info("\nScoring")
-        scores, _ = self.scorer.batch_score(images, gen_paths, payloads, self.iteration)  # Unpack the tuple
-        return scores  # Return only the scores list
+        return self.scorer.batch_score(images, gen_paths, payloads, self.iteration)
 
     def update_best_score(self, base_values, weights_list, avg_score):
         logger.info(f"{'-' * 10}\nRun score: {avg_score}")

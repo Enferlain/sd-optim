@@ -49,15 +49,30 @@ class Optimizer:
     def start_logging(self) -> None:
         run_name = "-".join(self.merger.output_file.stem.split("-")[:-1])
         self.log_name = run_name
-        self.logger = JSONLogger(
-            path=str(
-                Path(
-                    HydraConfig.get().runtime.output_dir,
-                    f"{self.log_name}.json",
-                )
-            ),
-            reset=False  # Add reset=False here!
-        )
+        log_file_path = Path(HydraConfig.get().runtime.output_dir, f"{self.log_name}.json")
+
+        # Load data from previous log file (if specified)
+        previous_iterations = []
+        if self.cfg.optimizer.get("load_log_file", None) and os.path.isfile(self.cfg.optimizer.load_log_file):
+            try:
+                with open(self.cfg.optimizer.load_log_file, "r") as f:
+                    previous_iterations = [json.loads(line) for line in f]
+                logger.info(f"Loaded {len(previous_iterations)} iterations from {self.cfg.optimizer.load_log_file}")
+            except Exception as e:
+                logger.warning(f"Failed to load previous optimization data: {e}")
+
+        # Create the log file and append previous data *before* initializing JSONLogger
+        try:
+            with open(log_file_path, "w") as f:  # Open in write mode to create the file
+                if previous_iterations:  # Append previous data if available
+                    for iteration_data in previous_iterations:
+                        f.write(json.dumps(iteration_data) + "\n")
+                logger.info(f"Previous optimization data appended to {log_file_path}")
+        except Exception as e:
+            logger.warning(f"Failed to create or append to log file: {e}")
+
+        # Initialize JSONLogger (in append mode to continue logging)
+        self.logger = JSONLogger(path=str(log_file_path), reset=self.cfg.optimizer.reset_log_file)
 
     def init_params(self) -> Dict:
         with open_dict(self.cfg):

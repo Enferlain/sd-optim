@@ -1,3 +1,4 @@
+import os
 from typing import Dict, List
 import logging
 
@@ -50,8 +51,9 @@ class BayesOptimizer(Optimizer):
             else None,
         )
 
-        # Load logs if a log file is specified in the configuration
-        if self.cfg.get("load_log_file", None):
+        # Load logs if a valid log file is specified in the configuration
+        log_file_path = self.cfg.optimizer.get("load_log_file", None)
+        if log_file_path and os.path.isfile(log_file_path):  # Check if the file exists
             try:
                 load_logs(self.optimizer, logs=self.cfg.optimizer.load_log_file)
                 logger.info(f"Loaded previous optimization data from {self.cfg.optimizer.load_log_file}")

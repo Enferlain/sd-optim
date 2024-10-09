@@ -5,6 +5,7 @@ OPTIMIZABLE_HYPERPARAMETERS = {
     "orth_pro": ["alpha"],
     "clyb_merge": ["alpha"],
     "ties_sum_extended": ["k"],
-    "ties_sum_with_dropout": ["probability", "della_eps"]
+    "ties_sum_with_dropout": ["probability", "della_eps"],
+    "slerp_norm_sign": ["alpha"],
     # ... other methods and their optimizable hyperparameters
 }

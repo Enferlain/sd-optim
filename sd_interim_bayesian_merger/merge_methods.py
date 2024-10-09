@@ -94,7 +94,7 @@ class MergeMethods:
     @staticmethod
     @convert_to_recipe
     def ties_sum_with_dropout(
-            *deltas: Tensor | LiftFlag[MergeSpace.DELTA],
+            *models: Tensor | LiftFlag[MergeSpace.DELTA],
             probability: Hyper = 0.9,
             della_eps: Hyper = 0.0,
             rescale: Hyper = 1.0,
@@ -102,46 +102,219 @@ class MergeMethods:
             vote_sgn: Hyper = 0.0,
             apply_stock: Hyper = 0.0,
             cos_eps: Hyper = 1e-6,
-            apply_median: Hyper = 0.0,
+            apply_median: Hyper = 1.0,
             eps: Hyper = 1e-6,
             maxiter: Hyper = 100,
             ftol: Hyper = 1e-20,
-            seed: Hyper = 218,
+            seed: Optional[int] = 218,
             **kwargs,
     ) -> Tensor | LiftFlag[MergeSpace.DELTA]:
-        if not deltas or probability == 1:
-            return 0
+        """
+        Applies TIES merging with dropout to a variable number of delta tensors.
 
-        generator = torch.Generator(deltas[0].device)
-        if seed is not None and seed >= 0:
-            generator.manual_seed(round(seed))
+        Args:
+            *models: The delta tensors to merge.
+            probability: The dropout probability (0 <= probability <= 1).
+            della_eps: The DELLA epsilon parameter, controlling magnitude-based dropout.
+            rescale:  The rescaling factor for the merged delta.
+            k: The TIES parameter trimming threshold.
+            vote_sgn:  The TIES-SOUP mode activation parameter.
+            apply_stock:  The Model Stock activation parameter.
+            cos_eps: The cosine similarity epsilon for Model Stock.
+            apply_median:  The Geometric Median activation parameter.
+            eps: The epsilon for the Geometric Median calculation.
+            maxiter: The maximum number of iterations for Geometric Median.
+            ftol:  The tolerance for convergence for Geometric Median.
+            seed: The random seed for dropout.
+            **kwargs: Additional keyword arguments.
 
-        deltas = [delta * MergeMethods.find_della_dropout(delta, probability, della_eps, generator) for delta in deltas]
+        Returns:
+            The merged delta tensor.
+        """
+        if not models or probability == 1:
+            return torch.tensor(0.0, device=models[0].device if models else 'cpu')
 
-        deltas = sd_mecha.merge_methods.ties_sum_extended.__wrapped__(*deltas, k=k, vote_sgn=vote_sgn, apply_stock=apply_stock,
-                                               cos_eps=cos_eps, apply_median=apply_median, eps=eps, maxiter=maxiter,
-                                               ftol=ftol)
+        device = models[0].device
+        generator = torch.Generator(device)
+        if seed is not None:
+            generator.manual_seed(seed)
 
-        if probability == 1.0:
-            rescalar = 1.0
-        else:
-            rescalar = (1.0 - probability) ** rescale
-            rescalar = rescalar if math.isfinite(rescalar) else 1
-        return deltas / rescalar
+        # Apply dropout to each delta tensor
+        dropped_deltas = []
+        for delta in models:
+            dropout_mask = MergeMethods.create_dropout_mask(delta, probability, della_eps, generator)
+            dropped_deltas.append(delta * dropout_mask)
 
-    def find_della_dropout(delta, probability, della_eps, generator):
+        # Apply TIES merging to the dropped deltas
+        merged_delta = sd_mecha.merge_methods.ties_sum_extended.__wrapped__(
+            *dropped_deltas,
+            k=k,
+            vote_sgn=vote_sgn,
+            apply_stock=apply_stock,
+            cos_eps=cos_eps,
+            apply_median=apply_median,
+            eps=eps,
+            maxiter=maxiter,
+            ftol=ftol
+        )
+
+        # Rescale the merged delta based on the dropout probability and rescale factor
+        rescalar = 1.0 if probability == 1.0 else max(0, (1.0 - probability) ** rescale)
+        return merged_delta / rescalar
+
+    def create_dropout_mask(delta: Tensor, probability: float, della_eps: float, generator: torch.Generator) -> Tensor:
+        """Creates a dropout mask based on the DELLA variation.
+
+        Args:
+            delta: The delta tensor.
+            probability: The base dropout probability.
+            della_eps: The DELLA epsilon parameter.
+            generator: The random number generator.
+
+        Returns:
+            The dropout mask as a tensor.
+        """
         p_min = torch.full(delta.shape, 1 - probability, device=delta.device, dtype=delta.dtype)
         if della_eps != 0.0:
-            rank_per_element = torch.from_numpy(rankdata(delta.abs(), method="ordinal").reshape(delta.shape))
-            ne = delta.numel()
-            delta_i = (rank_per_element / ne - ((ne + 1) / (ne * 2))) * della_eps
+            # Calculate rank-based adjustments
+            ranks = torch.argsort(torch.argsort(delta.abs().flatten())).reshape(delta.shape).float()
+            delta_i = ((ranks / delta.numel()) - 0.5) * della_eps
+            # Ensure probabilities are within the valid range
+            probabilities = torch.clamp(p_min + delta_i, 0.0, 1.0)
         else:
-            delta_i = 0.0
-        return torch.bernoulli(torch.clamp(p_min + delta_i, 0.0, 1.0), generator=generator)
+            probabilities = p_min
+
+        return torch.bernoulli(probabilities, generator=generator)
 
 
     ### CUSTOM METHODS ###
 
+
+    @staticmethod
+    @convert_to_recipe
+    def slerp_norm(
+            a: Tensor | SameMergeSpace,
+            b: Tensor | SameMergeSpace,
+            *,
+            alpha: Hyper = 0.5,
+            **kwargs,
+    ) -> Tensor | SameMergeSpace:
+        a_norm = a.norm()
+        b_norm = b.norm()
+
+        a_normalized = a / a_norm  # Normalize 'a'
+        b_normalized = b / b_norm  # Normalize 'b'
+
+        ab_dot = (a_normalized * b_normalized).sum().clamp(-1 + EPSILON, 1 - EPSILON)  # Add epsilon for stability
+
+        omega = torch.arccos(ab_dot)
+
+        # Check for near-zero omega to avoid division by zero
+        if torch.abs(omega) < EPSILON:
+            # If omega is near zero, tensors are almost parallel so simple weighted sum is sufficient
+            merged_tensor = a * (1 - alpha) + b * alpha
+            merged_norm = a_norm * (1 - alpha) + b_norm * alpha  # Weighted sum of norms for omega ~0
+
+        else:
+            a_contrib = a_normalized * torch.sin((1 - alpha) * omega)
+            b_contrib = b_normalized * torch.sin(alpha * omega)
+
+            merged_tensor = (a_contrib + b_contrib) / torch.sin(omega)
+            merged_norm = a_norm ** (1 - alpha) * b_norm ** alpha  # Geometric interpolation of norms
+
+        # Scale the merged tensor by the merged norm
+        merged_tensor = merged_tensor * merged_norm
+
+        if torch.isnan(merged_tensor).any():
+            return sd_mecha.weighted_sum.__wrapped__(a, b, alpha=alpha)
+
+        return merged_tensor
+
+    @staticmethod
+    @convert_to_recipe
+    def weighted_sum_norm(
+            a: Tensor | SameMergeSpace,
+            b: Tensor | SameMergeSpace,
+            *,
+            alpha: Hyper = 0.5,
+            **kwargs,
+    ) -> Tensor | SameMergeSpace:
+
+        key = kwargs.get("key", "")
+
+        if key.endswith((".weight", ".bias")):  # Detect layernorm keys
+            if key.endswith(".weight"):
+                # Geometric interpolation for weights
+                merged_tensor = a ** (1 - alpha) * b ** alpha
+            else:
+                # Linear interpolation for biases
+                merged_tensor = a * (1 - alpha) + b * alpha
+
+            return merged_tensor
+        else:
+            return (1 - alpha) * a + alpha * b
+
+    @staticmethod
+    @convert_to_recipe
+    def slerp_norm_sign(
+            a: Tensor | SameMergeSpace,
+            b: Tensor | SameMergeSpace,
+            *,
+            alpha: Hyper = 0.5,
+            sign_strategy: Hyper = 0,  # Add sign_strategy parameter with default
+            **kwargs,
+    ) -> Tensor | SameMergeSpace:
+        key = kwargs.get("key", "")
+
+        # Original shape for reshaping later
+        original_shape = a.shape
+
+        if not original_shape:
+            shape_2d = (1, 1)
+        elif len(a.shape) == 4:
+            shape_2d = (-1, functools.reduce(operator.mul, a.shape[1:]))
+        else:
+            shape_2d = (-1, a.shape[-1])
+        a = a.reshape(*shape_2d)
+        b = b.reshape(*shape_2d)
+
+        # Apply sign strategy if weights and shapes match
+        if key.endswith(".weight") and a.shape == b.shape and torch.any(torch.sign(a) != torch.sign(b)):
+            if sign_strategy == 0:
+                sign = torch.sign(a)
+            elif sign_strategy == 0.5:
+                sign = torch.randint(0, 2, a.shape, device=a.device, dtype=torch.float32) * 2 - 1
+            elif sign_strategy == 1:
+                sign = torch.where(a.abs() > b.abs(), torch.sign(a), torch.sign(b))
+            else:
+                raise ValueError(f"Invalid sign_strategy: {sign_strategy}")
+            b = b * sign  # Apply chosen sign to tensor 'b'
+
+        a_norm = a.norm(dim=1, keepdim=True)
+        b_norm = b.norm(dim=1, keepdim=True)
+
+        a_normalized = a / (a_norm + EPSILON)  # Normalize 'a' with epsilon for stability
+        b_normalized = b / (b_norm + EPSILON)  # Normalize 'b' with epsilon for stability
+
+        ab_dot = (a_normalized * b_normalized).sum(dim=1, keepdim=True).clamp(-1 + EPSILON, 1 - EPSILON)
+
+        omega = torch.arccos(ab_dot)
+
+        if torch.all(torch.abs(omega) < EPSILON):
+            # If omega is near zero for all elements, use weighted sum
+            merged_tensor = a * (1 - alpha) + b * alpha
+            merged_norm = a_norm * (1 - alpha) + b_norm * alpha
+        else:
+            a_contrib = a_normalized * torch.sin((1 - alpha) * omega)
+            b_contrib = b_normalized * torch.sin(alpha * omega)
+
+            merged_tensor = (a_contrib + b_contrib) / (torch.sin(omega) + EPSILON)  # Add epsilon for stability
+
+            merged_norm = a_norm ** (1 - alpha) * b_norm ** alpha
+
+        merged_tensor = merged_tensor * merged_norm  # Apply merged norm
+
+        return merged_tensor.reshape(original_shape)
 
     @staticmethod
     @convert_to_recipe(volatile_hypers=["cache"])

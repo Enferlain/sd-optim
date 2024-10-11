@@ -33,7 +33,7 @@ optimizer:
   atpe: False               # Enable Adaptive TPE optimization (not implemented)
 
   # Bayesian Optimization Settings:
-  random_state: 1           # Seed for optimization run
+  random_state: -1           # Seed for optimization run
   bounds_transformer: False  # Reduce the search space during optimization, potentially finding better solutions faster, but might miss the global optimum (bayes only)
   latin_hypercube_sampling: False # Explore the parameter space more evenly, potentially leading to a better starting point for optimization (bayes only)
   load_log_file: None       # Path to the run JSON log file to resume a run (optional)
@@ -57,8 +57,7 @@ optimizer:
   # Expected Improvement (EI): Provides a balance between exploration and exploitation, considering both predicted scores and uncertainty.
   # Upper Confidence Bound (UCB): Encourages more exploration, focusing on areas with high uncertainty, even if the predicted scores are not the highest.
 
-  # General Settings:
-  guided_optimization: False      # Customizations, check guide.yaml
+  # Iteration Settings:
   init_points: 10                 # Exploration iterations
   n_iters: 10                     # Exploitation iterations
 

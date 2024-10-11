@@ -5,7 +5,6 @@ import logging
 from bayes_opt import BayesianOptimization, Events, UtilityFunction
 from bayes_opt.util import load_logs
 from bayes_opt.domain_reduction import SequentialDomainReductionTransformer
-from omegaconf import OmegaConf
 from scipy.stats import qmc
 
 from sd_interim_bayesian_merger.bounds import Bounds

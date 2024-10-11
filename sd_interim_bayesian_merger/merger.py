@@ -202,8 +202,7 @@ class Merger:
 
     def merge(
             self,
-            weights_list: Dict,
-            base_values: Dict,
+            assembled_params: Dict,
             save_best: bool = False,
             cfg=None,
             device=None,
@@ -222,14 +221,16 @@ class Merger:
         else:
             base_model = None  # or a dummy object, depending on how exactly you want to use it
 
-        # Merge base_values and weights_list into a single dictionary, using the mapping
+        # Extract hyperparameters from assembled_params based on sd-mecha naming
         all_hypers = {}
-        for param_name in weights_list:
-            base_value = base_values.get(f"base_{param_name}", default_hypers.get(param_name, 0.5))
-            all_hypers[param_name] = {
-                **{f"{self.cfg.model_arch}_{component}_default": base_value for component in ["txt", "txt2"]},
-                **weights_list[param_name]
-            }
+        for key, value in assembled_params.items():
+            # Extract component, block, and parameter from key (e.g., sdxl_unet_block_0_alpha)
+            parts = key.split("_")
+            param_name = parts[-1]
+            if param_name in all_hypers:
+                all_hypers[param_name].update({key: value})
+            else:
+                all_hypers[param_name] = {key: value}
 
         r = requests.post(url=f"{self.cfg.url}/bbwm/unload-model?webui={self.cfg.webui}")
         r.raise_for_status()

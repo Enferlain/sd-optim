@@ -80,13 +80,12 @@ class Optimizer:
                 "frozen_params": {},
                 "custom_ranges": {},
                 "custom_bounds": {},
-                "groups": []
-            })  # Set default values directly
+            })
 
         return self.bounds_initializer.get_bounds(
             self.cfg.optimization_guide.get("frozen_params", {}),
             self.cfg.optimization_guide.get("custom_ranges", {}),
-            self.cfg.optimization_guide.get("groups", []),
+            self.cfg.optimization_guide.get("custom_bounds", {}),
             self.cfg
         )
 
@@ -104,8 +103,8 @@ class Optimizer:
         logger.info(f"\n{iteration_type} - Iteration: {self.iteration}")
 
         # Assemble parameters using bounds_initializer
-        weights_list, base_values = self.bounds_initializer.assemble_params(
-            params, self.cfg.optimization_guide.frozen_params, self.cfg.optimization_guide.groups, self.cfg
+        assembled_params = self.bounds_initializer.assemble_params(
+            params, self.cfg.optimization_guide.frozen_params, self.cfg
         )
 
         # Update the output file name with the current iteration
@@ -116,7 +115,7 @@ class Optimizer:
         r.raise_for_status()
 
         # Pass the models directory to the merge function
-        model_path = self.merger.merge(weights_list, base_values, cfg=self.cfg, device=self.cfg.device, cache=self.cache,
+        model_path = self.merger.merge(assembled_params, cfg=self.cfg, device=self.cfg.device, cache=self.cache,
                                        models_dir=Path(self.cfg.model_paths[0]).parent)
 
         # Send a request to the API to load the merged model
@@ -130,10 +129,10 @@ class Optimizer:
         avg_score = self.scorer.average_calc(scores, norm, self.cfg.img_average_type)
 
         # Update best score and handle best model saving
-        self.update_best_score(base_values, weights_list, avg_score)
+        self.update_best_score(assembled_params, avg_score)
 
         # Collect data for visualization, including weights_list and base_values
-        self.artist.collect_data(avg_score, params, weights_list, base_values)  # Pass the dictionaries here
+        self.artist.collect_data(avg_score, params, assembled_params)  # Pass the dictionaries here
 
         logger.info(f"Average Score for Iteration: {avg_score}")
         return avg_score
@@ -153,12 +152,11 @@ class Optimizer:
         logger.info("\nScoring")
         return self.scorer.batch_score(images, gen_paths, payloads, self.iteration)
 
-    def update_best_score(self, base_values, weights_list, avg_score):
+    def update_best_score(self, assembled_params: Dict, avg_score: float):
         logger.info(f"{'-' * 10}\nRun score: {avg_score}")
 
-        for param_name in weights_list:
-            logger.info(f"\nrun base_{param_name}: {base_values.get(f'base_{param_name}')}")
-            logger.info(f"run weights_{param_name}: {weights_list[param_name]}")
+        for key, value in assembled_params.items():
+            logger.info(f"{key}: {value}")
 
         if avg_score > self.best_rolling_score:
             logger.info("\n NEW BEST!")
@@ -176,7 +174,7 @@ class Optimizer:
             shutil.move(self.merger.output_file, self.merger.best_output_file)
             logger.info(f"Saved new best model as: {self.merger.best_output_file}")
 
-            Optimizer.save_best_log(base_values, weights_list, self.iteration)
+            Optimizer.save_best_log(assembled_params, self.iteration)
         else:
             # Delete the current iteration's model file if it's not the best
             if os.path.exists(self.merger.output_file):
@@ -192,7 +190,7 @@ class Optimizer:
         raise NotImplementedError("Not implemented")
 
     @staticmethod
-    def save_best_log(base_values: Dict, weights_list: Dict, iteration: int) -> None:
+    def save_best_log(assembled_params: Dict, iteration: int) -> None:
         logger.info("Saving best.log")
         with open(
                 Path(HydraConfig.get().runtime.output_dir, "best.log"),
@@ -201,9 +199,5 @@ class Optimizer:
         ) as f:
             f.write(f"Best Iteration: {iteration}.\n\n")
 
-            for param_name in base_values:
-                # Remove "base_" prefix from parameter name in log output
-                clean_param_name = param_name.replace("base_", "")
-                f.write(f"Parameter: {clean_param_name}\n")
-                f.write(f"Base Value: {base_values[param_name]}\n")
-                f.write(f"Weights: {weights_list.get(clean_param_name, [])}\n\n")
+            for key, value in assembled_params.items():
+                f.write(f"{key}: {value}\n")

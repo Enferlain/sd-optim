@@ -25,14 +25,13 @@ class Artist:
         self.data = []
         self.unet_block_identifiers = None  # Initialize the attribute
 
-    def collect_data(self, score, params, weights_list, base_values):  # Accept the dictionaries as arguments
+    def collect_data(self, score: float, params: Dict, assembled_params: Dict):
         """Collects data for each optimization iteration."""
         self.data.append({
             "iteration": self.optimizer.iteration,
             "score": score,
             "params": params.copy(),
-            "weights_list": weights_list,
-            "base_values": base_values
+            "assembled_params": assembled_params  # Store assembled_params
         })
 
     def _extract_visualization_data(self):
@@ -79,7 +78,7 @@ class Artist:
         """Creates a heatmap for the specified iteration and parameters."""
 
         # Access weights_list and base_values from the data point
-        weights_list = self.data[iteration - 1]["weights_list"]
+        assembled_params = self.data[iteration - 1]["weights_list"]
         base_values = self.data[iteration - 1]["base_values"]
 
         model_arch = resolve(self.cfg.model_arch)

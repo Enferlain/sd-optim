@@ -25,13 +25,13 @@ class Artist:
         self.data = []
         self.unet_block_identifiers = None  # Initialize the attribute
 
-    def collect_data(self, score: float, params: Dict, assembled_params: Dict):
+    def collect_data(self, score, params, assembled_params):
         """Collects data for each optimization iteration."""
         self.data.append({
             "iteration": self.optimizer.iteration,
             "score": score,
             "params": params.copy(),
-            "assembled_params": assembled_params  # Store assembled_params
+            "assembled_params": assembled_params  # Add assembled_params to the data
         })
 
     def _extract_visualization_data(self):

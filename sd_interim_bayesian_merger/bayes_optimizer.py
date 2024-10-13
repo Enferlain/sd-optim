@@ -2,6 +2,7 @@ import os
 from typing import Dict, List
 import logging
 
+import sd_mecha
 from bayes_opt import BayesianOptimization, Events, UtilityFunction
 from bayes_opt.util import load_logs
 from bayes_opt.domain_reduction import SequentialDomainReductionTransformer
@@ -19,16 +20,13 @@ class BayesOptimizer(Optimizer):
 
     def optimize(self) -> None:
         pbounds = self.init_params()
+        pbounds = dict(sorted(pbounds.items(), key=lambda item: sd_mecha.hypers.natural_sort_key(item[0])))
         logger.info(f"Initial Parameter Bounds: {pbounds}")
 
-        # Load and validate custom bounds
-        custom_bounds = Bounds.validate_custom_bounds(self.cfg.optimization_guide.custom_bounds)
-
-        # Apply custom bounds to the existing pbounds dictionary
-        for param_name, bound in custom_bounds.items():
-            for key in pbounds:
-                if param_name in key:
-                    pbounds[key] = bound
+        # Convert binary bounds to categorical variables
+        for param_name, bound in pbounds.items():
+            if isinstance(bound, list) and len(bound) == 2 and all(v in [0, 1] for v in bound):
+                pbounds[param_name] = tuple(str(v) for v in bound)
 
         # Acquisition Function Configuration with Defaults
         acq_config = self.cfg.optimizer.get("acquisition_function", {})  # Access acquisition function settings, defaulting to empty dict

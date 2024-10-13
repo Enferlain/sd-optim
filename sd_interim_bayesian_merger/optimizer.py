@@ -76,16 +76,15 @@ class Optimizer:
 
     def init_params(self) -> Dict:
         with open_dict(self.cfg):
-            self.cfg.setdefault("optimization_guide", {
-                "frozen_params": {},
-                "custom_ranges": {},
-                "custom_bounds": {},
-            })
+            self.cfg.optimization_guide.setdefault("frozen_params", {})
+            self.cfg.optimization_guide.setdefault("custom_ranges", {})
+            self.cfg.optimization_guide.setdefault("custom_bounds", {})
+            self.cfg.optimization_guide.setdefault("components", [])
 
         return self.bounds_initializer.get_bounds(
-            self.cfg.optimization_guide.get("frozen_params", {}),
-            self.cfg.optimization_guide.get("custom_ranges", {}),
-            self.cfg.optimization_guide.get("custom_bounds", {}),
+            self.cfg.optimization_guide.frozen_params,
+            self.cfg.optimization_guide.custom_ranges,
+            self.cfg.optimization_guide.custom_bounds,
             self.cfg
         )
 
@@ -104,7 +103,7 @@ class Optimizer:
 
         # Assemble parameters using bounds_initializer
         assembled_params = self.bounds_initializer.assemble_params(
-            params, self.cfg.optimization_guide.frozen_params, self.cfg
+            params, self.cfg  # Pass only params and cfg
         )
 
         # Update the output file name with the current iteration
@@ -131,7 +130,7 @@ class Optimizer:
         # Update best score and handle best model saving
         self.update_best_score(assembled_params, avg_score)
 
-        # Collect data for visualization, including weights_list and base_values
+        # Collect data for visualization
         self.artist.collect_data(avg_score, params, assembled_params)  # Pass the dictionaries here
 
         logger.info(f"Average Score for Iteration: {avg_score}")
@@ -152,11 +151,11 @@ class Optimizer:
         logger.info("\nScoring")
         return self.scorer.batch_score(images, gen_paths, payloads, self.iteration)
 
-    def update_best_score(self, assembled_params: Dict, avg_score: float):
+    def update_best_score(self, assembled_params, avg_score: float):
         logger.info(f"{'-' * 10}\nRun score: {avg_score}")
 
-        for key, value in assembled_params.items():
-            logger.info(f"{key}: {value}")
+        for param_name, param_value in assembled_params.items():
+            logger.info(f"{param_name}: {param_value}")
 
         if avg_score > self.best_rolling_score:
             logger.info("\n NEW BEST!")
@@ -190,14 +189,15 @@ class Optimizer:
         raise NotImplementedError("Not implemented")
 
     @staticmethod
-    def save_best_log(assembled_params: Dict, iteration: int) -> None:
+    def save_best_log(assembled_params: Dict[str, float], iteration: int) -> None:
+        """Saves the best hyperparameters and iteration number to a log file."""
         logger.info("Saving best.log")
         with open(
-                Path(HydraConfig.get().runtime.output_dir, "best.log"),
-                "w",
-                encoding="utf-8",
+            Path(HydraConfig.get().runtime.output_dir, "best.log"),
+            "w",
+            encoding="utf-8",
         ) as f:
             f.write(f"Best Iteration: {iteration}.\n\n")
-
-            for key, value in assembled_params.items():
-                f.write(f"{key}: {value}\n")
+            for param_name, param_value in assembled_params.items():
+                f.write(f"Parameter: {param_name}\n")
+                f.write(f"Value: {param_value}\n\n")  # Log the parameter value directly

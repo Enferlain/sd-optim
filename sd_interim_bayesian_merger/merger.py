@@ -221,16 +221,18 @@ class Merger:
         else:
             base_model = None  # or a dummy object, depending on how exactly you want to use it
 
-        # Extract hyperparameters from assembled_params based on sd-mecha naming
+        # Flatten hyperparameters for sd-mecha
         all_hypers = {}
-        for key, value in assembled_params.items():
-            # Extract component, block, and parameter from key (e.g., sdxl_unet_block_0_alpha)
-            parts = key.split("_")
-            param_name = parts[-1]
-            if param_name in all_hypers:
-                all_hypers[param_name].update({key: value})
-            else:
-                all_hypers[param_name] = {key: value}
+        for component_name, component_params in assembled_params.items():
+            for key, value in component_params.items():
+                if isinstance(value, dict):
+                    # Component-level defaults
+                    all_hypers.update(value)
+                else:
+                    # Block-specific overrides
+                    all_hypers.update(value)
+
+        logging.info("all_hypers:", all_hypers)
 
         r = requests.post(url=f"{self.cfg.url}/bbwm/unload-model?webui={self.cfg.webui}")
         r.raise_for_status()

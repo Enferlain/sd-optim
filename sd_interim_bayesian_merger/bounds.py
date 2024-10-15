@@ -1,9 +1,9 @@
 import logging
 import sd_mecha
 
-from typing import Dict, List, Tuple, Union, Optional
+from typing import Dict, List, Tuple, Union
 from omegaconf import DictConfig, ListConfig
-from sd_interim_bayesian_merger.mapping import OPTIMIZABLE_HYPERPARAMETERS
+from sd_interim_bayesian_merger.utils import OPTIMIZABLE_HYPERPARAMETERS, custom_sort_key
 
 logger = logging.getLogger(__name__)
 
@@ -45,14 +45,10 @@ class Bounds:
     @staticmethod
     def _create_bounds_for_all(model_arch, component_name, optimizable_params, volatile_hypers):
         component_bounds = {}
-        for param_name in optimizable_params:
-            if param_name not in volatile_hypers:
-                # Create bound for component default
-                component_bounds[f"{model_arch.identifier}_{component_name}_default_{param_name}"] = (0.0, 1.0)
-
-                # Create bounds for block-specific overrides
-                for block_id in model_arch.user_keys():
-                    if f"_{component_name}_block_" in block_id:
+        for block_id in model_arch.user_keys():
+            if f"_{component_name}_block_" in block_id:
+                for param_name in optimizable_params:
+                    if param_name not in volatile_hypers:
                         key = f"{block_id}_{param_name}"
                         component_bounds[key] = (0.0, 1.0)
         return component_bounds
@@ -60,13 +56,9 @@ class Bounds:
     @staticmethod
     def _create_bounds_for_selected(component_config, optimizable_params, volatile_hypers):
         component_bounds = {}
-        for param_name in optimizable_params:
-            if param_name not in volatile_hypers:
-                # Create bound for component default (assuming it's desired for "selected" strategy)
-                component_bounds[f"{component_config.name}_default_{param_name}"] = (0.0, 1.0)
-
-                # Create bounds for selected blocks
-                for block_id in component_config.selected_blocks:
+        for block_id in component_config.selected_blocks:
+            for param_name in optimizable_params:
+                if param_name not in volatile_hypers:
                     key = f"{block_id}_{param_name}"
                     component_bounds[key] = (0.0, 1.0)
         return component_bounds
@@ -76,12 +68,12 @@ class Bounds:
         component_bounds = {}
         for param_name in optimizable_params:
             if param_name not in volatile_hypers:
-                # Create bound for component default (assuming it's desired for "grouped" strategy)
-                component_bounds[f"{component_config.name}_default_{param_name}"] = (0.0, 1.0)
-
-                # Create bounds for each group
-                for i, group in enumerate(component_config.groups):
-                    group_name = "-".join([f"{block}_{param_name}" for block in group])
+                if component_config.optimize == "grouped":
+                    for i, group in enumerate(component_config.groups):
+                        group_name = "-".join([f"{block}_{param_name}" for block in group])
+                        component_bounds[group_name] = (0.0, 1.0)
+                else:  # component_config.optimize == "group-all"
+                    group_name = f"{component_config.name}_default_{param_name}"
                     component_bounds[group_name] = (0.0, 1.0)
         return component_bounds
 
@@ -123,14 +115,7 @@ class Bounds:
         return custom_bounds
 
     @staticmethod
-    def freeze_bounds(bounds: Dict[str, Union[Tuple[float, float], int, float]],
-                      frozen: Dict[str, Optional[float]]) -> Dict:  # Remove default value
-        """Removes bounds for frozen parameters."""
-        return {b: r for b, r in bounds.items() if b not in frozen}
-
-    @staticmethod
     def get_bounds(
-            frozen_params: Dict[str, Optional[float]],
             custom_ranges: Dict[str, Union[Tuple[float, float], float]],
             custom_bounds: Dict[str, Union[List[float], List[int], ListConfig, int, float]],
             cfg=None,
@@ -138,135 +123,152 @@ class Bounds:
         """Gets the final bounds after applying custom bounds, freezing and grouping."""
 
         bounds = Bounds.create_default_bounds(cfg)
-
         logger.debug("Input Parameters:")
-        logger.debug(f"Frozen Params: {frozen_params}")
         logger.debug(f"Custom Ranges: {custom_ranges}")
         logger.debug(f"Custom Bounds: {custom_bounds}")
 
+        # Validate custom_bounds
+        validated_custom_bounds = Bounds.validate_custom_bounds(custom_bounds)
+
         # Apply custom_bounds
-        for param_name, bound in custom_bounds.items():
-            if isinstance(bound, (tuple, list)):  # Apply range or binary bounds
-                bounds[param_name] = bound
-            elif isinstance(bound, (int, float)):  # Apply single value bounds
-                bounds[param_name] = (bound, bound)  # Create a tuple for single values
+        for custom_param, custom_bound in validated_custom_bounds.items():
+            matching_keys = [key for key in bounds.keys() if custom_param in key]
+
+            if matching_keys:
+                for key in matching_keys:
+                    bounds[key] = tuple(custom_bound)
+                logger.info(
+                    f"Applied custom bound {custom_bound} to {len(matching_keys)} keys containing '{custom_param}'")
             else:
-                raise ValueError(f"Invalid custom bound for '{param_name}': {bound}")
+                logger.warning(f"No matching keys found for custom bound '{custom_param}'. Skipping.")
 
-        bounds = Bounds.freeze_bounds(bounds, frozen_params)  # Freeze bounds directly
+        # Log bounds for each hyperparameter on a single line
+        mecha_merge_method = sd_mecha.extensions.merge_method.resolve(cfg.merge_mode)
+        optimizable_params = OPTIMIZABLE_HYPERPARAMETERS.get(cfg.merge_mode, mecha_merge_method.get_hyper_names())
+        volatile_hypers = mecha_merge_method.get_volatile_hyper_names()
+        component_order = [c.name for c in cfg.optimization_guide.components]
 
-        logger.debug(f"Final Bounds: {bounds}")
+        for param_name in optimizable_params:  # Iterate over all optimizable hyperparameters
+            if param_name not in volatile_hypers:
+                param_bounds = [
+                    f"{key}: {value}"
+                    for key, value in sorted(bounds.items(), key=lambda item: custom_sort_key(item[0], component_order))
+                    if param_name in key
+                ]
+                logger.info(f"Bounds for {param_name}: {', '.join(param_bounds)}")
+
         return bounds  # Return the final bounds
-
-        # Validate and apply custom bounds
-#        if cfg.optimization_guide.get("custom_bounds") is not None:  # Check for None
-#            custom_bounds = Bounds.validate_custom_bounds(cfg.optimization_guide.custom_bounds)
 
     @staticmethod
     def assemble_params(
             params: Dict,
             cfg: DictConfig
-    ) -> Dict[str, Dict[str, float]]:
+    ) -> Dict[str, float]:
+        """Assembles hyperparameters for each component based on the optimization strategy."""
+
         model_arch = sd_mecha.extensions.model_arch.resolve(cfg.model_arch)
         mecha_merge_method = sd_mecha.extensions.merge_method.resolve(cfg.merge_mode)
         optimizable_params = OPTIMIZABLE_HYPERPARAMETERS.get(cfg.merge_mode, mecha_merge_method.get_hyper_names())
         volatile_hypers = mecha_merge_method.get_volatile_hyper_names()
-        frozen_params = cfg.optimization_guide.get("frozen_params", {})
 
         assembled_params = {}
         for component_config in cfg.optimization_guide.components:
             component_name = component_config.name
             optimization_strategy = component_config.optimize
+            groups = component_config.get("groups", [])  # Get groups, default to empty list
+            selected_blocks = component_config.get("selected_blocks", [])  # Get selected_blocks, default to empty list
 
             if optimization_strategy == "all":
-                assembled_params.update(Bounds._assemble_params_for_all(
-                    model_arch, component_name, optimizable_params, volatile_hypers, params, frozen_params
-                ))
+                for param_name, param_values in Bounds._assemble_params_for_all(
+                        model_arch, component_name, optimizable_params, volatile_hypers, params
+                ).items():
+                    assembled_params[param_name] = assembled_params.get(param_name, {})
+                    assembled_params[param_name].update(param_values)
             elif optimization_strategy == "selected":
-                assembled_params.update(Bounds._assemble_params_for_selected(
-                    component_config, optimizable_params, volatile_hypers, params, frozen_params
-                ))
+                if not selected_blocks:
+                    raise ValueError(f"No 'selected_blocks' specified for component '{component_name}'")
+                for param_name, param_values in Bounds._assemble_params_for_selected(
+                        selected_blocks, optimizable_params, volatile_hypers, params
+                ).items():
+                    assembled_params[param_name] = assembled_params.get(param_name, {})
+                    assembled_params[param_name].update(param_values)
             elif optimization_strategy == "grouped":
-                assembled_params.update(Bounds._assemble_params_for_grouped(
-                    component_config, optimizable_params, volatile_hypers, params, frozen_params
-                ))
+                if not groups:
+                    raise ValueError(f"No 'groups' specified for component '{component_name}'")
+                for param_name, param_values in Bounds._assemble_params_for_grouped(
+                        groups, optimizable_params, volatile_hypers, params, cfg
+                ).items():
+                    assembled_params[param_name] = assembled_params.get(param_name, {})
+                    assembled_params[param_name].update(param_values)
             elif optimization_strategy == "group-all":
-                assembled_params.update(Bounds._assemble_params_for_group_all(
-                    cfg, component_name, optimizable_params, volatile_hypers, params, frozen_params
-                ))
+                for param_name, param_values in Bounds._assemble_params_for_group_all(
+                        cfg, component_name, optimizable_params, volatile_hypers, params
+                ).items():
+                    assembled_params[param_name] = assembled_params.get(param_name, {})
+                    assembled_params[param_name].update(param_values)
             elif optimization_strategy == "none":
                 logger.info(f"Optimization disabled for component '{component_name}' in assemble_params.")
             else:
                 raise ValueError(f"Invalid optimization strategy: {optimization_strategy}")
 
+        # Sort the assembled parameters within each component
+        component_order = [c.name for c in cfg.optimization_guide.components]
+        for component_name, component_params in assembled_params.items():
+            sorted_component_params = dict(sorted(component_params.items(), key=lambda item: custom_sort_key(item[0], component_order)))
+            assembled_params[component_name] = sorted_component_params
+
         return assembled_params
 
     @staticmethod
-    def _assemble_params_for_all(model_arch, component_name, optimizable_params, volatile_hypers, params, frozen):
+    def _assemble_params_for_all(model_arch, component_name, optimizable_params, volatile_hypers, params):
         component_params = {}
         for param_name in optimizable_params:
             if param_name not in volatile_hypers:
-                # Create an entry for the parameter with component default
-                component_params[param_name] = {
-                    f"{model_arch.identifier}_{component_name}_default": params.get(
-                        f"{model_arch.identifier}_{component_name}_default_{param_name}",
-                        frozen.get(f"{model_arch.identifier}_{component_name}_default_{param_name}", 0.0)
-                    )
-                }
-
-                # Add block-specific overrides
+                component_params[param_name] = {}
                 for block_id in model_arch.user_keys():
                     if f"_{component_name}_block_" in block_id:
                         key = f"{block_id}_{param_name}"
-                        component_params[param_name][block_id] = params.get(key, frozen.get(key, 0.0))
+                        component_params[param_name][block_id] = params.get(key, 0.0)
         return component_params
 
     @staticmethod
-    def _assemble_params_for_selected(component_config, optimizable_params, volatile_hypers, params, frozen):
+    def _assemble_params_for_selected(component_config, optimizable_params, volatile_hypers, params):
         component_params = {}
         for param_name in optimizable_params:
             if param_name not in volatile_hypers:
-                # Create an entry for the parameter with component default
-                component_params[param_name] = {
-                    f"{component_config.name}_default": params.get(
-                        f"{component_config.name}_default_{param_name}",
-                        frozen.get(f"{component_config.name}_default_{param_name}", 0.0)
-                    )
-                }
-
-                # Add block-specific overrides
+                component_params[param_name] = {}
                 for block_id in component_config.selected_blocks:
                     key = f"{block_id}_{param_name}"
-                    component_params[param_name][block_id] = params.get(key, frozen.get(key, 0.0))
+                    component_params[param_name][block_id] = params.get(key, 0.0)
         return component_params
 
     @staticmethod
-    def _assemble_params_for_grouped(component_config, optimizable_params, volatile_hypers, params, frozen):
+    def _assemble_params_for_grouped(component_config, optimizable_params, volatile_hypers, params, cfg):
         component_params = {}
         for param_name in optimizable_params:
             if param_name not in volatile_hypers:
-                # Create an entry for the parameter
-                component_params[param_name] = {
-                    f"{component_config.name}_default": params.get(
-                        f"{component_config.name}_default_{param_name}",
-                        frozen.get(f"{component_config.name}_default_{param_name}", 0.0)
-                    )
-                }
-                for i, group in enumerate(component_config.groups):
-                    group_name = "-".join([f"{block}_{param_name}" for block in group])
-                    group_value = params.get(group_name, frozen.get(group_name, 0.0))
-                    for block_id in group:
+                component_params[param_name] = {}
+                if component_config.optimize == "grouped":
+                    for i, group in enumerate(component_config.groups):
+                        group_name = "-".join([f"{block}_{param_name}" for block in group])
+                        group_value = params.get(group_name, 0.0)
+                        for block_id in group:
+                            component_params[param_name][block_id] = group_value
+                else:  # component_config.optimize == "group-all"
+                    group_name = f"{component_config.name}_default_{param_name}"
+                    group_value = params.get(group_name, 0.0)
+                    for block_id in [key for key in sd_mecha.extensions.model_arch.resolve(cfg.model_arch).user_keys()
+                                     if f"_{component_config.name}_block_" in key]:
                         component_params[param_name][block_id] = group_value
-
         return component_params
 
     @staticmethod
-    def _assemble_params_for_group_all(cfg, component_name, optimizable_params, volatile_hypers, params, frozen):
+    def _assemble_params_for_group_all(cfg, component_name, optimizable_params, volatile_hypers, params):
         component_params = {}
         for param_name in optimizable_params:
             if param_name not in volatile_hypers:
                 key = f"{cfg.model_arch}_{component_name}_default_{param_name}"
                 component_params[param_name] = {
-                    f"{cfg.model_arch}_{component_name}_default": params.get(key, frozen.get(key, 0.0))
+                    f"{cfg.model_arch}_{component_name}_default": params.get(key, 0.0)
                 }
         return component_params

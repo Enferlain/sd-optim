@@ -76,21 +76,17 @@ class Optimizer:
 
     def init_params(self) -> Dict:
         with open_dict(self.cfg):
-            self.cfg.optimization_guide.setdefault("frozen_params", {})
             self.cfg.optimization_guide.setdefault("custom_ranges", {})
             self.cfg.optimization_guide.setdefault("custom_bounds", {})
             self.cfg.optimization_guide.setdefault("components", [])
 
         return self.bounds_initializer.get_bounds(
-            self.cfg.optimization_guide.frozen_params,
             self.cfg.optimization_guide.custom_ranges,
             self.cfg.optimization_guide.custom_bounds,
             self.cfg
         )
 
     def sd_target_function(self, **params) -> float:
-        logger.info(f"Parameters for Optimization Iteration: {params}")
-
         self.iteration += 1
         iteration_type = (
             "warmup" if self.iteration <= self.cfg.optimizer.init_points else "optimization"
@@ -102,9 +98,8 @@ class Optimizer:
         logger.info(f"\n{iteration_type} - Iteration: {self.iteration}")
 
         # Assemble parameters using bounds_initializer
-        assembled_params = self.bounds_initializer.assemble_params(
-            params, self.cfg  # Pass only params and cfg
-        )
+        assembled_params = self.bounds_initializer.assemble_params(params, self.cfg)
+        logger.info(f"Assembled Hyperparameters for Iteration {self.iteration}: {assembled_params}")
 
         # Update the output file name with the current iteration
         self.merger.create_model_out_name(self.iteration)

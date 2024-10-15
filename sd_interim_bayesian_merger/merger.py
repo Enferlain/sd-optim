@@ -158,14 +158,14 @@ class Merger:
             )
         return updated_models
 
-    def _merge_models(self, updated_models, all_hypers, cache):
+    def _merge_models(self, updated_models, assembled_params, cache):
         """Calls the merging method with appropriate parameters, handling cache if needed."""
         merge_method = getattr(MergeMethods, self.cfg.merge_mode)
         merge_method_signature = inspect.signature(merge_method)
         if 'cache' in merge_method_signature.parameters:
-            return merge_method(*updated_models, device=self.cfg.device, cache=cache, **all_hypers)
+            return merge_method(*updated_models, device=self.cfg.device, cache=cache, **assembled_params)
         else:
-            return merge_method(*updated_models, device=self.cfg.device, **all_hypers)
+            return merge_method(*updated_models, device=self.cfg.device, **assembled_params)
 
     def _handle_delta_output(self, merged_model, mecha_merge_method, updated_models, base_model):
         """Applies the delta output to the base model if necessary."""
@@ -221,19 +221,6 @@ class Merger:
         else:
             base_model = None  # or a dummy object, depending on how exactly you want to use it
 
-        # Flatten hyperparameters for sd-mecha
-        all_hypers = {}
-        for component_name, component_params in assembled_params.items():
-            for key, value in component_params.items():
-                if isinstance(value, dict):
-                    # Component-level defaults
-                    all_hypers.update(value)
-                else:
-                    # Block-specific overrides
-                    all_hypers.update(value)
-
-        logging.info("all_hypers:", all_hypers)
-
         r = requests.post(url=f"{self.cfg.url}/bbwm/unload-model?webui={self.cfg.webui}")
         r.raise_for_status()
 
@@ -241,7 +228,7 @@ class Merger:
 
         updated_models = self._slice_models(updated_models)
 
-        merged_model = self._merge_models(updated_models, all_hypers, cache)
+        merged_model = self._merge_models(updated_models, assembled_params, cache)
 
         if requires_base:
             merged_model = self._handle_delta_output(merged_model, mecha_merge_method, updated_models, base_model)

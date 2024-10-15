@@ -1,17 +1,16 @@
 import json
 import os
+import re
+import sd_mecha
+import logging
 
 import threading
 from pathlib import Path
 from typing import List, Tuple, Dict
 from pynput import keyboard
 
-from sd_interim_bayesian_merger.optimizer import logger
+logger = logging.getLogger(__name__)
 
-# Hotkey behavior
-HOTKEY_SWITCH_MANUAL = keyboard.Key.ctrl, 'm'  # Ctrl+M for manual scoring
-HOTKEY_SWITCH_AUTO = keyboard.Key.ctrl, 'a'  # Ctrl+A for automatic scoring
-# ... other hotkeys ...
 
 # for methods that require selective optimization, ie contains on/off hypers, learning rate hypers, and such
 OPTIMIZABLE_HYPERPARAMETERS = {
@@ -19,9 +18,31 @@ OPTIMIZABLE_HYPERPARAMETERS = {
     "orth_pro": ["alpha"],
     "clyb_merge": ["alpha"],
     "ties_sum_extended": ["k"],
-
+    "ties_sum_with_dropout": ["probability", "della_eps"],
+    "slerp_norm_sign": ["alpha"],
     # ... other methods and their optimizable hyperparameters
 }
+
+# Custom sorting function that uses component order from config
+def custom_sort_key(key, component_order):
+    # Extract the component (txt, txt2, unet, etc.) and parameter from the key
+    parts = key.split("_")
+    component = parts[1]  # Assumes component is the second element
+
+    # Determine the index of the component in the order from the config
+    component_index = component_order.index(component) if component in component_order else len(component_order)
+
+    # Apply natural sorting to the rest of the key
+    block_key = "_".join(parts[2:])
+
+    return component_index, sd_mecha.hypers.natural_sort_key(block_key)
+
+
+# Hotkey behavior
+HOTKEY_SWITCH_MANUAL = keyboard.Key.ctrl, 'm'  # Ctrl+M for manual scoring
+HOTKEY_SWITCH_AUTO = keyboard.Key.ctrl, 'a'  # Ctrl+A for automatic scoring
+# ... other hotkeys ...
+
 
 # Hotkey Listener Class
 class HotkeyListener:
@@ -48,8 +69,14 @@ class HotkeyListener:
         except AttributeError:
             pass
 
+
+
+
 # Other Utility Functions (e.g., for early stopping, etc.)
 # ...
+
+
+
 
 
 def get_summary_images(log_file: Path, imgs_dir: Path, top_iterations: int) -> List[Tuple[str, float, Path]]:

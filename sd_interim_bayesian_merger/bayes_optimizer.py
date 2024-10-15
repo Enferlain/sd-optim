@@ -20,8 +20,7 @@ class BayesOptimizer(Optimizer):
 
     def optimize(self) -> None:
         pbounds = self.init_params()
-        pbounds = dict(sorted(pbounds.items(), key=lambda item: sd_mecha.hypers.natural_sort_key(item[0])))
-        logger.info(f"Initial Parameter Bounds: {pbounds}")
+        logger.debug(f"Initial Parameter Bounds: {pbounds}")
 
         # Convert binary bounds to categorical variables
         for param_name, bound in pbounds.items():

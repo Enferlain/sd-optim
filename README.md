@@ -2,23 +2,28 @@
 
 Even more opinionated fork of the original repo by s1dlx currently undergoing a transformation hence the name
 
-Since he's absent, I started updating the project with things that were missing at the time, which eventually built into getting my own ideas, which I'll be gradually introducing into this fork. 
+Since he became absent, I started updating the project with things that were missing at the time, which eventually built into getting my own ideas, which I'll be gradually introducing into this fork. 
 
-Don't expect it to always be in a working state, but I generally try to only push when it is.
+Don't expect it to always be in a working state, but I generally try to only push when it is. Might still miss stuff tho
+
+###### everything was done with Gemini and some advice/ideas from ljleb
 
 ### Stuff that's new:
 - entirely different merge backend [mecha](https://github.com/ljleb/sd-mecha) (everyone say thank you to ljleb for boosting the merge game)
-- you get to pick what hypers to optimize
+- pick what components to optimize
+- group/select components/blocks in various ways, customize their bounds
 - new juicer scorer
 - both a1111 and forge support (comfy and swarm eventually)
 - ability to skip during manual scoring
 
 ### Planned:
 - more (and better) visualizations
-- ability to define custom bounds/behavior to a hyper of choice (optimizing false/true behaving hypers)
-- switching between manual and automatic scoring
+- ~~ability to define custom bounds/behavior to a hyper of choice (optimizing false/true behaving hypers)~~
+- switching between manual and automatic scoring with hotkeys
+- more hotkeys for more behavior like early stopping and other qol
 - adjusting batch size and payload selection during optimization
-- scoring rethinking potentially based on categories and not just simple avg
+- scoring rethinking, categories, character objective, perceptual similarity metrics(lpips)
+- gphedge in bayes (?) multi-objective optimization
 - possibily pivot to hyperactive and others for way more optimization options
 - more that I can't remember or will randomly come up with
 

@@ -25,7 +25,7 @@ device: cpu # specify device to merge on (cpu, cuda)
 threads: 4
 
 merge_mode: weighted_sum # specify merge method https://github.com/ljleb/sd-mecha/blob/main/sd_mecha/merge_methods/__init__.py
-model_arch: sdxl  # specify model architecture (sd1, sdxl, sd3)
+model_arch: sdxl  # specify model architecture (sd1, sdxl, sd3, flux)
 
 optimizer:
   bayes: True               # Enable Bayesian optimization

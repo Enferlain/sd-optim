@@ -80,6 +80,10 @@ class Optimizer:
             self.cfg.optimization_guide.setdefault("custom_bounds", {})
             self.cfg.optimization_guide.setdefault("components", [])
 
+        # Check if components are specified
+        if not self.cfg.optimization_guide.components:
+            raise ValueError("No components specified for optimization in the configuration.")
+
         return self.bounds_initializer.get_bounds(
             self.cfg.optimization_guide.custom_ranges,
             self.cfg.optimization_guide.custom_bounds,

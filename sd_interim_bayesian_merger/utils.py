@@ -20,6 +20,8 @@ OPTIMIZABLE_HYPERPARAMETERS = {
     "ties_sum_extended": ["k"],
     "ties_sum_with_dropout": ["probability", "della_eps"],
     "slerp_norm_sign": ["alpha"],
+    "polar_interpolate": ["alpha"],
+    "wavelet_packet_merge": ["alpha"],
     # ... other methods and their optimizable hyperparameters
 }
 

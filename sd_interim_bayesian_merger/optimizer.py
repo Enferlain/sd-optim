@@ -19,6 +19,7 @@ from sd_interim_bayesian_merger.generator import Generator
 from sd_interim_bayesian_merger.merger import Merger
 from sd_interim_bayesian_merger.prompter import Prompter
 from sd_interim_bayesian_merger.scorer import AestheticScorer
+from sd_interim_bayesian_merger.utils import load_and_prepare_recipe
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.DEBUG)
@@ -80,15 +81,19 @@ class Optimizer:
             self.cfg.optimization_guide.setdefault("custom_bounds", {})
             self.cfg.optimization_guide.setdefault("components", [])
 
-        # Check if components are specified
-        if not self.cfg.optimization_guide.components:
-            raise ValueError("No components specified for optimization in the configuration.")
+        # Check if recipe optimization is enabled
+        if self.cfg.recipe_optimization.enabled:
+            return load_and_prepare_recipe(self.cfg)  # Call get_recipe_bounds from utils
+        else:
+            # Check if components are specified
+            if not self.cfg.optimization_guide.components:
+                raise ValueError("No components specified for optimization in the configuration.")
 
-        return self.bounds_initializer.get_bounds(
-            self.cfg.optimization_guide.custom_ranges,
-            self.cfg.optimization_guide.custom_bounds,
-            self.cfg
-        )
+            return self.bounds_initializer.get_bounds(
+                self.cfg.optimization_guide.custom_ranges,
+                self.cfg.optimization_guide.custom_bounds,
+                self.cfg
+            )
 
     def sd_target_function(self, **params) -> float:
         self.iteration += 1
@@ -188,15 +193,18 @@ class Optimizer:
         raise NotImplementedError("Not implemented")
 
     @staticmethod
-    def save_best_log(assembled_params: Dict[str, float], iteration: int) -> None:
+    def save_best_log(assembled_params: Dict[str, Dict[str, float]], iteration: int) -> None:
         """Saves the best hyperparameters and iteration number to a log file."""
         logger.info("Saving best.log")
         with open(
-            Path(HydraConfig.get().runtime.output_dir, "best.log"),
-            "w",
-            encoding="utf-8",
+                Path(HydraConfig.get().runtime.output_dir, "best.log"),
+                "w",
+                encoding="utf-8",
         ) as f:
             f.write(f"Best Iteration: {iteration}.\n\n")
-            for param_name, param_value in assembled_params.items():
+
+            for param_name, param_values in assembled_params.items():
                 f.write(f"Parameter: {param_name}\n")
-                f.write(f"Value: {param_value}\n\n")  # Log the parameter value directly
+                for key, value in param_values.items():
+                    f.write(f"\t{key}: {value}\n")  # Write the nested key-value pairs
+                f.write("\n")

@@ -148,12 +148,12 @@ class Bounds:
         volatile_hypers = mecha_merge_method.get_volatile_hyper_names()
         component_order = [c.name for c in cfg.optimization_guide.components]
 
-        for param_name in optimizable_params:  # Iterate over all optimizable hyperparameters
+        for param_name in optimizable_params:  # Iterate over optimizable params
             if param_name not in volatile_hypers:
                 param_bounds = [
                     f"{key}: {value}"
-                    for key, value in sorted(bounds.items(), key=lambda item: custom_sort_key(item[0], component_order))
-                    if param_name in key
+                    for key, value in  sorted(bounds.items(), key=lambda item: custom_sort_key(item[0], component_order))
+                    if f"_{param_name}" in key
                 ]
                 logger.info(f"Bounds for {param_name}: {', '.join(param_bounds)}")
 

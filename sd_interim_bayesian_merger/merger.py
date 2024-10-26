@@ -9,8 +9,9 @@ import safetensors
 from hydra.core.hydra_config import HydraConfig
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict
+from typing import Dict, Optional
 from omegaconf import DictConfig, open_dict
+from sd_mecha.recipe_nodes import RecipeNode
 from sd_interim_bayesian_merger.merge_methods import MergeMethods
 
 logger = logging.getLogger(__name__)

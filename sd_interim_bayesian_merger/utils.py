@@ -8,6 +8,7 @@ import threading
 from pathlib import Path
 from typing import List, Tuple, Dict
 from pynput import keyboard
+from sd_mecha.recipe_nodes import RecipeNode, MergeRecipeNode
 
 logger = logging.getLogger(__name__)
 
@@ -17,13 +18,15 @@ OPTIMIZABLE_HYPERPARAMETERS = {
     "lu_merge": ["alpha", "theta"],
     "orth_pro": ["alpha"],
     "clyb_merge": ["alpha"],
-    "ties_sum_extended": ["k"],
-    "ties_sum_with_dropout": ["probability", "della_eps"],
+    "ties_sum_extended": ["k", "apply_median", "apply_stock"],
+    "ties_sum_with_dropout": ["probability", "della_eps", "apply_median", "apply_stock"],
     "slerp_norm_sign": ["alpha"],
     "polar_interpolate": ["alpha"],
     "wavelet_packet_merge": ["alpha"],
+    "multi_domain_alignment": ["alpha", "beta"],
     # ... other methods and their optimizable hyperparameters
 }
+
 
 # Custom sorting function that uses component order from config
 def custom_sort_key(key, component_order):
@@ -38,6 +41,45 @@ def custom_sort_key(key, component_order):
     block_key = "_".join(parts[2:])
 
     return component_index, sd_mecha.hypers.natural_sort_key(block_key)
+
+
+def load_and_prepare_recipe(cfg) -> Dict:
+    """Loads a pre-built recipe and prepares bounds for optimization."""
+    recipe_path = cfg.recipe_optimization.recipe_path
+    optimization_target = cfg.recipe_optimization.optimization_target
+    logger.info(f"Loading recipe from: {recipe_path}")
+    logger.info(f"Optimization target: {optimization_target}")
+
+    # Load the recipe using sd-mecha's deserialize function
+    with open(recipe_path, "r") as f:
+        recipe = sd_mecha.deserialize(f.readlines())
+
+    # Get default bounds for all parameters in the recipe
+    from sd_interim_bayesian_merger.bounds import Bounds
+    default_bounds = Bounds.create_default_bounds(cfg)  # No need to modify this further
+
+    # Identify the merge node to optimize
+    target_node = recipe
+    while target_node is not None:
+        for i, child in enumerate(target_node.models):
+            if f"&{i}" == optimization_target:
+                target_node = child
+                break
+        else:
+            break  # Target node not found, exit the loop
+
+    if target_node is None:
+        raise ValueError(f"Invalid optimization target: {optimization_target}")
+
+    # Extract hyperparameters from the target node
+    optimizable_params = target_node.hypers
+
+    # Generate modified bounds for the selected hyperparameters
+    modified_bounds = {k: v for k, v in default_bounds.items() if k in optimizable_params}
+
+    # Return the modified bounds
+    logger.info(f"Modified Bounds: {modified_bounds}")
+    return modified_bounds
 
 
 # Hotkey behavior

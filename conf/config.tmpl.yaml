@@ -27,6 +27,11 @@ threads: 4
 merge_mode: weighted_sum # specify merge method https://github.com/ljleb/sd-mecha/blob/main/sd_mecha/merge_methods/__init__.py
 model_arch: sdxl  # specify model architecture (sd1, sdxl, sd3, flux)
 
+recipe_optimization:
+  enabled: False  # Enable/disable the feature
+  recipe_path: path/to/recipe.mecha
+  optimization_target:  # Merge node identifier or hyperparameter names
+
 optimizer:
   bayes: True               # Enable Bayesian optimization
   tpe: False                # Enable Tree-structured Parzen Estimator optimization (not implemented)
@@ -47,22 +52,46 @@ optimizer:
     kappa_decay: 0.98      # Kappa decay factor (for ucb)
     kappa_decay_delay: ${optimizer.init_points}
 
-  # Suggestions:
-  # - Short runs (1-10 iterations): kind: poi, bounds_transformer: True
-  # - 10 init_points, 10 n_iters: bounds_transformer: True, latin_hypercube_sampling: True
-  # - Medium runs (10-50 iterations): kind: ei, xi: 0.05, bounds_transformer: False/True, latin_hypercube_sampling: True
-  # - Long runs (50+ iterations): kind: ucb, kappa: 3.0, latin_hypercube_sampling: True
+  sampler: sobol        # random, latin_hypercube, sobol, halton
+  init_points: 10       # Exploration iterations
+  n_iters: 10           # Exploitation iterations
 
-  # Probability of Improvement (PI): Favors exploitation, focusing on areas where the model predicts high scores with high confidence.
-  # Expected Improvement (EI): Provides a balance between exploration and exploitation, considering both predicted scores and uncertainty.
-  # Upper Confidence Bound (UCB): Encourages more exploration, focusing on areas with high uncertainty, even if the predicted scores are not the highest.
+  # Recommendations:
+  # - Short runs (1-10 iterations):
+  #   - kind: poi
+  #   - bounds_transformer: True
+  #   - lhs or random sampling for quick results
+  #
+  # - Low mid (20 iterations):
+  #   - bounds_transformer: True
+  #   - lhs or Sobol sampling for balanced initial coverage
+  #
+  # - Medium runs (10-50 iterations):
+  #   - kind: ei, xi: 0.05
+  #   - bounds_transformer: False/True
+  #   - sobol for even distribution in moderate to high dimensions
+  #   - halton slightly more randomized, low-discrepancy initial points
+  #
+  # - Long runs (50+ iterations):
+  #   - kind: ucb, kappa: 3.0
+  #   - bounds_transformer: True/False based on exploration goal
+  #   - sobol for high-dimensional runs where stable, comprehensive coverage is needed
+  #
+  # Sampling Methods:
+  # - Latin Hypercube Sampling (LHS): Generates randomized, well-distributed points within each dimension.
+  #   Best for balanced coverage in lower to moderate dimensions (up to ~15 parameters).
+  # - Sobol Sampling: Ensures evenly distributed, quasi-random samples for high-dimensional spaces.
+  #   Best for 20+ parameters, preventing clustering and under-sampling regions in complex searches.
+  # - Halton Sampling: Provides a low-discrepancy, randomized sequence that works well in moderate dimensions.
+  #   Ideal for runs that benefit from a bit more stochasticity in exploration.
+  #
+  # Acquisition Functions:
+  # - Probability of Improvement (PI): Favors exploitation, focusing on areas where the model predicts high scores with high confidence.
+  # - Expected Improvement (EI): Provides a balance between exploration and exploitation, considering both predicted scores and uncertainty.
+  # - Upper Confidence Bound (UCB): Encourages more exploration, focusing on areas with high uncertainty, even if the predicted scores are not the highest.
 
-  # Iteration Settings:
-  init_points: 10                 # Exploration iterations
-  n_iters: 10                     # Exploitation iterations
-
-batch_size: 1                    # amount of images per payload
-save_imgs: False
+batch_size: 1     # amount of images per payload
+save_imgs: True
 img_average_type: arithmetic     # geometric, arithmetic, quadratic
 
 # scorer by type:

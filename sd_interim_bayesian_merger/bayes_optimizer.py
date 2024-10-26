@@ -106,7 +106,7 @@ class BayesOptimizer(Optimizer):
 
                 # Add categorical parameters randomly
                 for name in categorical_param_names:
-                    params[name] = pbounds[name]
+                    params[name] = float(random.choice(categorical_bounds[name]))
 
                 self.optimizer.probe(params=params, lazy=True)
 

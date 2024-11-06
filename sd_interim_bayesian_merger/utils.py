@@ -19,11 +19,13 @@ OPTIMIZABLE_HYPERPARAMETERS = {
     "orth_pro": ["alpha"],
     "clyb_merge": ["alpha"],
     "ties_sum_extended": ["k"],
-    "ties_sum_with_dropout": ["probability", "della_eps"],
+    "streaming_ties_sum_extended": ["k"],
+    "ties_sum_with_dropout": ["probability", "della_eps", "rescale"],
     "slerp_norm_sign": ["alpha"],
     "polar_interpolate": ["alpha"],
     "wavelet_packet_merge": ["alpha"],
     "multi_domain_alignment": ["alpha", "beta"],
+    "merge_layers": ["alpha"],
     # ... other methods and their optimizable hyperparameters
 }
 

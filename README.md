@@ -23,8 +23,7 @@ Don't expect it to always be in a working state, but I generally try to only pus
 - more hotkeys for more behavior like early stopping and other qol
 - adjusting batch size and payload selection during optimization
 - scoring rethinking, categories, character objective, perceptual similarity metrics(lpips)
-- gphedge in bayes (?) multi-objective optimization
-- possibily pivot to hyperactive and others for way more optimization options
+- probably trying optuna first, then hyperactive sometime later
 - more that I can't remember or will randomly come up with
 
 wip text

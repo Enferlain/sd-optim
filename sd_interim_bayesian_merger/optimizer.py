@@ -81,19 +81,15 @@ class Optimizer:
             self.cfg.optimization_guide.setdefault("custom_bounds", {})
             self.cfg.optimization_guide.setdefault("components", [])
 
-        # Check if recipe optimization is enabled
-        if self.cfg.recipe_optimization.enabled:
-            return load_and_prepare_recipe(self.cfg)  # Call get_recipe_bounds from utils
-        else:
-            # Check if components are specified
-            if not self.cfg.optimization_guide.components:
-                raise ValueError("No components specified for optimization in the configuration.")
+        # Check if components are specified
+        if not self.cfg.optimization_guide.components:
+            raise ValueError("No components specified for optimization in the configuration.")
 
-            return self.bounds_initializer.get_bounds(
-                self.cfg.optimization_guide.custom_ranges,
-                self.cfg.optimization_guide.custom_bounds,
-                self.cfg
-            )
+        return self.bounds_initializer.get_bounds(
+            self.cfg.optimization_guide.custom_ranges,
+            self.cfg.optimization_guide.custom_bounds,
+            self.cfg
+        )
 
     def sd_target_function(self, **params) -> float:
         self.iteration += 1

@@ -10,8 +10,10 @@ import math
 import safetensors.torch
 import torch.nn.functional as F
 import numpy as np
+
 from scipy.linalg import sqrtm
 from scipy.stats import binom, rankdata
+from sd_mecha.merge_methods.svd import torch_complex_dtype_map
 from torch import Tensor, polar
 from typing import Optional, Callable, Dict, Tuple, TypeVar, Generic, get_type_hints, get_origin, Union, get_args, List, Set, Iterable
 from pytorch_wavelets import DWTForward, DWTInverse
@@ -112,47 +114,69 @@ class MergeMethods:
             maxiter: Hyper = 150,
             ftol: Hyper = 1e-11,
             seed: Hyper = 218,
+            chunk_size: int = 1000000,
             **kwargs,
     ) -> Tensor | LiftFlag[MergeSpace.DELTA]:
         """
-        Applies TIES merging with dropout to a variable number of delta tensors.
-
-        Args:
-            *models: The delta tensors to merge.
-            probability: The dropout probability (0 <= probability <= 1).
-            della_eps: The DELLA epsilon parameter, controlling magnitude-based dropout.
-            rescale:  The rescaling factor for the merged delta.
-            k: The TIES parameter trimming threshold.
-            vote_sgn:  The TIES-SOUP mode activation parameter.
-            apply_stock:  The Model Stock activation parameter.
-            cos_eps: The cosine similarity epsilon for Model Stock.
-            apply_median:  The Geometric Median activation parameter.
-            eps: The epsilon for the Geometric Median calculation.
-            maxiter: The maximum number of iterations for Geometric Median.
-            ftol:  The tolerance for convergence for Geometric Median.
-            seed: The random seed for dropout.
-            **kwargs: Additional keyword arguments.
-
-        Returns:
-            The merged delta tensor.
+        Memory-optimized TIES merging with dropout.
         """
         if not models or probability == 1:
             return torch.tensor(0.0, device=models[0].device if models else 'cpu')
 
         device = models[0].device
+        model_shape = models[0].shape
+        total_elements = torch.numel(models[0])
+
         generator = torch.Generator(device)
         if seed is not None:
             generator.manual_seed(seed)
 
-        # Apply dropout to each delta tensor
-        dropped_deltas = []
-        for delta in models:
-            dropout_mask = MergeMethods.create_dropout_mask(delta, probability, della_eps, generator)
-            dropped_deltas.append(delta * dropout_mask)
+        # Create a single tensor to store the dropped deltas
+        # This replaces the list of dropped_deltas and saves memory
+        dropped_delta = torch.zeros_like(models[0])
 
-        # Apply TIES merging to the dropped deltas
-        merged_delta = sd_mecha.merge_methods.ties_sum_extended.__wrapped__(
-            *dropped_deltas,
+        # Process each model in chunks, applying dropout directly
+        for i in range(0, total_elements, chunk_size):
+            end_idx = min(i + chunk_size, total_elements)
+            chunk_size_current = end_idx - i
+
+            # Create mask for current chunk
+            p_min = torch.full((chunk_size_current,), 1 - probability,
+                               device=device, dtype=models[0].dtype)
+
+            # Process each model's chunk
+            for model in models:
+                chunk = model.flatten()[i:end_idx]
+
+                if della_eps != 0.0:
+                    # Calculate magnitude-based adjustments for chunk
+                    magnitudes = chunk.abs()
+                    chunk_max = magnitudes.max()
+                    if chunk_max > 1e-8:
+                        norm_magnitudes = magnitudes / chunk_max
+                        delta_i = (0.5 - norm_magnitudes) * della_eps
+                        probabilities = torch.clamp(p_min + delta_i, 0.0, 1.0)
+                    else:
+                        probabilities = p_min
+                else:
+                    probabilities = p_min
+
+                # Generate and apply dropout mask
+                mask = torch.bernoulli(probabilities, generator=generator)
+                dropped_delta.flatten()[i:end_idx] += chunk * mask
+
+                del chunk, mask
+                if della_eps != 0.0:
+                    del magnitudes, probabilities
+                    if chunk_max > 1e-8:
+                        del norm_magnitudes, delta_i
+
+            del p_min
+
+        # Apply TIES merging to the dropped delta
+        # Note: We pass a single tensor instead of a list
+        merged_delta = MergeMethods.streaming_ties_sum_extended.__wrapped__(
+            dropped_delta,
             k=k,
             vote_sgn=vote_sgn,
             apply_stock=apply_stock,
@@ -163,233 +187,17 @@ class MergeMethods:
             ftol=ftol
         )
 
-        # Rescale the merged delta based on the dropout probability and rescale factor
+        del dropped_delta  # Free memory
+
+        # Rescale the merged delta
         rescalar = 1.0 if probability == 1.0 else max(0, (1.0 - probability) ** rescale)
         return merged_delta / rescalar
 
-    def create_dropout_mask(delta: Tensor, probability: float, della_eps: float, generator: torch.Generator) -> Tensor:
-        """Creates a dropout mask using smooth magnitude-based probabilities, following DELLA intuition."""
-        p_min = torch.full(delta.shape, 1 - probability, device=delta.device, dtype=delta.dtype)
-        if della_eps != 0.0:
-            magnitudes = delta.abs()
-            # Invert magnitudes so larger values get lower dropout probabilities
-            inv_magnitudes = 1.0 / (magnitudes + 1e-8)
-            # Use softmax for smooth distribution
-            norm_probs = torch.softmax(inv_magnitudes.flatten() / della_eps, dim=0).reshape(delta.shape)
-            delta_i = (norm_probs - norm_probs.mean()) * della_eps
-            probabilities = torch.clamp(p_min + delta_i, 0.0, 1.0)
-        else:
-            probabilities = p_min
-        return torch.bernoulli(probabilities, generator=generator)
+    # Removed separate create_dropout_mask function since its functionality
+    # is now integrated into the main function
 
 
     ### CUSTOM METHODS ###
-
-
-    @staticmethod
-    @convert_to_recipe
-    def slerp_norm(
-            a: Tensor | SameMergeSpace,
-            b: Tensor | SameMergeSpace,
-            *,
-            alpha: Hyper = 0.5,
-            **kwargs,
-    ) -> Tensor | SameMergeSpace:
-        a_norm = a.norm()
-        b_norm = b.norm()
-
-        a_normalized = a / a_norm  # Normalize 'a'
-        b_normalized = b / b_norm  # Normalize 'b'
-
-        ab_dot = (a_normalized * b_normalized).sum().clamp(-1 + EPSILON, 1 - EPSILON)  # Add epsilon for stability
-
-        omega = torch.arccos(ab_dot)
-
-        # Check for near-zero omega to avoid division by zero
-        if torch.abs(omega) < EPSILON:
-            # If omega is near zero, tensors are almost parallel so simple weighted sum is sufficient
-            merged_tensor = a * (1 - alpha) + b * alpha
-            merged_norm = a_norm * (1 - alpha) + b_norm * alpha  # Weighted sum of norms for omega ~0
-
-        else:
-            a_contrib = a_normalized * torch.sin((1 - alpha) * omega)
-            b_contrib = b_normalized * torch.sin(alpha * omega)
-
-            merged_tensor = (a_contrib + b_contrib) / torch.sin(omega)
-            merged_norm = a_norm ** (1 - alpha) * b_norm ** alpha  # Geometric interpolation of norms
-
-        # Scale the merged tensor by the merged norm
-        merged_tensor = merged_tensor * merged_norm
-
-        if torch.isnan(merged_tensor).any():
-            return sd_mecha.weighted_sum.__wrapped__(a, b, alpha=alpha)
-
-        return merged_tensor
-
-    @staticmethod
-    @convert_to_recipe
-    def weighted_sum_norm(
-            a: Tensor | SameMergeSpace,
-            b: Tensor | SameMergeSpace,
-            *,
-            alpha: Hyper = 0.5,
-            **kwargs,
-    ) -> Tensor | SameMergeSpace:
-
-        key = kwargs.get("key", "")
-
-        if key.endswith((".weight", ".bias")):  # Detect layernorm keys
-            if key.endswith(".weight"):
-                # Geometric interpolation for weights
-                merged_tensor = a ** (1 - alpha) * b ** alpha
-            else:
-                # Linear interpolation for biases
-                merged_tensor = a * (1 - alpha) + b * alpha
-
-            return merged_tensor
-        else:
-            return (1 - alpha) * a + alpha * b
-
-    @staticmethod
-    @convert_to_recipe
-    def slerp_norm_sign(
-            a: Tensor | SameMergeSpace,
-            b: Tensor | SameMergeSpace,
-            *,
-            alpha: Hyper = 0.5,
-            **kwargs,
-    ) -> Tensor | SameMergeSpace:
-        key = kwargs.get("key", "")
-
-        # Handle Layer Normalization layers
-        if a.dim() == 1 and key.endswith((".weight", ".scale")):
-            # Geometric interpolation for weight (scale)
-            weight = a ** (1 - alpha) * b ** alpha
-            # Linear interpolation for bias (if present)
-            bias = a * (1 - alpha) + b * alpha if "bias" in key else None
-            return torch.cat([weight, bias]) if bias is not None else weight
-
-        # Handle convolutional layers in Fourier space
-        if len(a.shape) == 4:  # 4D tensor (convolutional kernel)
-            return MergeMethods.merge_conv_layers(a, b, alpha)
-
-            # Original shape for reshaping later
-        original_shape = a.shape
-
-        if not original_shape:
-            shape_2d = (1, 1)
-        elif len(a.shape) == 4:
-            shape_2d = (-1, functools.reduce(operator.mul, a.shape[1:]))
-        else:
-            shape_2d = (-1, a.shape[-1])
-        a = a.reshape(*shape_2d)
-        b = b.reshape(*shape_2d)
-
-        # Geometric interpolation of norms using complex numbers
-        a_complex = a.to(a.dtype.to_complex())
-        b_complex = b.to(b.dtype.to_complex())
-        merged_tensor = a_complex ** (1 - alpha) * b_complex ** alpha
-        merged_tensor = merged_tensor.real + merged_tensor.imag  # Add imaginary component
-
-        return merged_tensor.reshape(original_shape)
-
-    def merge_conv_layers(a: Tensor, b: Tensor, alpha: float) -> Tensor:
-        """Merges convolutional layer weights using Fourier transform and geometric interpolation."""
-        a_fft = torch.fft.fftn(a, dim=tuple(range(1, a.dim())))  # Apply FFT along spatial dimensions
-        b_fft = torch.fft.fftn(b, dim=tuple(range(1, b.dim())))
-        merged_fft = a_fft ** (1 - alpha) * b_fft ** alpha
-        merged_tensor = torch.fft.ifftn(merged_fft, dim=tuple(range(1, a.dim()))).real  # Inverse FFT and take real part
-
-        # Handle 1x1 convolutions using polar interpolation
-        if a.shape[-1] == 1 and a.shape[-2] == 1:
-            U, S, V = torch.linalg.svd(merged_tensor.reshape(-1, a.shape[0]))
-            merged_tensor = U @ torch.diag(S ** alpha) @ V.t()  # Polar interpolation
-
-        return merged_tensor.reshape(a.shape)
-
-    @staticmethod
-    @convert_to_recipe
-    def distribution_merge(
-        a: Tensor | SameMergeSpace,
-        b: Tensor | SameMergeSpace,
-        *,
-        alpha: Hyper = 0.5,
-        **kwargs,
-    ) -> Tensor | SameMergeSpace:
-        """Merges tensors using distribution interpolation for specific layers."""
-        key = kwargs.get("key", "")
-
-        if key.endswith((".token_embedding.weight", ".shared.weight")):
-            return MergeMethods.distribution_interpolate(a, b, alpha, kwargs)
-        else:
-            # Apply a default merging method for other layers (e.g., weighted_sum)
-            return sd_mecha.weighted_sum.__wrapped__(a, b, alpha=alpha)
-
-    def distribution_interpolate(a, b, alpha, kwargs):
-        a = a.mH
-        b = b.mH
-
-        a_mean = a.mean(dim=1, keepdim=True)
-        b_mean = b.mean(dim=1, keepdim=True)
-
-        a_cov = torch.cov(a - a_mean)
-        b_cov = torch.cov(b - b_mean)
-
-        a_d_neghalf = torch.diag_embed(1 / a_cov.diag().sqrt())
-        b_d_neghalf = torch.diag_embed(1 / b_cov.diag().sqrt())
-
-        a_corr = a_d_neghalf @ a_cov @ a_d_neghalf
-        b_corr = b_d_neghalf @ b_cov @ b_d_neghalf
-
-        a_corr_neghalf = MergeMethods.fractional_pd(a_corr, -1 / 2)
-        b_corr_neghalf = MergeMethods.fractional_pd(b_corr, -1 / 2)
-
-        a_w_transform = a_corr_neghalf @ a_d_neghalf
-        b_w_transform = b_corr_neghalf @ b_d_neghalf
-
-        a_w = a_w_transform @ (a - a_mean)
-        b_w = b_w_transform @ (b - b_mean)
-
-        res_w = a_w*(1-alpha) + b_w*alpha
-        res_centered = MergeMethods.positive_definite_interpolate(
-            *torch.linalg.eigh(MergeMethods.fractional_pd(a_w_transform, -1)),
-            *torch.linalg.eigh(MergeMethods.fractional_pd(b_w_transform, -1)),
-            alpha=alpha,
-            power=1,
-            kwargs=kwargs,
-        ) @ res_w
-        res = res_centered + a_mean * (1 - alpha) + b_mean * alpha
-        res = res.mH.contiguous()
-
-        return res
-
-    def positive_definite_interpolate(a_v, a_vs, b_v, b_vs, alpha, power, kwargs):
-        original_dtype = a_vs.dtype
-        complex_dtype = original_dtype.to_complex()
-
-        a_v, a_vs = a_v.to(dtype=complex_dtype), a_vs.to(dtype=complex_dtype)
-
-        a_half = a_vs @ torch.diag_embed(a_v ** (1 / 2)) @ a_vs.mH
-        a_neghalf = a_vs @ torch.diag_embed((a_v ** (-1 / 2)).nan_to_num(nan=0)) @ a_vs.mH
-        b = (b_vs @ torch.diag_embed(b_v) @ b_vs.mH).to(complex_dtype)
-
-        delta_v, delta_vs = torch.linalg.eigh(a_neghalf @ b @ a_neghalf)
-        delta = delta_vs @ torch.diag_embed((delta_v.to(complex_dtype) ** alpha).nan_to_num(nan=0)) @ delta_vs.mH
-        res_v, res_vs = torch.linalg.eigh(a_half @ delta @ a_half)
-        res_v_pow = (res_v ** power).to(complex_dtype)
-        res = res_vs @ torch.diag_embed(res_v_pow) @ res_vs.mH
-
-        if not original_dtype.is_complex and res.imag.abs().max() > 1e-6:
-            print(
-                f"fix your signs! max(|imag|): {res.imag.abs().max().item()}, det: {res.det().item()}, kwargs: {kwargs}")
-
-        return res.to(dtype=original_dtype)
-
-    def fractional_pd(a, power):
-        v, vs = torch.linalg.eigh(a)
-        v_pow = v ** power
-        res = vs @ torch.diag_embed(v_pow) @ vs.mH
-        return res.to(dtype=a.dtype)
 
     @staticmethod
     @convert_to_recipe(volatile_hypers=["cache"])
@@ -531,97 +339,103 @@ class MergeMethods:
             b: Tensor | SameMergeSpace,
             c: Tensor | SameMergeSpace,
             *,
-            alpha: float = 0.5,
-            beta: float = 0.5,
-            kernel_size: int = 5,
-            frequency_weight: float = 0.218,
+            alpha: Hyper = 0.5,
+            beta: Hyper = 0.5,
+            kernel_size: int = 3,
+            centroid_margin_factor: float = 0.08,
+            frequency_weight: float = 0.4,
             use_cross_attention: bool = True,
             **kwargs,
     ) -> Tensor | SameMergeSpace:
-        """
-        Enhanced multi-domain model merging that better balances frequency and spatial information.
-
-        Key improvements:
-        1. More stable frequency domain processing
-        2. Adaptive interpolation based on feature importance
-        3. Better handling of different tensor types (attention, conv, linear)
-        """
         try:
-            with torch.no_grad():
-                # Special handling for attention projections
+            with torch.no_grad():  # Prevent gradient graph building for intermediate calculations
+                if not (0 <= alpha <= 1 and 0 <= beta <= 1):
+                    raise ValueError("Alpha and beta must be between 0 and 1")
+
                 key = kwargs.get("key", "")
                 if key.endswith(("in_proj_weight", "in_proj_bias")):
                     return MergeMethods.handle_attention_projection(a, b, c, alpha, beta, kwargs)
 
                 original_shape = a.shape
 
-                # Step 1: Process in frequency domain with stability checks
-                freq_aligned = torch.utils.checkpoint.checkpoint(
-                    MergeMethods.frequency_alignment,
+                # Step 1: Frequency domain alignment in isolated context
+                freq_aligned_b = torch.utils.checkpoint.checkpoint(
+                    MergeMethods.frequency_selective_alignment,
                     a, b, c,
-                    frequency_weight
+                    centroid_margin_factor
                 )
 
-                # Step 2: Reshape for spatial processing
+                # Step 2: Spatial domain processing
                 shape_2d = MergeMethods.determine_reshape_dimensions(a)
                 a_2d = a.reshape(*shape_2d)
                 b_2d = b.reshape(*shape_2d)
                 c_2d = c.reshape(*shape_2d)
-                freq_2d = freq_aligned.reshape(*shape_2d)
+                freq_aligned_b_2d = freq_aligned_b.reshape(*shape_2d)
 
-                # Step 3: Calculate importance weights
+                # Calculate importance weights using cross-attention if enabled
                 if use_cross_attention and min(shape_2d) > 1:
-                    importance = MergeMethods.calculate_feature_importance(
+                    importance_weights = torch.utils.checkpoint.checkpoint(
+                        MergeMethods.calculate_cross_attention,
                         a_2d.detach(), b_2d.detach(), c_2d.detach()
                     )
                 else:
-                    importance = torch.ones_like(a_2d)
+                    importance_weights = torch.ones_like(a_2d)
 
-                # Step 4: Calculate adaptive dissimilarity
-                dissimilarity = MergeMethods.calculate_adaptive_dissimilarity(
-                    a_2d.detach(), b_2d.detach(), c_2d.detach(),
-                    kernel_size
+                # Calculate dissimilarity with anchor using checkpointing
+                dissimilarity = torch.utils.checkpoint.checkpoint(
+                    MergeMethods.calculate_dissimilarity,
+                    a_2d.detach(), b_2d.detach(), c_2d.detach()
                 )
 
-                # Step 5: Combine frequency and spatial information adaptively
-                combined_weights = freq_2d * frequency_weight + b_2d * (1 - frequency_weight)
+                dissimilarity = MergeMethods.gaussian_blur(dissimilarity, kernel_size)
 
-                # Step 6: Enhanced SLERP interpolation
-                effective_alpha = alpha * importance
-                dot_product = (F.normalize(a_2d, dim=-1) * F.normalize(combined_weights, dim=-1)).sum(dim=-1,
-                                                                                                      keepdim=True).clamp(
-                    -1.0, 1.0)
+                # Combine frequency and spatial information
+                b_combined = (
+                        freq_aligned_b_2d * frequency_weight +
+                        b_2d * (1 - frequency_weight)
+                )
+
+                # Vectorized SLERP implementation
+                effective_alpha = alpha * importance_weights
+
+                # Normalize vectors
+                a_norm = F.normalize(a_2d, p=2, dim=-1)
+                b_norm = F.normalize(b_combined, p=2, dim=-1)
+
+                # Compute dot product
+                dot_product = (a_norm * b_norm).sum(dim=-1, keepdim=True).clamp(-1.0, 1.0)
                 omega = torch.acos(dot_product)
 
-                # Improved stability for small angles
+                # Handle small angles to prevent numerical instability
                 small_angle_mask = omega < 1e-4
                 sin_omega = torch.sin(omega).clamp_min(1e-6)
 
-                # Compute interpolation coefficients
-                coeff_a = torch.where(small_angle_mask,
+                # Compute SLERP coefficients
+                slerp_a = torch.where(small_angle_mask,
                                       1.0 - effective_alpha,
                                       torch.sin((1.0 - effective_alpha) * omega) / sin_omega)
-                coeff_b = torch.where(small_angle_mask,
+                slerp_b = torch.where(small_angle_mask,
                                       effective_alpha,
                                       torch.sin(effective_alpha * omega) / sin_omega)
 
-                # Merge with magnitude preservation
-                a_magnitude = a_2d.norm(dim=-1, keepdim=True)
-                b_magnitude = combined_weights.norm(dim=-1, keepdim=True)
-                target_magnitude = a_magnitude * (1 - effective_alpha) + b_magnitude * effective_alpha
+                # Compute merged result
+                merged = slerp_a * a_2d + slerp_b * b_combined
 
-                merged = coeff_a * a_2d + coeff_b * combined_weights
-                merged = merged * (target_magnitude / (merged.norm(dim=-1, keepdim=True) + 1e-8))
+                # Apply anchor-based adjustment
+                anchor_adjustment = (b_combined - c_2d) * beta * dissimilarity
+                merged = merged + anchor_adjustment * importance_weights
 
-                # Apply anchor adjustment with adaptive scaling
-                if beta > 0:
-                    anchor_scale = beta * torch.sigmoid(dissimilarity)  # Smooth scaling
-                    anchor_delta = (combined_weights - c_2d) * anchor_scale
-                    merged = merged + anchor_delta * importance
+                result = merged.reshape(original_shape)
 
-                return merged.reshape(original_shape)
+                # Ensure all intermediate tensors are cleared
+                del (freq_aligned_b, a_2d, b_2d, c_2d, freq_aligned_b_2d, importance_weights,
+                     dissimilarity, b_combined, a_norm, b_norm, dot_product, omega,
+                     small_angle_mask, sin_omega, slerp_a, slerp_b, merged, anchor_adjustment)
+
+                return result
 
         finally:
+            # Clear any CUDA cache if using GPU
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
 
@@ -710,43 +524,126 @@ class MergeMethods:
 
         return (1 - cos_sim) / 2
 
-    def frequency_alignment(a: Tensor, b: Tensor, c: Tensor, weight: float) -> Tensor:
-        """Enhanced frequency domain alignment with better stability."""
-        # Convert to frequency domain
-        a_freq = torch.fft.rfft(a.reshape(-1))
-        b_freq = torch.fft.rfft(b.reshape(-1))
+    @staticmethod
+    def frequency_selective_alignment(
+            a: Tensor,
+            b: Tensor,
+            c: Tensor,
+            centroid_margin_factor: float = 0.1
+    ) -> Tensor:
+        """Frequency selective alignment with improved memory management."""
+        with torch.no_grad():
+            # Reshape tensors
+            a_flat = a.reshape(-1).float()
+            b_flat = b.reshape(-1).float()
+            c_flat = c.reshape(-1).float()
 
-        # Calculate magnitudes and phases
-        a_mag = torch.abs(a_freq)
-        b_mag = torch.abs(b_freq)
-        b_phase = torch.angle(b_freq)
+            # Compute FFTs one at a time to reduce peak memory usage
+            a_dft = torch.fft.rfft(a_flat)
+            b_dft = torch.fft.rfft(b_flat)
+            c_dft = torch.fft.rfft(c_flat)
 
-        # Adaptive magnitude mixing
-        mixed_mag = a_mag * (1 - weight) + b_mag * weight
+            fft_size = a_dft.shape[0]
 
-        # Reconstruct with mixed magnitudes and original phase
-        result_freq = torch.polar(mixed_mag, b_phase)
-        return torch.fft.irfft(result_freq, a.reshape(-1).shape[0]).reshape(a.shape)
+            # Calculate centroids sequentially
+            centroids = {
+                'a': MergeMethods.calculate_spectral_centroid(a_dft),
+                'b': MergeMethods.calculate_spectral_centroid(b_dft),
+                'c': MergeMethods.calculate_spectral_centroid(c_dft)
+            }
 
-    def calculate_adaptive_dissimilarity(a: Tensor, b: Tensor, c: Tensor, kernel_size: int) -> Tensor:
-        """Calculate dissimilarity with adaptive kernel size."""
-        # Normalize inputs for stable distance calculation
-        a_norm = F.normalize(a, dim=-1)
-        b_norm = F.normalize(b, dim=-1)
-        c_norm = F.normalize(c, dim=-1)
+            # Calculate phase coherence
+            phase_coherence = MergeMethods.calculate_phase_coherence(a_dft, b_dft, c_dft)
 
-        # Calculate pairwise distances
-        dist_ab = 1 - (a_norm * b_norm).sum(dim=-1, keepdim=True)
-        dist_ac = 1 - (a_norm * c_norm).sum(dim=-1, keepdim=True)
-        dist_bc = 1 - (b_norm * c_norm).sum(dim=-1, keepdim=True)
+            # Dynamic beta calculation
+            freq_dissimilarity = abs(centroids['a'] - centroids['b'])
+            dynamic_beta = torch.cos(torch.tensor(math.pi / 2) * freq_dissimilarity).item()
+            dynamic_beta = dynamic_beta * phase_coherence
 
-        # Combine distances with smooth min/max
-        dissimilarity = (dist_ab + dist_ac + dist_bc) / 3
+            # Define frequency bands
+            margin = int(centroid_margin_factor * fft_size)
+            passband_end = int(min(centroids['a'], centroids['c']) * fft_size - margin)
+            stopband_start = int(max(centroids['a'], centroids['c']) * fft_size + margin)
 
-        # Apply adaptive smoothing
-        return MergeMethods.gaussian_smooth(dissimilarity, kernel_size)
+            passband_end = max(0, min(passband_end, fft_size - margin))
+            stopband_start = min(fft_size, max(stopband_start, margin))
 
-    def gaussian_smooth(a: Tensor, kernel_size: int) -> Tensor:
+            # Adjust frequency components
+            result = MergeMethods.adjust_frequency_components(
+                a_dft, b_dft, c_dft,
+                passband_end, stopband_start,
+                dynamic_beta
+            )
+
+            # Clean up FFT tensors explicitly
+            del a_dft, b_dft, c_dft
+
+            return torch.fft.irfft(result, a_flat.shape[0]).reshape(a.shape)
+
+    def calculate_phase_coherence(a_dft: Tensor, b_dft: Tensor, c_dft: Tensor) -> float:
+        """Calculate phase coherence between three signals."""
+        phase_a = torch.angle(a_dft)
+        phase_b = torch.angle(b_dft)
+        phase_c = torch.angle(c_dft)
+
+        # Calculate phase differences
+        diff_ab = torch.abs(torch.angle(torch.exp(1j * (phase_a - phase_b))))
+        diff_ac = torch.abs(torch.angle(torch.exp(1j * (phase_a - phase_c))))
+        diff_bc = torch.abs(torch.angle(torch.exp(1j * (phase_b - phase_c))))
+
+        # Average phase coherence
+        coherence = torch.mean(torch.cos(diff_ab) + torch.cos(diff_ac) + torch.cos(diff_bc)) / 3
+        return coherence.item()
+
+    def adjust_frequency_components(
+            a_dft: Tensor,
+            b_dft: Tensor,
+            c_dft: Tensor,  # Keep parameter for API consistency, but use minimally
+            passband_end: int,
+            stopband_start: int,
+            dynamic_beta: float
+    ) -> Tensor:
+        """
+        Adjust magnitude and phase of frequency components.
+        The anchor tensor (c_dft) is used only for band definition in the caller,
+        not for direct magnitude/phase adjustment.
+        """
+        # Separate magnitude and phase
+        mag_b = torch.abs(b_dft)
+        phase_b = torch.angle(b_dft)
+
+        # Get reference magnitudes
+        mag_a = torch.abs(a_dft)
+
+        # Calculate weighted magnitude
+        weighted_mag = torch.where(
+            torch.arange(mag_b.shape[0], device=mag_b.device) < passband_end,
+            (1 - dynamic_beta) * mag_a + dynamic_beta * mag_b,
+            mag_b
+        )
+
+        # Apply smooth transition only if there's a valid transition range
+        transition_range = stopband_start - passband_end
+        if transition_range > 0:
+            transition = torch.cos(
+                torch.linspace(0, math.pi / 2, transition_range, device=mag_b.device)
+            )
+            weighted_mag[passband_end:stopband_start] *= transition
+
+        return torch.polar(weighted_mag, phase_b)
+
+    def calculate_spectral_centroid(dft: Tensor) -> float:
+        """
+        Calculates the spectral centroid of a tensor in the frequency domain.
+        Returns a normalized centroid value between 0 and 1.
+        """
+        fft_size = dft.shape[0]
+        frequencies = torch.arange(fft_size, device=dft.device) / fft_size  # Normalize frequencies to [0, 1]
+        magnitudes = torch.abs(dft)
+        centroid = (frequencies * magnitudes).sum() / (magnitudes.sum() + EPSILON)
+        return centroid.item()
+
+    def gaussian_blur(a: Tensor, kernel_size: int) -> Tensor:
         """
         Apply 1D Gaussian blur to tensor with handling for small tensors.
         Automatically adjusts kernel size for small inputs to prevent padding errors.
@@ -1434,593 +1331,24 @@ class MergeMethods:
         return res.reshape(original_shape)
 
     @staticmethod
-    @convert_to_recipe
-    def polar_interpolate(
-        a: Tensor | SameMergeSpace,
-        b: Tensor | SameMergeSpace,
-        *,
-        alpha: Hyper = 0.5,
-        polar_skew: Hyper = 0,
-        **kwargs,
-    ) -> Tensor | SameMergeSpace:
-        gc.collect()
-        torch.cuda.empty_cache()
-        key = kwargs.get("key", "")
-        # if not key.startswith("model.diffusion_model.input_blocks") or (len(a.shape) >= 2 and a.shape[0] == a.shape[1:].numel()):
-        #     return a # 'model.diffusion_model.input_blocks.7.1.transformer_blocks.0.attn2.to_v.weight'
-
-        if key.endswith(("in_proj_weight", "in_proj_bias")):
-            # workaround for concatenated attention projection layers
-            vs = []
-            for i, k in enumerate(("to_q", "to_k", "to_v")):
-                k_kwargs = kwargs.copy()
-                k_kwargs["key"] = key.replace("in_proj_", f"{k}.")
-                dim = a.shape[0] // 3
-                t_start = dim*i
-                t_end = dim*(i+1)
-                k_models = tuple(m[t_start:t_end] for m in (a, b))
-                vs.append(MergeMethods.polar_interpolate.__wrapped__(*k_models, alpha=alpha, **k_kwargs))
-            return torch.cat(vs)
-
-        if torch.allclose(a.half(), b.half()):
-            return a*(1-alpha) + b*alpha
-
-        layer_type = MergeMethods.get_layer_type(a.shape, kwargs)
-
-        if layer_type is MergeMethods.LayerType.SCALAR:
-            print(f"geometric interpolation of norm: {key}")
-            res = a.to(a.dtype.to_complex())**(1-alpha) * b.to(a.dtype.to_complex())**alpha
-            res = res.real + res.imag * torch.where(a.abs() >= b.abs(), a.sign(), b.sign())
-        elif layer_type is MergeMethods.LayerType.CONV2D:
-            print(f"fourrier interpolation of conv: {key}")
-            res = MergeMethods.interpolate_conv_kernels(a, b, alpha, polar_skew, kwargs)
-        elif layer_type is MergeMethods.LayerType.EMBEDD:
-            # print(f"distribution interpolation of embeds: {key}")
-            # res = distribution_interpolate(a, b, alpha, kwargs)
-            # print(f"matmul interpolation of embeds: {key}")
-            # res = matmul_interpolate(a.mH, b.mH, alpha, polar_skew, kwargs).mH
-            print(f"linear interpolation of embeds: {key}")
-            res = a*(1-alpha) + b*alpha
-        elif layer_type is MergeMethods.LayerType.MATMUL:
-            print(f"polar interpolation of matmul: {key}")
-            res = MergeMethods.matmul_interpolate(a, b, alpha, polar_skew, kwargs)
-        elif layer_type is MergeMethods.LayerType.OFFSET:
-            print(f"linear interpolation of bias: {key}")
-            res = a*(1-alpha) + b*alpha
-        else:
-            print(f"linear interpolation of unknown: {key}")
-            res = a*(1-alpha) + b*alpha
-
-        assert res.isfinite().all(), "bad merge: the model will contain nans or infs"
-        return res
-
-    class LayerType(enum.Enum):
-        SCALAR = enum.auto()
-        OFFSET = enum.auto()
-        CONV2D = enum.auto()
-        EMBEDD = enum.auto()
-        MATMUL = enum.auto()
-
-    def get_layer_type(shape, kwargs):
-        key = kwargs["key"]
-
-        if len(shape) == 1 and key.endswith(("weight", "scale")):
-            return MergeMethods.LayerType.SCALAR
-
-        if len(shape) < 2 or key.endswith("bias") or "position" in key:
-            return MergeMethods.LayerType.OFFSET
-
-        if len(shape) == 4:
-            return MergeMethods.LayerType.CONV2D
-
-        if "token_embedding" in key or "shared.weight" in key:
-            return MergeMethods.LayerType.EMBEDD
-
-        return MergeMethods.LayerType.MATMUL
-
-    def matmul_interpolate(a_2d, b_2d, alpha, polar_skew, kwargs):
-        original_dtype = a_2d.dtype
-
-        m, n = a_2d.shape[-2:]
-
-        svd_driver = "gesvd" if a_2d.is_cuda else None
-        a_u, a_s, a_vt = torch.linalg.svd(a_2d, driver=svd_driver, full_matrices=False)
-        b_u, b_s, b_vt = torch.linalg.svd(b_2d, driver=svd_driver, full_matrices=False)
-        if not original_dtype.is_complex:
-            MergeMethods.align_v4(a_u, b_u, a_s, b_s, a_vt, b_vt)
-
-        a_v, b_v, v_proj = MergeMethods.close_ortho_columns_full(a_vt.mH, b_vt.mH)
-        a_s1, b_s1 = a_s, b_s
-        v_is_tall = m < n
-        if v_is_tall:
-            a_s1, b_s1 = torch.cat((a_s, b_s), dim=-1)[..., :min(2*m, n)], torch.cat((b_s, a_s), dim=-1)[..., :min(2*m, n)]
-
-        p_right = MergeMethods.positive_definite_interpolate(a_s1, a_v, b_s1, b_v, alpha, polar_skew, kwargs)
-
-        a_u2, b_u2, u2_proj = MergeMethods.close_ortho_columns_full(a_u, b_u)
-        a_s2, b_s2 = a_s, b_s
-        u_is_tall = n < m
-        if u_is_tall:
-            a_s2, b_s2 = torch.cat((a_s, b_s), dim=-1)[..., :min(2*n, m)], torch.cat((b_s, a_s), dim=-1)[..., :min(2*n, m)]
-
-        p_left = MergeMethods.positive_definite_interpolate(a_s2, a_u2, b_s2, b_u2, alpha, 1-polar_skew, kwargs)
-
-        a_w, b_w = a_u @ a_vt, b_u @ b_vt
-
-        w_is_wide = m < n
-        if w_is_wide:
-            a_w = a_w.mH
-            b_w = b_w.mH
-
-        a_w, b_w, u_proj = MergeMethods.close_ortho_columns_full(a_w, b_w)
-        w = MergeMethods.orthogonal_interpolate(a_w, b_w, alpha, kwargs)
-
-        if w_is_wide:
-            a_w = a_w.mH
-            b_w = b_w.mH
-            w = (u_proj @ w).mH
-
-        res = w[..., :m, :n] @ v_proj @ p_right
-
-        if not w_is_wide:
-            res = (u_proj @ res)[..., :m, :]
-
-        res = p_left @ u2_proj.mH @ res
-        res = u2_proj @ res
-        res = res @ v_proj.mH
-        return res
-
-    def align_v4(a_u, b_u, a_s, b_s, a_vt, b_vt):
-        assert a_u.dim() == 2
-        m, n = len(a_u), len(a_vt.mH)
-        if m != n:
-            return
-
-        a_det_is_negative = MergeMethods.ortho_det(a_u @ a_vt)
-        b_det_is_negative = MergeMethods.ortho_det(b_u @ b_vt)
-        if a_det_is_negative != b_det_is_negative:
-            if a_s[-1] < b_s[-1]:
-                a_vt[-1] *= -1
-            else:
-                b_vt[-1] *= -1
-
-    def orthogonal_interpolate(a, b, alpha, kwargs):
-        return MergeMethods.fractional_matrix_power(b @ a.mH, alpha, kwargs) @ a
-
-    def fractional_matrix_power(a, alpha, kwargs):
-        original_dtype = a.dtype
-
-        v, vs = torch.linalg.eig(a)
-#        MergeMethods.fix_eig_reflections(v, vs)
-
-        v_pow = v**alpha
-        if not original_dtype.is_complex:
-            assert v_pow.prod().real.sign() == 1
-
-        res = torch.linalg.solve_ex(vs, vs @ torch.diag_embed(v_pow), left=False, check_errors=True)[0]
-        if not original_dtype.is_complex and res.imag.abs().max() > 1e-6:
-            print(f"fix your signs! max(|imag|): {res.imag.abs().max().item()}, det: {MergeMethods.ortho_det(res).item()}, kwargs: {kwargs}")
-
-        res = res.to(a.dtype)
-        return res
-
-    def positive_definite_interpolate(a_v, a_vs, b_v, b_vs, alpha, power, kwargs):
-        original_dtype = a_vs.dtype
-        complex_dtype = original_dtype.to_complex()
-
-        a_v, a_vs = a_v.to(dtype=complex_dtype), a_vs.to(dtype=complex_dtype)
-        b_v, b_vs = b_v.to(dtype=complex_dtype), b_vs.to(dtype=complex_dtype)
-
-        a_half = a_vs @ torch.diag_embed(a_v**(1/2)) @ a_vs.mH
-        a_neghalf = a_vs @ torch.diag_embed((a_v**(-1/2)).nan_to_num(nan=0)) @ a_vs.mH
-        b = (b_vs @ torch.diag_embed(b_v) @ b_vs.mH).to(complex_dtype)
-
-        delta_v, delta_vs = torch.linalg.eigh(a_neghalf @ b @ a_neghalf)
-        delta = delta_vs @ torch.diag_embed((delta_v.to(complex_dtype)**alpha).nan_to_num(nan=0)) @ delta_vs.mH
-        res_v, res_vs = torch.linalg.eigh(a_half @ delta @ a_half)
-        res_v_pow = (res_v**power).to(complex_dtype)
-        res = res_vs @ torch.diag_embed(res_v_pow) @ res_vs.mH
-
-        if not original_dtype.is_complex and res.imag.abs().max() > 1e-6:
-            print(f"fix your signs! max(|imag|): {res.imag.abs().max().item()}, det: {res.det().item()}, kwargs: {kwargs}")
-
-        return res.to(dtype=original_dtype)
-
-    def close_ortho_columns_full(a, b):
-        original_dtype = a.dtype
-        m, n = a.shape[-2:]
-        assert a.shape == b.shape
-
-        if n == m:
-            return a, b, MergeMethods.matmul_identity()
-
-        if 2*n < m:
-            def complement_proj_fn(a, b, x):
-                x = b.mH @ x
-                x = b @ x
-                c = a.mH @ x
-                c = a @ c
-                return x - c
-
-            def complement_proj_fn_t(a, b, y):
-                y1 = a.mH @ y
-                y1 = a @ y1
-                y = y - y1
-                y = b.mH @ y
-                y = b @ y
-                return y
-
-            a_n = MergeMethods.extend_ortho(
-                a,
-                functools.partial(complement_proj_fn, a, b),
-                functools.partial(complement_proj_fn_t, a, b),
-                m, 2*n,
-            )
-            b_n = MergeMethods.extend_ortho(
-                b,
-                functools.partial(complement_proj_fn, b, a),
-                functools.partial(complement_proj_fn_t, b, a),
-                m, 2*n,
-            )
-            assert a_n.shape == b_n.shape
-
-            # appending columns aligned in a criss-cross fashion might not be the best approach?
-            # the idea is to close the column space of A and B so that both lie in the same vector space.
-            # maybe this type of alignment prevents natural rotations?
-            to_align = torch.stack([
-                a_n[..., n:].mH @ b_n[..., :n],
-                b_n[..., n:].mH @ a_n[..., :n],
-            ], dim=0)
-            svd_driver = "gesvd" if a.is_cuda else None
-            u, _, vt = torch.linalg.svd(to_align, driver=svd_driver, full_matrices=False)
-            r = u @ vt
-            a_n[..., n:] @= r[0]
-            b_n[..., n:] @= r[1]
-
-            proj = MergeMethods.get_shared_basis(
-                a_n, b_n,
-                2*n,
-                device=a.device, dtype=a.dtype,
-            )
-            a_p = proj.mH @ a_n
-            b_p = proj.mH @ b_n
-            if not original_dtype.is_complex and MergeMethods.ortho_det(b_p @ a_p.mH) == -1:
-                proj[-1] *= -1
-                a_p = proj.mH @ a_n
-                b_p = proj.mH @ b_n
-        else:
-            def complement_proj_fn(a, x):
-                c = a.mH @ x
-                c = a @ c
-                return x - c
-
-            def complement_proj_fn_t(a, y):
-                c = a.mH @ y
-                c = a @ c
-                return y - c
-
-            a_n = MergeMethods.extend_ortho(
-                a,
-                functools.partial(complement_proj_fn, a),
-                functools.partial(complement_proj_fn_t, a),
-                m, m,
-            )
-            b_n = MergeMethods.extend_ortho(
-                b,
-                functools.partial(complement_proj_fn, b),
-                functools.partial(complement_proj_fn_t, b),
-                m, m,
-            )
-            assert a_n.shape == b_n.shape
-
-            # for 2n >= m, a projection is not useful.
-            # we simply add new orthogonal columns until both matrices are square
-            #  and align those in A with those in B for minimal interference between
-            #  the meaningful columns during interpolation
-            to_align = a_n[..., n:].mH @ b_n[..., n:]
-            svd_driver = "gesvd" if a.is_cuda else None
-            u, _, vt = torch.linalg.svd(to_align, driver=svd_driver, full_matrices=False)
-            a_n[..., n:] @= u @ vt
-
-            proj = MergeMethods.matmul_identity()
-            a_p = a_n
-            b_p = b_n
-
-            if not original_dtype.is_complex and MergeMethods.ortho_det(b_p @ a_p.mH) == -1:
-                #a_p = a_n.clone()
-                a_p[..., -1] *= -1
-
-        return a_p, b_p, proj
-
-    def ortho_det(a):
-        return torch.linalg.eigvals(a).sgn().prod().sgn().to(a.dtype)
-
-    def extend_ortho(x, r, rh, input_m, target_n):
-        if target_n <= x.shape[-1]:
-            return x
-
-        k = target_n - x.shape[-1]
-        k_frame = MergeMethods.get_approximate_basis(r, rh, input_m, k, dtype=x.dtype, device=x.device)
-        return torch.cat((x, k_frame), dim=-1)
-
-    def get_shared_basis(a, b, max_rank, niter=2, device=None, dtype=None):
-        assert a.shape == b.shape
-        m, n = a.shape[-2:]
-
-        def outer_fn(x):
-            x = a.mH @ x
-            x = b @ x
-            return x
-
-        def outer_fn_t(y):
-            y = b.mH @ y
-            y = a @ y
-            return y
-
-        basis = last_basis = None
-        rank = max_rank
-
-        while basis is None or (
-            MergeMethods.is_orthogonal((basis.mH @ b) @ (a.mH @ basis)) and
-            MergeMethods.is_orthogonal((basis.mH @ a) @ (a.mH @ basis)) and
-            MergeMethods.is_orthogonal((basis.mH @ b) @ (b.mH @ basis))
-        ):
-            last_basis = basis
-            basis = MergeMethods.get_approximate_basis(
-                outer_fn, outer_fn_t,
-                m, rank, niter=niter,
-                device=device, dtype=dtype,
-            )
-            rank -= 1
-
-        if rank+2 < max_rank:
-            print(f"optimized rank: {rank+2},\tmax case: {max_rank},\tbasis shape: {(basis if last_basis is None else last_basis).shape}")
-
-        return basis if last_basis is None else last_basis
-
-    def is_orthogonal(a, eye=None):
-        if eye is None:
-            eye = torch.eye(a.shape[-1], device=a.device, dtype=a.dtype)
-        return torch.allclose(a.mH @ a, eye)
-
-    def get_approximate_basis(f, fh, input_m: int, rank: int, niter=2, device=None, dtype=None):
-        Q = torch.randn(input_m, rank, dtype=dtype, device=device)
-        Q = torch.linalg.qr(f(Q)).Q
-        for i in range(niter):
-            Q = torch.linalg.qr(fh(Q)).Q
-            Q = torch.linalg.qr(f(Q)).Q
-
-        return Q
-
-    def fix_eig_reflections(v, vs):
-        reflections = torch.isclose(v, -torch.ones_like(v))
-        idx = torch.arange(v.shape[-1], device=v.device)[reflections]
-        num_reflections = idx.numel()
-        if num_reflections % 2 == 1:
-            return
-
-        imag_sign_bits = MergeMethods.get_imag_sign_bit(v[..., idx])
-        vs = vs[..., idx]
-
-        half_mask = torch.zeros(num_reflections, device=v.device, dtype=torch.bool)
-        half_mask[MergeMethods.get_imag_sign_bit(vs[..., 0, :]) == 0] = True
-
-        cost_matrix = (vs[..., half_mask].mT @ vs[..., ~half_mask]).abs()  # do not use .mH since we are matching conjugate pairs
-        if cost_matrix.numel():
-            conj_idx = cost_matrix.argmax(dim=-1)
-        else:
-            conj_idx = torch.empty(0, device=v.device, dtype=torch.long)
-        assert torch.allclose(vs[..., half_mask], vs[..., ~half_mask][..., conj_idx].conj())
-
-        to_fix_idx = (imag_sign_bits[..., half_mask] == imag_sign_bits[..., ~half_mask][..., conj_idx]).nonzero().flatten()
-        to_fix = v[..., to_fix_idx]
-        to_fix.conj_physical_()
-
-    def get_imag_sign_bit(tensor):
-        int_dtype = MergeMethods.complex_int_dtype_map[tensor.dtype]
-        int_tensor = tensor.imag.view(int_dtype)
-        last_bit = int_dtype.itemsize * 8 - 1
-        sign_bits = (int_tensor >> last_bit) & 1
-        return sign_bits
-
-    complex_int_dtype_map = {
-        torch.complex32: torch.int16,
-        torch.complex64: torch.int32,
-        torch.complex128: torch.int64,
-    }
-
-    def vector_slerp(a, b, alpha):
-        original_shape = a.shape
-        a_2d = a.flatten(start_dim=1)
-        b_2d = b.flatten(start_dim=1)
-
-        m, n = a_2d.shape
-        if m > n:
-            # assume more vectors than features
-            a_2d = a_2d.mH
-            b_2d = b_2d.mH
-
-        res = MergeMethods.batch_slerp(a_2d, b_2d, alpha)
-        if m > n:
-            res = res.mH
-
-        return res.reshape(original_shape)
-
-    def batch_slerp(a, b, t):
-        a_norm = a.norm(dim=0, keepdim=True)
-        b_norm = b.norm(dim=0, keepdim=True)
-        a_normalized = a / a_norm
-        b_normalized = b / b_norm
-
-        dot_product = (a_normalized * b_normalized.conj()).sum(dim=0, keepdim=True)
-
-        if not dot_product.is_complex():
-            dot_product = torch.clip(dot_product, -1, 1)
-
-        theta = torch.arccos(dot_product)
-
-        sin_theta = torch.sin(theta)
-        slerp_vector = (torch.sin((1 - t) * theta) / sin_theta) * a_normalized + (torch.sin(t * theta) / sin_theta) * b_normalized
-        slerp_vector *= a_norm**(1-t) * b_norm**t
-
-        return torch.where(slerp_vector.isfinite(), slerp_vector, a*(1-t) + b*t)
-
-    def interpolate_conv_kernels(a, b, alpha, polar_skew, kwargs):
-        original_shape = a.shape
-
-        a_dft = torch.fft.rfft2(a, norm="ortho")
-        b_dft = torch.fft.rfft2(b, norm="ortho")
-
-        a_dft = a_dft.permute(2, 3, 0, 1)
-        b_dft = b_dft.permute(2, 3, 0, 1)
-
-        permuted_shape = a_dft.shape
-        a_dft = a_dft.flatten(end_dim=1)
-        b_dft = b_dft.flatten(end_dim=1)
-
-        res_dft = []
-        for i in range(len(a_dft)):
-            res_dft.append(MergeMethods.matmul_interpolate(a_dft[i], b_dft[i], alpha, polar_skew, kwargs))
-
-        res_dft = torch.stack(res_dft)
-        res_dft = res_dft.reshape(permuted_shape)
-
-        res_dft = res_dft.permute(2, 3, 0, 1)
-
-        res = torch.fft.irfft2(res_dft, s=original_shape[-2:], norm="ortho")
-        return res.to(a.dtype)
-
-    def distribution_interpolate(a, b, alpha, kwargs):
-        a = a.mH
-        b = b.mH
-
-        a_mean = a.mean(dim=1, keepdim=True)
-        b_mean = b.mean(dim=1, keepdim=True)
-
-        a_cov = torch.cov(a - a_mean)
-        b_cov = torch.cov(b - b_mean)
-
-        a_d_neghalf = torch.diag_embed(1 / a_cov.diag().sqrt())
-        b_d_neghalf = torch.diag_embed(1 / b_cov.diag().sqrt())
-
-        a_corr = a_d_neghalf @ a_cov @ a_d_neghalf
-        b_corr = b_d_neghalf @ b_cov @ b_d_neghalf
-
-        a_corr_neghalf = MergeMethods.fractional_pd(a_corr, -1/2)
-        b_corr_neghalf = MergeMethods.fractional_pd(b_corr, -1/2)
-
-        a_w_transform = a_corr_neghalf @ a_d_neghalf
-        b_w_transform = b_corr_neghalf @ b_d_neghalf
-
-        a_w = a_w_transform @ (a - a_mean)
-        b_w = b_w_transform @ (b - b_mean)
-
-        res_w = a_w*(1 - alpha) + b_w*alpha
-        res_centered = MergeMethods.positive_definite_interpolate(
-            *torch.linalg.eigh(MergeMethods.fractional_pd(a_w_transform, -1)),
-            *torch.linalg.eigh(MergeMethods.fractional_pd(b_w_transform, -1)),
-            alpha=alpha,
-            power=1,
-            kwargs=kwargs,
-        ) @ res_w
-        res = res_centered + a_mean*(1-alpha) + b_mean*alpha
-        res = res.mH.contiguous()
-
-        return res
-
-    def fractional_pd(a, power):
-        v, vs = torch.linalg.eigh(a)
-        v_pow = v**power
-        res = vs @ torch.diag_embed(v_pow) @ vs.mH
-        return res.to(dtype=a.dtype)
-
-    class matmul_identity:
-        def __matmul__(self, other):
-            return other
-
-        def __rmatmul__(self, other):
-            return other
-
-        @property
-        def mH(self):
-            return self
-
-        @property
-        def mT(self):
-            return self
-
-        @property
-        def H(self):
-            return self
-
-        @property
-        def T(self):
-            return self
-
-    def wavelet_packet_decomposition(x: Tensor, wavelet: str, level: int) -> List[Tensor]:
-        # Ensure the input is 2D
-        original_shape = x.shape
-        x_2d = x.view(-1, x.shape[-1] if len(x.shape) > 1 else 1)
-
-        # Convert to numpy for PyWavelets
-        x_np = x_2d.cpu().numpy()
-
-        coeffs = []
-        for row in x_np:
-            wp = pywt.WaveletPacket(data=row, wavelet=wavelet, mode='symmetric', maxlevel=level)
-            coeffs.append([wp[node.path].data for node in wp.get_level(level, 'natural')])
-
-        # Convert back to torch tensors
-        return [torch.tensor(np.array(c), device=x.device, dtype=x.dtype) for c in zip(*coeffs)]
-
-    def wavelet_packet_reconstruction(coeffs: List[Tensor], wavelet: str, original_shape: torch.Size) -> Tensor:
-        # Reconstruct each row
-        reconstructed_rows = []
-        for i in range(coeffs[0].shape[0]):
-            wp = pywt.WaveletPacket(data=None, wavelet=wavelet, mode='symmetric', maxlevel=len(coeffs))
-            for j, coeff in enumerate(coeffs):
-                wp[wp.get_leaf_nodes()[j].path] = coeff[i].cpu().numpy()
-            reconstructed_rows.append(wp.reconstruct(update=False))
-
-        # Combine reconstructed rows
-        reconstructed = torch.tensor(np.array(reconstructed_rows), device=coeffs[0].device, dtype=coeffs[0].dtype)
-
-        # Reshape to original shape
-        return reconstructed.view(original_shape)
-
-    def simple_embedding_merge(a: Tensor, b: Tensor, alpha: float = 0.5) -> Tensor:
-        a_mean, a_std = a.mean(dim=1, keepdim=True), a.std(dim=1, keepdim=True)
-        b_mean, b_std = b.mean(dim=1, keepdim=True), b.std(dim=1, keepdim=True)
-        a_norm = (a - a_mean) / a_std
-        b_norm = (b - b_mean) / b_std
-        merged_norm = (1 - alpha) * a_norm + alpha * b_norm
-        merged_mean = (1 - alpha) * a_mean + alpha * b_mean
-        merged_std = (1 - alpha) * a_std + alpha * b_std
-        return merged_norm * merged_std + merged_mean
-
-    @staticmethod
-    @convert_to_recipe
+    @convert_to_recipe(volatile_hypers=["cache"])
     def merge_layers(
             a: Tensor | SameMergeSpace,
             b: Tensor | SameMergeSpace,
             *,
             alpha: Hyper = 0.5,
+            corr_threshold: Hyper = 0.69,
+            cache: Optional[Dict[str, Dict[str, Tensor]]] = None,
             **kwargs,
     ) -> Tensor | SameMergeSpace:
         key = kwargs.get("key", "")
-        if key.endswith(("in_proj_weight", "in_proj_bias")):
-            # workaround for concatenated attention projection layers
-            vs = []
-            for i, k in enumerate(("to_q", "to_k", "to_v")):
-                k_kwargs = kwargs.copy()
-                k_kwargs["key"] = key.replace("in_proj_", f"{k}.")
-                dim = a.shape[0] // 3
-                t_start = dim * i
-                t_end = dim * (i + 1)
-                k_a = a[t_start:t_end]
-                k_b = b[t_start:t_end]
-                vs.append(MergeMethods.merge_layers.__wrapped__(k_a, k_b, **k_kwargs))
-            return torch.cat(vs)
+
+        if cache is not None:
+            if key not in cache:
+                cache[key] = {}
+            layer_cache = cache[key]
+        else:
+            layer_cache = None
 
         layer_type = MergeMethods.get_layer_type(a.shape, kwargs)
 
@@ -2029,86 +1357,623 @@ class MergeMethods:
         elif layer_type == MergeMethods.LayerType.OFFSET:
             return sd_mecha.weighted_sum.__wrapped__(a, b, alpha=alpha)
         elif layer_type == MergeMethods.LayerType.EMBEDD:
-            return MergeMethods.advanced_embedding_merge(a, b, alpha=alpha)
+            return MergeMethods.clip_embedding_merge_v3(a, b, alpha=alpha)
+        elif layer_type == MergeMethods.LayerType.CROSS_ATTENTION_QKV:
+            return MergeMethods.merge_cross_attention_qkv(a, b, alpha=alpha, key=key, cache=layer_cache)
+        elif layer_type == MergeMethods.LayerType.ATTENTION_QKV:
+            return MergeMethods.merge_self_attention_qkv(a, b, alpha, key=key, cache=layer_cache)
+        elif layer_type == MergeMethods.LayerType.ATTENTION_PROJ:
+            return MergeMethods.merge_attention_output(a, b, alpha, key=key, cache=layer_cache)
+        elif layer_type == MergeMethods.LayerType.FFN_PROJ:
+            return MergeMethods.merge_ffn_proj(a, b, alpha=alpha, key=key)
+        elif layer_type == MergeMethods.LayerType.FFN_OUT:
+            return MergeMethods.merge_ffn_out(a, b, alpha=alpha, corr_threshold=corr_threshold, cache=layer_cache)
         elif layer_type == MergeMethods.LayerType.MATMUL:
-            if MergeMethods.is_positive_definite(a) and MergeMethods.is_positive_definite(b):
-                return MergeMethods.log_euclidean(a, b, alpha=alpha)
-            else:
-                if (MergeMethods.matrix_is_large(a) and not MergeMethods.dominant_rotation(a)) or MergeMethods.matrix_is_ill_conditioned(a):
-                    return MergeMethods.svd_interpolation(a, b, alpha=alpha)
-                else:
-                    return MergeMethods.polar_decomposition(a, b, alpha=alpha)
+            return MergeMethods.polar_decomposition(a, b, alpha=alpha, cache=layer_cache)
         elif layer_type == MergeMethods.LayerType.CONV2D:
             return MergeMethods.merge_wavelets(a, b, alpha=alpha)
         else:
-            raise ValueError(f"Unknown layer type: {layer_type}")
+            return sd_mecha.weighted_sum.__wrapped__(a, b, alpha=alpha)
+
+    def polar_decomposition(a: Tensor, b: Tensor, alpha: float,
+                            regularization_eps: float = 1e-6,
+                            cache: Optional[Dict] = None) -> Tensor:
+        device = a.device
+        dtype = a.dtype
+        original_shape = a.shape
+
+        if not original_shape:
+            shape_2d = (1, 1)
+        elif len(a.shape) == 4:
+            shape_2d = (-1, functools.reduce(operator.mul, a.shape[1:]))
+        else:
+            shape_2d = (-1, a.shape[-1])
+        a = a.reshape(*shape_2d)
+        b = b.reshape(*shape_2d)
+
+        def get_cached_svd(matrix: Tensor, prefix: str) -> Tuple[Tensor, Tensor, Tensor]:
+            """Helper to handle SVD caching for either matrix."""
+            if cache is not None and f"{prefix}_polar" in cache:
+                # Cached polar decomposition available
+                u_polar = cache[f"{prefix}_polar"].to(device, dtype)
+                s = cache[f"{prefix}_s"].to(device, dtype)
+                vt = cache[f"{prefix}_vt"].to(device, dtype)
+            else:
+                # Calculate and cache SVD components
+                u, s, vt = torch.linalg.svd(matrix, full_matrices=False)
+                u_polar = u @ vt  # Pre-compute polar component
+
+                if cache is not None:
+                    cache[f"{prefix}_polar"] = u_polar.to("cpu")
+                    cache[f"{prefix}_s"] = s.to("cpu")
+                    cache[f"{prefix}_vt"] = vt.to("cpu")
+
+            return u_polar, s, vt
+
+        # Get decompositions (from cache or compute)
+        u_a_polar, s_a, vt_a = get_cached_svd(a, "a")
+        u_b_polar, s_b, vt_b = get_cached_svd(b, "b")
+
+        # Get or compute alignment transform
+        if cache is not None and "transform" in cache:
+            transform = cache["transform"].to(device, dtype)
+        else:
+            transform = MergeMethods.orthogonal_procrustes_ml(u_a_polar, u_b_polar)
+            if cache is not None:
+                cache["transform"] = transform.to("cpu")
+
+        # Align polar decompositions
+        u_b_polar_aligned = u_b_polar @ transform
+
+        # Compute positive semidefinite parts
+        p_a = vt_a.t() @ torch.diag(s_a + regularization_eps) @ vt_a
+        p_b = vt_b.t() @ torch.diag(s_b + regularization_eps) @ vt_b
+
+        # Merge components
+        merged_u = MergeMethods.slerp_unitary_taylor(u_a_polar, u_b_polar_aligned, alpha)
+        merged_p = torch.lerp(p_a, p_b, alpha)
+
+        return (merged_u @ merged_p).reshape(original_shape)
+
+    def slerp_unitary_taylor(A: Tensor, B: Tensor, alpha: float, num_terms: int = 5) -> Tensor:
+        """
+        Performs slerp between two unitary matrices using a Taylor series approximation
+        of the matrix logarithm.
+
+        Args:
+            A: The first unitary matrix.
+            B: The second unitary matrix.
+            alpha: The interpolation factor (0 <= alpha <= 1).
+            num_terms: The number of terms to include in the Taylor series approximation.
+
+        Returns:
+            The interpolated unitary matrix.
+        """
+        if torch.allclose(A, B, atol=1e-6):
+            return A
+        else:
+            # Compute the relative rotation
+            relative_rotation = B @ A.t()
+
+            # Compute X for the Taylor series: X = relative_rotation - I
+            X = relative_rotation - torch.eye(relative_rotation.size(-1), device=A.device)
+
+            # Approximate the logarithm using the Taylor series
+            log_rotation = torch.zeros_like(X)
+            for i in range(1, num_terms + 1):
+                log_rotation += ((-1) ** (i + 1) / i) * torch.linalg.matrix_power(X, i)
+
+            # Interpolate in the tangent space
+            interpolated_log = alpha * log_rotation
+
+            # Map back to the space of unitary matrices
+            interpolated_unitary = torch.linalg.matrix_exp(interpolated_log) @ A
+
+            return interpolated_unitary
+
+    def clip_embedding_merge_v3(a: Tensor, b: Tensor, alpha: float = 0.5) -> Tensor:
+        """
+        CLIP embedding merge focused on preserving directional relationships using orthogonal Procrustes.
+        """
+        # 1. Normalize embeddings
+        a_norm = F.normalize(a, p=2, dim=1)
+        b_norm = F.normalize(b, p=2, dim=1)
+
+        # 2. Compute rotation using orthogonal Procrustes
+        rotation = MergeMethods.orthogonal_procrustes_ml(a_norm, b_norm)  # Replace SVD-based rotation
+
+        # 3. Apply rotation to b to align directional space
+        b_aligned = torch.mm(b, rotation.T)
+
+        # 4. Simple interpolation in aligned space
+        merged = (1 - alpha) * a + alpha * b_aligned
+
+        # 5. Preserve original norms
+        a_norms = torch.norm(a, dim=1, keepdim=True)
+        b_norms = torch.norm(b, dim=1, keepdim=True)
+        target_norms = (1 - alpha) * a_norms + alpha * b_norms
+
+        current_norms = torch.norm(merged, dim=1, keepdim=True)
+        merged = merged * (target_norms / (current_norms + 1e-8))
+
+        return merged
+
+    def merge_cross_attention_qkv(a: Tensor, b: Tensor, alpha: float, key: str,
+                                  cache: Optional[Dict] = None) -> Tensor:
+        """
+        Enhanced merge for cross-attention QKV layers with optimized caching for SVD.
+        Handles various architectures and projection types.
+        """
+        device = a.device
+        dtype = a.dtype
+
+        # Handle CLIP-G style concatenated QKV
+        if "in_proj" in key:
+            head_dim = a.shape[0] // 3
+            merged_parts = []
+
+            for i in range(3):
+                start = head_dim * i
+                end = head_dim * (i + 1)
+                part_a = a[start:end]
+                part_b = b[start:end]
+
+                # Use polar decomposition for each part with separate cache entries
+                part_key = f"{key}_part_{i}"
+                part_cache = cache.get(part_key, {}) if cache is not None else None
+                merged = MergeMethods.polar_decomposition(part_a, part_b, alpha, cache=part_cache)
+                if cache is not None:
+                    cache[part_key] = part_cache
+
+                merged_parts.append(merged)
+
+            return torch.cat(merged_parts, dim=0)
+
+        # Handle regular CLIP text encoder layers
+        elif any(x in key for x in ["k_proj", "v_proj", "q_proj"]):
+            return MergeMethods.merge_self_attention_qkv(a, b, alpha, key)
+
+        # Handle UNet cross-attention
+        else:
+            # For query projections, calculate `adjusted_alpha` without caching
+            if ".to_q." in key:
+                with torch.no_grad():
+                    # Generate some sample data for cosine similarity computation
+                    x = torch.randn(min(100, a.shape[-1]), a.shape[-1], device=device, dtype=dtype)
+                    q_a = x @ a.T
+                    q_b = x @ b.T
+                    sim = F.cosine_similarity(q_a.flatten(), q_b.flatten(), dim=0)
+                    adjusted_alpha = alpha * torch.sigmoid(sim)
+
+                # Use polar decomposition with adjusted weight
+                return MergeMethods.polar_decomposition(a, b, adjusted_alpha, cache=cache)
+
+            # For key/value projections (different dimensions), focus caching on SVD and transform
+            def get_cached_svd(matrix: Tensor, prefix: str) -> Tuple[Tensor, Tensor, Tensor]:
+                """Helper to handle SVD caching."""
+                cache_key = f"{key}_{prefix}"
+                if cache is not None and f"{cache_key}_u" in cache:
+                    u = cache[f"{cache_key}_u"].to(device, dtype)
+                    s = cache[f"{cache_key}_s"].to(device, dtype)
+                    vh = cache[f"{cache_key}_vh"].to(device, dtype)
+                else:
+                    svd_driver = "gesvdj" if matrix.is_cuda else "gesvd"
+                    u, s, vh = torch.linalg.svd(matrix, full_matrices=False, driver=svd_driver)
+
+                    if cache is not None:
+                        cache[f"{cache_key}_u"] = u.to('cpu')
+                        cache[f"{cache_key}_s"] = s.to('cpu')
+                        cache[f"{cache_key}_vh"] = vh.to('cpu')
+
+                return u, s, vh
+
+            # Get cached SVD components for matrices `a` and `b`
+            u_a, s_a, vh_a = get_cached_svd(a, "a")
+            u_b, s_b, vh_b = get_cached_svd(b, "b")
+
+            # Interpolate singular values
+            s_merged = torch.lerp(s_a, s_b, alpha)
+
+            # Align spaces using the smaller dimension
+            k = min(vh_a.shape[0], vh_b.shape[0])
+
+            # Get or compute alignment transform
+            transform_key = f"{key}_transform"
+            if cache is not None and transform_key in cache:
+                R = cache[transform_key].to(device, dtype)
+            else:
+                R = MergeMethods.orthogonal_procrustes_ml(vh_a[:k], vh_b[:k])
+                if cache is not None:
+                    cache[transform_key] = R.to('cpu')
+
+            vh_merged = torch.lerp(vh_a[:k], vh_b[:k] @ R.T, alpha)
+
+            # Reconstruct while preserving cross-modal relationships
+            merged = (u_a[:, :k] * s_merged[:k]) @ vh_merged
+
+            # Scale to preserve magnitude
+            scale_a = torch.norm(a)
+            scale_b = torch.norm(b)
+            target_scale = (1 - alpha) * scale_a + alpha * scale_b
+            current_scale = torch.norm(merged)
+
+            return merged * (target_scale / (current_scale + 1e-6))
+
+    def merge_self_attention_qkv(a: Tensor, b: Tensor, alpha: float, key: str,
+                                 cache: Optional[Dict] = None) -> Tensor:
+        """
+        Merge self-attention QKV layers with caching for polar decomposition.
+        Handles separate Q/K/V and concatenated formats for CLIP-G style models.
+        """
+        # Handle CLIP-G style concatenated QKV
+        if "in_proj" in key:
+            head_dim = a.shape[0] // 3
+            merged_parts = []
+
+            # Pre-fetch all cache entries to minimize repeated calls to cache.get
+            part_caches = [cache.get(f"{key}_part_{i}", {}) if cache else None for i in range(3)]
+
+            for i in range(3):
+                start = head_dim * i
+                end = head_dim * (i + 1)
+                part_a = a[start:end]
+                part_b = b[start:end]
+
+                # Use polar decomposition with separate cache namespace for each part
+                merged = MergeMethods.polar_decomposition(part_a, part_b, alpha, cache=part_caches[i])
+
+                # Update the main cache after polar decomposition call, if caching is enabled
+                if cache is not None:
+                    cache[f"{key}_part_{i}"] = part_caches[i]
+
+                merged_parts.append(merged)
+
+            return torch.cat(merged_parts, dim=0)
+
+        # Handle separate Q/K/V projections
+        else:
+            # Calculate attention similarity and adjusted alpha (not cached)
+            with torch.no_grad():
+                x = torch.randn(min(100, a.shape[-1]), a.shape[-1], device=a.device, dtype=a.dtype)
+                attn_a = torch.softmax(x @ a.T / math.sqrt(a.shape[-1]), dim=-1)
+                attn_b = torch.softmax(x @ b.T / math.sqrt(b.shape[-1]), dim=-1)
+
+                kl_div = F.kl_div(attn_a.log(), attn_b, reduction='batchmean')
+                adjusted_alpha = alpha * torch.sigmoid(1.0 - kl_div)
+
+            # Call polar_decomposition without caching, due to dynamic adjusted_alpha
+            return MergeMethods.polar_decomposition(a, b, adjusted_alpha)
+
+    def merge_attention_output(a: Tensor, b: Tensor, alpha: float, key: str,
+                               cache: Optional[Dict] = None) -> Tensor:
+        """
+        Merge attention output projections while preserving output distribution,
+        without caching for dynamically adjusted alpha values.
+        """
+        with torch.no_grad():
+            # Generate sample inputs
+            x = torch.randn(min(512, a.shape[-1]), a.shape[-1], device=a.device)
+
+            # Get output representations
+            out_a = x @ a.T
+            out_b = x @ b.T
+
+            # Compute output statistics
+            stats_a = torch.stack([
+                out_a.std(dim=0).mean(),  # Feature variation
+                out_a.abs().mean(),  # Activation magnitude
+                (out_a > 0).float().mean()  # Activation sparsity
+            ])
+            stats_b = torch.stack([
+                out_b.std(dim=0).mean(),
+                out_b.abs().mean(),
+                (out_b > 0).float().mean()
+            ])
+
+            # Adjust merge weight based on output similarity
+            stats_diff = torch.norm(stats_a - stats_b)
+            adjusted_alpha = alpha * torch.sigmoid(1.0 - stats_diff)
+
+        # Call polar_decomposition without caching, due to dynamic adjusted_alpha
+        merged = MergeMethods.polar_decomposition(a, b, adjusted_alpha)
+
+        # Scale to preserve activation magnitude
+        scale_a = torch.norm(out_a) / torch.norm(x)
+        scale_b = torch.norm(out_b) / torch.norm(x)
+        target_scale = (1 - alpha) * scale_a + alpha * scale_b
+
+        with torch.no_grad():
+            current_scale = torch.norm(x @ merged.T) / torch.norm(x)
+
+        return merged * (target_scale / (current_scale + 1e-6))
+
+    def merge_ffn_proj(a: torch.Tensor, b: torch.Tensor, alpha: float, key: str) -> torch.Tensor:
+        """
+        Enhanced FFN projection handling that adapts to matrix size.
+        """
+        input_dim = a.shape[-1]  # For proj.weight, this would be 640 or 1280
+        output_dim = a.shape[0]  # For proj.weight, this would be 5120 or 10240
+        expansion_factor = output_dim / input_dim
+
+        if MergeMethods.matrix_is_large(a, threshold=2048):  # Adjust threshold as needed
+            return MergeMethods.merge_ffn_proj_conservative(a, b, alpha, expansion_factor)
+        else:
+            return MergeMethods.merge_ffn_proj_standard(a, b, alpha, expansion_factor)
+
+    def merge_ffn_proj_conservative(a: Tensor, b: Tensor, alpha: float,
+                                    expansion_factor: float) -> Tensor:
+        """
+        Conservative merging for larger FFN projections
+        """
+        # Split the large projection into groups
+        group_size = a.shape[-1]  # Input dimension
+        num_groups = int(expansion_factor)
+
+        # Reshape to handle groups separately
+        a_groups = a.reshape(num_groups, -1, a.shape[-1])
+        b_groups = b.reshape(num_groups, -1, b.shape[-1])
+
+        merged_groups = []
+        for i in range(num_groups):
+            # Process each group with attention to activation patterns
+            a_group = a_groups[i]
+            b_group = b_groups[i]
+
+            # Check activation similarity within group
+            with torch.no_grad():
+                test_input = torch.randn(min(100, a_group.shape[-1]),
+                                         a_group.shape[-1],
+                                         device=a.device).to(a.dtype)  # Ensure correct data type
+                a_act = torch.relu(test_input @ a_group.T)
+                b_act = torch.relu(test_input @ b_group.T).to(a.dtype)
+
+                # Compare activation patterns
+                similarity = F.cosine_similarity(
+                    a_act.flatten(),
+                    b_act.flatten(),
+                    dim=0
+                )
+
+            if similarity > 0.7:
+                # Similar activations - interpolate smoothly
+                merged_group = torch.lerp(a_group, b_group, alpha)
+            else:
+                # Different activations - preserve stronger features
+                merged_group = torch.where(
+                    torch.abs(a_group) > torch.abs(b_group),
+                    a_group,
+                    b_group
+                )
+
+            merged_groups.append(merged_group)
+
+        # Recombine groups
+        return torch.cat(merged_groups, dim=0)
+
+    def merge_ffn_proj_standard(a: torch.Tensor, b: torch.Tensor, alpha: float,
+                                expansion_factor: float) -> torch.Tensor:
+        """
+        Standard merging for smaller FFN projections
+        """
+        # Normalize matrices
+        a_norm = F.normalize(a, dim=-1)
+        b_norm = F.normalize(b, dim=-1)
+
+        # Compute activation statistics
+        with torch.no_grad():
+            test_input = torch.randn(min(100, a.shape[-1]),
+                                     a.shape[-1],
+                                     device=a.device).to(a.dtype)  # Cast test_input to a.dtype
+            a_act = torch.relu(test_input @ a.T)
+            b_act = torch.relu(test_input @ b.T).to(a.dtype)
+
+            # Calculate activation statistics
+            a_stats = torch.stack([
+                (a_act > 0).float().mean(),  # sparsity
+                a_act[a_act > 0].std()  # activation spread
+            ])
+            b_stats = torch.stack([
+                (b_act > 0).float().mean(),
+                b_act[b_act > 0].std()
+            ])
+
+        # Calculate merge weight based on activation properties
+        stats_diff = torch.norm(a_stats - b_stats)
+        merge_weight = torch.sigmoid(1.0 - stats_diff) * alpha
+
+        # Interpolate with adjusted weight
+        merged = torch.lerp(a, b, merge_weight)
+
+        # Rescale to preserve activation magnitude
+        scale_a = torch.norm(a_act) / torch.norm(test_input)
+        scale_b = torch.norm(b_act) / torch.norm(test_input)
+        target_scale = (1 - alpha) * scale_a + alpha * scale_b
+        current_scale = torch.norm(torch.relu(test_input @ merged.T)) / torch.norm(test_input)
+
+        return merged * (target_scale / (current_scale + 1e-6))
+
+    def merge_ffn_out(a: torch.Tensor, b: torch.Tensor, alpha: float, corr_threshold: float,
+                      cache: Optional[Dict[str, Dict[str, torch.Tensor]]] = None) -> torch.Tensor:
+        """
+        Enhanced FFN output merge that preserves feature relationships and activation patterns,
+        optimized with caching for SVD and orthogonal Procrustes alignment.
+        """
+        output_dim, input_dim = a.shape
+        device = a.device
+        dtype = a.dtype
+
+        # Generate sample activations
+        num_samples = min(512, input_dim)
+        with torch.no_grad():
+            x = torch.randn(num_samples, input_dim, device=device, dtype=dtype)
+            x = torch.nn.functional.gelu(x)
+
+            # Get output space representations
+            out_a = x @ a.T
+            out_b = x @ b.T
+
+            # Compute correlation matrices in output space
+            corr_a = torch.corrcoef(out_a.T)
+            corr_b = torch.corrcoef(out_b.T)
+
+        # Identify strongly correlated feature groups
+        groups_a = []
+        groups_b = []
+        used_indices = set()
+
+        # Find feature groups in both matrices
+        for i in range(output_dim):
+            if i in used_indices:
+                continue
+
+            # Find correlated features
+            group_a = torch.where(torch.abs(corr_a[i]) > corr_threshold)[0]
+            group_b = torch.where(torch.abs(corr_b[i]) > corr_threshold)[0]
+
+            if len(group_a) > 1 or len(group_b) > 1:
+                # Ensure we don't exceed the actual group size when storing
+                actual_size = min(len(group_a), len(group_b))
+                groups_a.append(group_a[:actual_size])  # Only take the matching number of indices
+                groups_b.append(group_b[:actual_size])
+                used_indices.update(group_a[:actual_size].tolist())
+
+        # Initialize merged tensor
+        merged = torch.zeros_like(a)
+
+        # Helper function for caching SVD components
+        def get_cached_svd(matrix: torch.Tensor, prefix: str) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+            cache_key = f"{prefix}_svd"
+            if cache is not None and f"{cache_key}_u" in cache:
+                u = cache[f"{cache_key}_u"].to(device, dtype)
+                s = cache[f"{cache_key}_s"].to(device, dtype)
+                vh = cache[f"{cache_key}_vh"].to(device, dtype)
+            else:
+                u, s, vh = torch.linalg.svd(matrix, full_matrices=False)
+                if cache is not None:
+                    cache[f"{cache_key}_u"] = u.cpu()
+                    cache[f"{cache_key}_s"] = s.cpu()
+                    cache[f"{cache_key}_vh"] = vh.cpu()
+            return u, s, vh
+
+        # Process each feature group
+        for group_a, group_b in zip(groups_a, groups_b):
+            # Extract relevant slices
+            slice_a = a[group_a]
+            slice_b = b[group_b]
+
+            # Normalize the slices
+            norm_a = torch.norm(slice_a, dim=1, keepdim=True)
+            norm_b = torch.norm(slice_b, dim=1, keepdim=True)
+            slice_a_norm = slice_a / (norm_a + 1e-8)
+            slice_b_norm = slice_b / (norm_b + 1e-8)
+
+            # Get SVD components with caching
+            u_a, s_a, v_a = get_cached_svd(slice_a_norm, f"{group_a}_a")
+            u_b, s_b, v_b = get_cached_svd(slice_b_norm, f"{group_b}_b")
+
+            # Use minimum number of components for alignment
+            k = min(v_a.shape[1], v_b.shape[1])
+
+            # Use orthogonal Procrustes for alignment with caching
+            if k > 0:
+                procrustes_key = f"procrustes_{len(group_a)}_{len(group_b)}"
+                if cache is not None and procrustes_key in cache:
+                    R = cache[procrustes_key].to(device, dtype)
+                else:
+                    R = MergeMethods.orthogonal_procrustes_ml(v_a[:, :k], v_b[:, :k])
+                    if cache is not None:
+                        cache[procrustes_key] = R.cpu()
+
+                v_b_aligned = v_b[:, :k] @ R.T
+            else:
+                v_b_aligned = v_b[:, :k]
+
+            # Align and interpolate
+            v_merged = torch.lerp(v_a[:, :k], v_b_aligned, alpha)
+            s_merged = torch.exp((1 - alpha) * torch.log(s_a[:k] + 1e-8) + alpha * torch.log(s_b[:k] + 1e-8))
+
+            # Interpolate norms
+            norm_merged = (1 - alpha) * norm_a + alpha * norm_b
+
+            # Reconstruct and check shape before assignment
+            group_result = (u_a[:, :k] * s_merged.unsqueeze(0)) @ v_merged * norm_merged
+
+            # Ensure the reconstructed group_result has the correct shape for assignment
+            expected_shape = merged[group_a].shape
+            if group_result.shape != expected_shape:
+                # Apply padding or trimming to match expected shape
+                if group_result.shape[0] < expected_shape[0]:
+                    # Pad group_result to match the expected shape
+                    padding = (0, 0, 0, expected_shape[0] - group_result.shape[0])
+                    group_result = torch.nn.functional.pad(group_result, padding)
+                elif group_result.shape[0] > expected_shape[0]:
+                    # Trim group_result to match the expected shape
+                    group_result = group_result[:expected_shape[0]]
+
+            merged[group_a] = group_result
+
+        # Handle uncorrelated features
+        uncorrelated = list(set(range(output_dim)) - used_indices)
+        if uncorrelated:
+            merged[uncorrelated] = torch.lerp(a[uncorrelated], b[uncorrelated], alpha)
+
+        # Scale adjustment
+        with torch.no_grad():
+            out_merged = x @ merged.T
+            scale_a = torch.norm(out_a) / torch.norm(x)
+            scale_b = torch.norm(out_b) / torch.norm(x)
+            target_scale = (1 - alpha) * scale_a + alpha * scale_b
+            current_scale = torch.norm(out_merged) / torch.norm(x)
+            merged = merged * (target_scale / (current_scale + 1e-8))
+
+        return merged
 
     @convert_to_recipe
     def geometric_sum_full(
-        a: Tensor | SameMergeSpace,
-        b: Tensor | SameMergeSpace,
-        *,
-        alpha: Hyper = 0.5,
-        **kwargs,
+            a: Tensor | SameMergeSpace,
+            b: Tensor | SameMergeSpace,
+            *,
+            alpha: Hyper = 0.5,
+            **kwargs,
     ) -> Tensor | SameMergeSpace:
         a = torch.complex(a, torch.zeros_like(a))
         b = torch.complex(b, torch.zeros_like(b))
         res = a ** (1 - alpha) * b ** alpha
         return res.real
 
-    def svdeez_low_rank(a: Tensor, b: Tensor, alpha: float, align: bool = False) -> Tensor:
-        """
-        Merges two matmul layers (represented by matrices a and b) using low-rank SVD
-        and optional alignment.
-
-        Args:
-            a: The first matmul matrix.
-            b: The second matmul matrix.
-            alpha: The interpolation factor (0 <= alpha <= 1).
-            align: Whether to perform singular vector alignment (default: False).
-
-        Returns:
-            The merged matmul matrix.
-        """
-        a_u, a_s, a_v = sd_mecha.merge_methods.svd.torch_svd_lowrank(a)
-        b_u, b_s, b_v = sd_mecha.merge_methods.svd.torch_svd_lowrank(b)
-
-        if align:
-            transform = sd_mecha.merge_methods.svd.orthogonal_procrustes(a_u, b_u)
-            b_u = b_u @ transform
-            b_v = b_v @ transform
-
-        merged_s = (1 - alpha) * a_s + alpha * b_s
-        merged_u = (1 - alpha) * a_u + alpha * b_u
-        merged_v = (1 - alpha) * a_v + alpha * b_v
-
-        return merged_u @ torch.diag(merged_s) @ merged_v.t()
-
-    def merge_wavelets(a: Tensor, b: Tensor, alpha: float, wave: str = 'db3',
-                       levels: int = None) -> Tensor:
+    def merge_wavelets(a: Tensor, b: Tensor, alpha: float, wave: str = 'db4',
+                       levels: int = 4) -> Tensor:
         """
         Merges two convolutional layers using a multi-level wavelet transform
-        while attempting to preserve original sizes.
+        while attempting to preserve original sizes. Kernels are reshaped to 2D
+        before the transform, and explicit padding is removed.
 
         Args:
         - a, b: Input tensors (convolutional kernels)
         - alpha: Blending factor (0 to 1)
         - wave: Wavelet to use (default: 'db3')
-        - levels: Number of decomposition levels (default: None, which means adaptive)
+        - levels: Number of decomposition levels
         """
         original_size = a.shape
 
-        # Pad the input tensors to the nearest power of 2
-        max_size = max(a.shape[2], a.shape[3])
-        target_size = 2 ** (max_size - 1).bit_length()
-        pad_size = target_size - max_size
+        # Reshape tensors to 2D based on kernel size
+        is_conv_3x3 = len(a.shape) == 4 and a.shape[-1] != 1
+        is_conv_1x1 = len(a.shape) == 4 and a.shape[-1] == 1
+        if is_conv_3x3:
+            shape_2d = (-1, functools.reduce(operator.mul, a.shape[1:]))
+        elif is_conv_1x1:
+            shape_2d = (-1, functools.reduce(operator.mul, a.shape[1:]))
+        elif not a.shape:
+            shape_2d = (1, 1)
+        else:
+            shape_2d = (-1, a.shape[-1])
 
-        a_padded = F.pad(a, (0, pad_size, 0, pad_size))
-        b_padded = F.pad(b, (0, pad_size, 0, pad_size))
+        a = a.reshape(*shape_2d)
+        b = b.reshape(*shape_2d)
 
         # Determine the number of levels if not specified
         if levels is None:
-            levels = min(4, (target_size - 1).bit_length() - 1)  # Adaptive J
+            levels = min(4, (max(shape_2d) - 1).bit_length() - 1)  # Adaptive J
 
         # Initialize wavelet transform
         dwt = DWTForward(J=levels, wave=wave, mode='zero')
@@ -2116,9 +1981,9 @@ class MergeMethods:
         dwt = dwt.to(device=a.device, dtype=a.dtype)
         idwt = idwt.to(device=a.device, dtype=a.dtype)
 
-        # Perform forward DWT
-        a_ll, a_h = dwt(a_padded)
-        b_ll, b_h = dwt(b_padded)
+        # Perform forward DWT (on 2D matrices)
+        a_ll, a_h = dwt(a.unsqueeze(0).unsqueeze(0))  # Add batch and channel dimensions
+        b_ll, b_h = dwt(b.unsqueeze(0).unsqueeze(0))  # Add batch and channel dimensions
 
         # Merge the low-frequency components
         merged_ll = alpha * a_ll + (1 - alpha) * b_ll
@@ -2130,296 +1995,90 @@ class MergeMethods:
             merged_h.append(merged_h_level)
 
         # Perform inverse DWT
-        merged = idwt((merged_ll, merged_h))
+        merged = idwt((merged_ll, merged_h)).squeeze(0).squeeze(0)  # Remove batch and channel dimensions
 
-        # Crop back to original size
-        merged = merged[:, :, :original_size[2], :original_size[3]]
+        # Reshape back to original size (no cropping needed)
+        return merged.reshape(original_size)
 
-        return merged
-
-    def polar_decompose(A: Tensor, B: Tensor, alpha: float) -> Tensor:
+    def slerp_interp(a: Tensor, b: Tensor, alpha: float) -> Tensor:
         """
-        Merges two matmul layers using polar decomposition.
-        """
-        # Apply torch.polar directly to the matrices
-        polarA = torch.polar(torch.abs(A), torch.angle(A))
-        polarB = torch.polar(torch.abs(B), torch.angle(B))
-
-        # Extract absolute values and angles
-        QA, PA = torch.abs(polarA), torch.angle(polarA)
-        QB, PB = torch.abs(polarB), torch.angle(polarB)
-
-        merged_Q = sd_mecha.slerp.__wrapped__(QA, QB, alpha=alpha)
-        merged_P = (1 - alpha) * PA + alpha * PB
-
-        return merged_Q @ merged_P
-
-    def truncated_svd(a: torch.Tensor, b: torch.Tensor, alpha: float, rank: int) -> torch.Tensor:
-        """
-        Merges two matmul layers using truncated SVD.
-
+        Spherical linear interpolation (slerp) between two tensors `a` and `b`.
         Args:
-            a: The first matmul matrix.
-            b: The second matmul matrix.
+            a: The first tensor, normalized along the appropriate dimension.
+            b: The second tensor, same shape as `a`.
             alpha: The interpolation factor (0 <= alpha <= 1).
-            rank: The truncation rank for SVD.
-
         Returns:
-            The merged matmul matrix.
+            Interpolated tensor in the same shape as `a` and `b`.
         """
-        device = a.device  # Get the device of the input tensors
+        # Normalize input tensors along the feature dimension
+        a_norm = a / a.norm(dim=-1, keepdim=True)
+        b_norm = b / b.norm(dim=-1, keepdim=True)
 
-        # Compute truncated SVD for both matrices
-        U_a, S_a, V_a = torch.linalg.svd(a, full_matrices=False)
-        U_b, S_b, V_b = torch.linalg.svd(b, full_matrices=False)
+        # Dot product between the normalized tensors to calculate the angle
+        dot_product = torch.clamp((a_norm * b_norm).sum(dim=-1, keepdim=True), -1.0, 1.0)
+        theta = torch.acos(dot_product)
 
-        # Truncate the singular values and vectors
-        U_a = U_a[:, :rank]
-        S_a = S_a[:rank]
-        V_a = V_a[:rank, :]
-        U_b = U_b[:, :rank]
-        S_b = S_b[:rank]
-        V_b = V_b[:rank, :]
+        # Spherical interpolation formula
+        sin_theta = torch.sin(theta)
+        slerp_factor_a = torch.sin((1 - alpha) * theta) / sin_theta
+        slerp_factor_b = torch.sin(alpha * theta) / sin_theta
 
-        # Interpolate the truncated components
-        merged_S = (1 - alpha) * S_a + alpha * S_b
-        merged_U = (1 - alpha) * U_a + alpha * U_b
-        merged_V = (1 - alpha) * V_a + alpha * V_b
+        # Calculate and return the interpolated tensor
+        return slerp_factor_a * a + slerp_factor_b * b
 
-        # Reconstruct the merged matrix
-        merged_matrix = merged_U @ torch.diag(merged_S).to(device) @ merged_V
+    def get_layer_type(shape, kwargs):
+        key = kwargs["key"]
 
-        return merged_matrix
+        # Check for attention layers first
+        if any(x in key for x in
+               [".to_q.", ".to_k.", ".to_v.", "self_attn.q_proj", "self_attn.k_proj", "self_attn.v_proj"]):
+            # Add cross-attention check
+            if ".attn2." in key:
+                return MergeMethods.LayerType.CROSS_ATTENTION_QKV
+            return MergeMethods.LayerType.ATTENTION_QKV
 
-    def log_euclidean(a: torch.Tensor, b: torch.Tensor, alpha: float) -> torch.Tensor | None:
-        """
-        Merges two matmul layers using the Log-Euclidean mean if they are both
-        positive-definite. Otherwise, returns None to signal a fallback method should be used.
+        elif any(x in key for x in [".to_out.", "self_attn.out_proj"]) and ".bias" in key:
+            return MergeMethods.LayerType.OFFSET
 
-        Args:
-            a: The first matmul matrix.
-            b: The second matmul matrix.
-            alpha: The interpolation factor (0 <= alpha <= 1).
+        # Feed Forward Network (FFN)
+        elif ".ff.net." in key and ".proj." in key:
+            return MergeMethods.LayerType.FFN_PROJ
+        elif ".ff.net." in key and ".weight" in key:
+            return MergeMethods.LayerType.FFN_OUT
+        elif ".ff.net." in key and ".bias" in key:
+            return MergeMethods.LayerType.OFFSET
 
-        Returns:
-            The merged matmul matrix if both inputs are positive-definite, otherwise None.
-        """
-        # Check if both matrices are positive-definite
-        if MergeMethods.is_positive_definite(a) and MergeMethods.is_positive_definite(b):
-            # Compute the Log-Euclidean mean
-            log_a = torch.linalg.logm(a)
-            log_b = torch.linalg.logm(b)
-            merged_log = (1 - alpha) * log_a + alpha * log_b
-            merged_matrix = torch.linalg.expm(merged_log)
+        # Layer Norms
+        elif ".norm" in key:
+            return MergeMethods.LayerType.SCALAR
 
-            return merged_matrix
-        else:
-            return None  # Signal to use a fallback method
+        # True embeddings (vocabulary mappings)
+        elif "token_embedding" in key or "shared.weight" in key:
+            return MergeMethods.LayerType.EMBEDD
 
-    def is_positive_definite(A: torch.Tensor) -> bool:
-        """
-        Checks if a matrix is positive-definite.
+        # Treat other embedding-like layers as matrix transformations
+        elif any(x in key for x in ["positional_embedding", "text_projection", "label_emb"]):
+            return MergeMethods.LayerType.MATMUL
 
-        Args:
-            A: The input matrix.
+        # Your existing fallbacks
+        elif len(shape) == 4:
+            return MergeMethods.LayerType.CONV2D
 
-        Returns:
-            True if the matrix is positive-definite, False otherwise.
-        """
-        try:
-            torch.linalg.cholesky(A)  # Cholesky decomposition exists only for PD matrices
-            return True
-        except RuntimeError:
-            return False
+        return MergeMethods.LayerType.MATMUL
 
-    def polar_decomposition(a: torch.Tensor, b: torch.Tensor, alpha: float,
-                            regularization_eps: float = 1e-6) -> torch.Tensor:
-        """
-        Merges two matmul layers using an adaptive polar decomposition approach,
-        handling matrices with potentially very different shapes.
+    class LayerType(enum.Enum):
+        SCALAR = enum.auto()
+        OFFSET = enum.auto()
+        CONV2D = enum.auto()
+        EMBEDD = enum.auto()
+        MATMUL = enum.auto()
+        ATTENTION_QKV = enum.auto()
+        CROSS_ATTENTION_QKV = enum.auto()  # New type
+        ATTENTION_PROJ = enum.auto()
+        FFN_PROJ = enum.auto()
+        FFN_OUT = enum.auto()
 
-        Args:
-            a: The first matmul matrix (can be non-square).
-            b: The second matmul matrix (can be non-square).
-            alpha: The interpolation factor (0 <= alpha <= 1).
-            regularization_eps: Small constant added to the singular values for numerical stability.
-
-        Returns:
-            The merged matmul matrix.
-        """
-        device = a.device
-
-        # Perform SVD for matrices 'a' and 'b'
-        u_a, s_a, vt_a = torch.linalg.svd(a, full_matrices=False)
-        u_b, s_b, vt_b = torch.linalg.svd(b, full_matrices=False)
-
-        # Regularize singular values
-        s_a = s_a + regularization_eps
-        s_b = s_b + regularization_eps
-
-        # Determine the target shape (use the shape of 'a' as the target)
-        target_shape = a.shape
-
-        # Function to resize a matrix to the target shape
-        def resize_to_target(matrix, target_shape):
-            if matrix.shape != target_shape:
-                matrix = F.interpolate(matrix.unsqueeze(0).unsqueeze(0), size=target_shape, mode='bilinear',
-                                       align_corners=False)
-                matrix = matrix.squeeze(0).squeeze(0)
-            return matrix
-
-        # Resize components to match the target shape
-        u_a = resize_to_target(u_a, target_shape)
-        vt_a = resize_to_target(vt_a, (target_shape[1], target_shape[1]))
-        u_b = resize_to_target(u_b, target_shape)
-        vt_b = resize_to_target(vt_b, (target_shape[1], target_shape[1]))
-
-        # Recompute polar components
-        u_a_polar = u_a @ vt_a
-        p_a = vt_a.t() @ torch.diag(
-            F.interpolate(s_a.unsqueeze(0).unsqueeze(0), size=target_shape[1], mode='linear').squeeze()) @ vt_a
-        u_b_polar = u_b @ vt_b
-        p_b = vt_b.t() @ torch.diag(
-            F.interpolate(s_b.unsqueeze(0).unsqueeze(0), size=target_shape[1], mode='linear').squeeze()) @ vt_b
-
-        # Interpolate the components
-        merged_u = torch.lerp(u_a_polar, u_b_polar, alpha)
-        merged_p = torch.lerp(p_a, p_b, alpha)
-
-        # Reconstruct the merged matrix
-        merged_matrix = merged_u @ merged_p
-
-        return merged_matrix.to(device)
-
-    def advanced_embedding_merge(a: torch.Tensor, b: torch.Tensor, alpha: float = 0.5) -> torch.Tensor:
-        """
-        Merges two embedding layers using a combination of alignment and interpolation techniques.
-
-        Args:
-        - a, b: Input embedding tensors (vocab_size x embedding_dim)
-        - alpha: Blending factor (0 to 1)
-
-        Returns:
-        - Merged embedding tensor
-        """
-        # Step 1: Normalize embeddings
-        a_norm = F.normalize(a, p=2, dim=1)
-        b_norm = F.normalize(b, p=2, dim=1)
-
-        # Step 2: Compute principal components
-        _, _, V_a = torch.svd(a_norm, compute_uv=True)
-        _, _, V_b = torch.svd(b_norm, compute_uv=True)
-
-        # Step 3: Align embedding spaces
-        R = torch.mm(V_b[:, :min(V_a.shape[1], V_b.shape[1])],
-                     V_a[:, :min(V_a.shape[1], V_b.shape[1])].t())
-        b_aligned = torch.mm(b, R)
-
-        # Step 4: Interpolate in the aligned space
-        merged = (1 - alpha) * a + alpha * b_aligned
-
-        # Step 5: Preserve norms
-        a_norms = torch.norm(a, dim=1, keepdim=True)
-        b_norms = torch.norm(b, dim=1, keepdim=True)
-        merged_norms = (1 - alpha) * a_norms + alpha * b_norms
-        merged_normalized = F.normalize(merged, p=2, dim=1)
-        merged_rescaled = merged_normalized * merged_norms
-
-        return merged_rescaled
-
-    def svd_interpolation(a: torch.Tensor, b: torch.Tensor, alpha: float,
-                               regularization_eps: float = 1e-6) -> torch.Tensor:
-        """
-        Merges two matmul layers using SVD-based matrix logarithm interpolation, handling dimension mismatches.
-
-        Args:
-            a: The first matmul matrix (can be non-square).
-            b: The second matmul matrix (can be non-square).
-            alpha: The interpolation factor (0 <= alpha <= 1).
-            regularization_eps: Small constant added to the singular values for numerical stability.
-
-        Returns:
-            The merged matmul matrix.
-        """
-        # Ensure the matrices are on the same device and have the same dtype
-        device = a.device
-        dtype = a.dtype
-
-        # Get the shapes of a and b
-        a_shape = a.shape
-        b_shape = b.shape
-
-        # Compute SVD of both matrices
-        u_a, s_a, v_a = torch.linalg.svd(a, full_matrices=False)
-        u_b, s_b, v_b = torch.linalg.svd(b, full_matrices=False)
-
-        # Regularize singular values to avoid instability
-        s_a = s_a + regularization_eps
-        s_b = s_b + regularization_eps
-
-        # Compute the logarithm of the singular values
-        log_s_a = torch.log(s_a)
-        log_s_b = torch.log(s_b)
-
-        # Interpolate the singular values in log-space
-        merged_log_s = (1 - alpha) * log_s_a + alpha * log_s_b
-
-        # Exponentiate to return to the original space
-        merged_s = torch.exp(merged_log_s)
-
-        # Reconstruct the interpolated matrix based on shape compatibility
-        u_a, v_a = u_a[:, :merged_s.shape[-1]], v_a[:, :merged_s.shape[-1]]
-        u_b, v_b = u_b[:, :merged_s.shape[-1]], v_b[:, :merged_s.shape[-1]]
-
-        # Handle different input/output dimensions
-        min_dim = min(u_a.shape[-1], v_a.shape[-1], merged_s.shape[-1])
-
-        u_a, u_b = u_a[:, :min_dim], u_b[:, :min_dim]
-        v_a, v_b = v_a[:, :min_dim], v_b[:, :min_dim]
-
-        # Interpolate the orthogonal components
-        merged_u = (1 - alpha) * u_a + alpha * u_b
-        merged_v = (1 - alpha) * v_a + alpha * v_b
-
-        # Reconstruct the matrix using interpolated singular values and orthogonal components
-        merged_matrix = merged_u @ torch.diag(merged_s) @ merged_v.T
-
-        return merged_matrix.to(device=device, dtype=dtype)
-
-    def polar_decomposition2(a: torch.Tensor, b: torch.Tensor, alpha: float) -> torch.Tensor:
-        """
-        Merges two matmul layers using a simpler polar decomposition without matrix log/exp.
-
-        Args:
-            a: The first matmul matrix.
-            b: The second matmul matrix.
-            alpha: The interpolation factor (0 <= alpha <= 1).
-
-        Returns:
-            The merged matmul matrix.
-        """
-        device = a.device  # Get the device of the input tensors
-
-        # Perform SVD for matrix 'a'
-        u_a, s_a, v_a = torch.linalg.svd(a, full_matrices=False)
-        u_a_polar = u_a @ v_a.T  # Unit matrix from 'a'
-        p_a = v_a.T @ torch.diag(s_a) @ v_a  # Positive semi-definite matrix from 'a'
-
-        # Perform SVD for matrix 'b'
-        u_b, s_b, v_b = torch.linalg.svd(b, full_matrices=False)
-        u_b_polar = u_b @ v_b.T  # Unit matrix from 'b'
-        p_b = v_b.T @ torch.diag(s_b) @ v_b  # Positive semi-definite matrix from 'b'
-
-        # Direct interpolation between the components without matrix_log/matrix_exp
-        merged_u = (1 - alpha) * u_a_polar + alpha * u_b_polar
-        merged_p = (1 - alpha) * p_a + alpha * p_b
-
-        # Reconstruct the merged matrix
-        merged_matrix = merged_u @ merged_p
-
-        return merged_matrix.to(device)
-
-    def matrix_is_large(A: torch.Tensor, threshold: int = 512) -> bool:
+    def matrix_is_large(A: Tensor, threshold: int = 1280) -> bool:
         """
         Determines if a matrix is considered "large" based on its dimensions.
 
@@ -2430,10 +2089,12 @@ class MergeMethods:
         Returns:
             True if the matrix is considered large, False otherwise.
         """
+        if A.ndim < 2:  # Check if tensor has fewer than 2 dimensions
+            return False  # Treat non-2D tensors as "not large"
         m, n = A.shape  # Get the matrix dimensions
         return m >= threshold or n >= threshold  # Check if either dimension exceeds the threshold
 
-    def dominant_rotation(A: torch.Tensor, threshold: float = 0.8) -> bool:
+    def dominant_rotation(A: Tensor, threshold: float = 0.8) -> bool:
         """
         Estimates if a matrix primarily represents a rotation based on its singular values.
 
@@ -2450,7 +2111,7 @@ class MergeMethods:
         smallest_singular_value = S[-1]
         return largest_singular_value / smallest_singular_value >= threshold
 
-    def matrix_is_ill_conditioned(A: torch.Tensor, threshold: float = 100) -> bool:
+    def matrix_is_ill_conditioned(A: Tensor, threshold: float = 100) -> bool:
         """
         Determines if a matrix is ill-conditioned based on its condition number.
 
@@ -2463,3 +2124,274 @@ class MergeMethods:
         """
         condition_number = torch.linalg.cond(A)  # Compute the condition number
         return condition_number >= threshold
+
+    def orthogonal_procrustes_ml(a, b, cancel_reflection: bool = False):
+        # Compute A^T @ B once since it's used in both branches
+        atb = a.T @ b
+
+        use_lowrank = not cancel_reflection and a.shape[0] + 10 < a.shape[1]
+        if use_lowrank:
+            svd_driver = "gesvdj" if a.is_cuda else None
+            u, _, v = sd_mecha.merge_methods.svd.torch_svd_lowrank(atb, driver=svd_driver, q=a.shape[0] + 10)
+            vt = v.T
+            del v
+        else:
+            svd_driver = "gesvd" if a.is_cuda else None
+            u, _, vt = torch.linalg.svd(atb, driver=svd_driver)
+            if cancel_reflection:
+                u[:, -1] *= torch.sign(torch.det(u) * torch.det(vt))  # More numerically stable
+
+        transform = u @ vt
+
+        if not torch.isfinite(transform).all():  # Check the transform instead of just u
+            raise ValueError(
+                f"determinant error: {torch.det(transform)}. "
+                'This can happen when merging on the CPU with the "rotate" method. '
+                "Consider merging on a cuda device, "
+                "or try setting `alignment` to 1 for the problematic blocks. "
+                "See this related discussion for more info: "
+                "https://github.com/s1dlx/meh/pull/50#discussion_r1429469484"
+            )
+
+        return transform
+
+    @staticmethod
+    @convert_to_recipe
+    def streaming_ties_sum_extended(
+            *models: Tensor | LiftFlag[MergeSpace.DELTA],
+            k: Hyper = 0.2,
+            vote_sgn: Hyper = 0.0,
+            apply_stock: Hyper = 0.0,
+            cos_eps: Hyper = 1e-6,
+            apply_median: Hyper = 1.0,
+            eps: Hyper = 1e-6,
+            maxiter: Hyper = 100,
+            ftol: Hyper = 1e-20,
+            chunk_size: int = 1000000,  # Process in chunks of 1M elements
+            **kwargs,
+    ) -> Tensor | LiftFlag[MergeSpace.DELTA]:
+        device = models[0].device
+        model_shape = models[0].shape
+        total_elements = torch.numel(models[0])
+
+        # Step 1: Calculate k threshold for each model (chunked processing)
+        k_thresholds = []
+        for model in models:
+            k_val = max(int((1 - k) * total_elements), 1)
+            # Process in chunks to find absolute values
+            abs_values = torch.empty(total_elements, device=device)
+            for i in range(0, total_elements, chunk_size):
+                end_idx = min(i + chunk_size, total_elements)
+                chunk = model.flatten()[i:end_idx]
+                abs_values[i:end_idx] = torch.abs(chunk)
+
+            k_threshold, _ = torch.kthvalue(abs_values, k_val)
+            k_thresholds.append(k_threshold)
+            del abs_values, model  # Free memory
+
+        # Step 2: Chunked sign voting
+        sign_votes = torch.zeros(model_shape, device=device)
+        for model_idx, (model, k_threshold) in enumerate(zip(models, k_thresholds)):
+            for i in range(0, total_elements, chunk_size):
+                end_idx = min(i + chunk_size, total_elements)
+                chunk = model.flatten()[i:end_idx]
+
+                # Process chunk
+                chunk_mask = torch.abs(chunk) >= k_threshold
+                if vote_sgn <= 0.0:
+                    vote_chunk = chunk * chunk_mask.float()
+                else:
+                    vote_chunk = torch.sign(chunk) * chunk_mask.float()
+
+                # Update sign_votes for this chunk
+                sign_votes.flatten()[i:end_idx] += vote_chunk
+                del chunk, chunk_mask, vote_chunk  # Free memory
+            del model  # Free memory after processing each model
+
+        final_signs = torch.sign(sign_votes)
+        del sign_votes
+
+        # Step 3: Chunked parameter accumulation
+        if apply_median <= 0.0:
+            param_sum = torch.zeros(model_shape, device=device)
+            param_counts = torch.zeros(model_shape, device=device)
+
+            if apply_stock > 0.0:
+                cos_sums = torch.zeros(model_shape, device=device)
+                cos_counts = 0
+                prev_filtered = None
+
+            for model_idx, (model, k_threshold) in enumerate(zip(models, k_thresholds)):
+                current_filtered = torch.zeros(model_shape, device=device)
+
+                for i in range(0, total_elements, chunk_size):
+                    end_idx = min(i + chunk_size, total_elements)
+                    chunk = model.flatten()[i:end_idx]
+                    signs_chunk = final_signs.flatten()[i:end_idx]
+
+                    # Filter chunk
+                    chunk_mask = (torch.abs(chunk) >= k_threshold) & (torch.sign(chunk) == signs_chunk)
+                    filtered_chunk = chunk * chunk_mask.float()
+
+                    # Update accumulators
+                    param_sum.flatten()[i:end_idx] += filtered_chunk
+                    param_counts.flatten()[i:end_idx] += chunk_mask.float()
+                    current_filtered.flatten()[i:end_idx] = filtered_chunk
+
+                    del chunk, signs_chunk, chunk_mask, filtered_chunk
+
+                if apply_stock > 0.0 and prev_filtered is not None:
+                    # Calculate cosine similarity in chunks
+                    dot_product = 0
+                    norm1_sq = 0
+                    norm2_sq = 0
+
+                    for i in range(0, total_elements, chunk_size):
+                        end_idx = min(i + chunk_size, total_elements)
+                        chunk1 = prev_filtered.flatten()[i:end_idx]
+                        chunk2 = current_filtered.flatten()[i:end_idx]
+
+                        dot_product += torch.sum(chunk1 * chunk2).item()
+                        norm1_sq += torch.sum(chunk1 * chunk1).item()
+                        norm2_sq += torch.sum(chunk2 * chunk2).item()
+
+                        del chunk1, chunk2
+
+                    cos_sim = dot_product / (
+                                torch.sqrt(torch.tensor([norm1_sq])) * torch.sqrt(torch.tensor([norm2_sq])) + cos_eps)
+                    cos_sums += cos_sim
+                    cos_counts += 1
+
+                prev_filtered = current_filtered if apply_stock > 0.0 else None
+                del model, current_filtered
+
+            # Calculate final result
+            if apply_stock > 0.0:
+                cos_theta = cos_sums / max(cos_counts, 1)
+                n = len(models)
+                t = (n * cos_theta / (1 + (n - 1) * cos_theta))
+            else:
+                t = 1.0
+
+            result = torch.nan_to_num(param_sum * t / torch.clamp(param_counts, min=1))
+
+        else:
+            # For geometric median, we still need to collect filtered parameters
+            # but we'll do it in chunks to reduce memory usage
+            filtered_models = []
+            for model, k_threshold in zip(models, k_thresholds):
+                filtered = torch.zeros(model_shape, device=device)
+                for i in range(0, total_elements, chunk_size):
+                    end_idx = min(i + chunk_size, total_elements)
+                    chunk = model.flatten()[i:end_idx]
+                    signs_chunk = final_signs.flatten()[i:end_idx]
+
+                    chunk_mask = (torch.abs(chunk) >= k_threshold) & (torch.sign(chunk) == signs_chunk)
+                    filtered.flatten()[i:end_idx] = chunk * chunk_mask.float()
+
+                    del chunk, signs_chunk, chunk_mask
+
+                filtered_models.append(filtered)
+                del model
+
+            result = MergeMethods.geometric_median_list_of_array(
+                filtered_models,
+                eps=eps,
+                maxiter=maxiter,
+                ftol=ftol
+            )
+
+            for filtered in filtered_models:
+                del filtered
+
+        return result
+
+    def geometric_median_list_of_array(models, eps, maxiter, ftol, chunk_size=1000000):
+        device = models[0].device
+        model_shape = models[0].shape
+        total_elements = torch.numel(models[0])
+        n_models = len(models)
+        weights = torch.ones(n_models, device=device)
+
+        # Initialize median estimate at chunked mean
+        median = torch.zeros(model_shape, device=device)
+        for i in range(0, total_elements, chunk_size):
+            end_idx = min(i + chunk_size, total_elements)
+            chunk_sum = torch.zeros((end_idx - i,), device=device)
+            for model in models:
+                chunk_sum += model.flatten()[i:end_idx]
+            median.flatten()[i:end_idx] = chunk_sum / n_models
+            del chunk_sum
+
+        # Calculate initial objective value in chunks
+        objective_value = 0
+        for model in models:
+            dist = 0
+            for i in range(0, total_elements, chunk_size):
+                end_idx = min(i + chunk_size, total_elements)
+                model_chunk = model.flatten()[i:end_idx]
+                median_chunk = median.flatten()[i:end_idx]
+                diff_chunk = model_chunk - median_chunk
+                dist += (diff_chunk * diff_chunk).sum()
+                del model_chunk, median_chunk, diff_chunk
+            objective_value += torch.sqrt(dist)
+        objective_value /= n_models
+
+        # Weiszfeld iterations
+        for _ in range(max(0, round(maxiter))):
+            prev_obj_value = objective_value
+
+            # Calculate distances and new weights in chunks
+            denom = torch.zeros(n_models, device=device)
+            for model_idx, model in enumerate(models):
+                dist = 0
+                for i in range(0, total_elements, chunk_size):
+                    end_idx = min(i + chunk_size, total_elements)
+                    model_chunk = model.flatten()[i:end_idx]
+                    median_chunk = median.flatten()[i:end_idx]
+                    diff_chunk = model_chunk - median_chunk
+                    dist += (diff_chunk * diff_chunk).sum()
+                    del model_chunk, median_chunk, diff_chunk
+                denom[model_idx] = torch.sqrt(dist)
+
+            new_weights = weights / torch.clamp(denom, min=eps)
+            weight_sum = new_weights.sum()
+
+            # Calculate new median in chunks
+            new_median = torch.zeros(model_shape, device=device)
+            for i in range(0, total_elements, chunk_size):
+                end_idx = min(i + chunk_size, total_elements)
+                chunk_sum = torch.zeros((end_idx - i,), device=device)
+                for model_idx, model in enumerate(models):
+                    chunk_sum += model.flatten()[i:end_idx] * new_weights[model_idx]
+                new_median.flatten()[i:end_idx] = chunk_sum / weight_sum
+                del chunk_sum
+
+            # Update median
+            median = new_median
+
+            # Calculate new objective value in chunks
+            objective_value = 0
+            for model_idx, model in enumerate(models):
+                dist = 0
+                for i in range(0, total_elements, chunk_size):
+                    end_idx = min(i + chunk_size, total_elements)
+                    model_chunk = model.flatten()[i:end_idx]
+                    median_chunk = median.flatten()[i:end_idx]
+                    diff_chunk = model_chunk - median_chunk
+                    dist += (diff_chunk * diff_chunk).sum()
+                    del model_chunk, median_chunk, diff_chunk
+                objective_value += torch.sqrt(dist) * weights[model_idx]
+            objective_value /= n_models
+
+            if abs(prev_obj_value - objective_value) <= ftol * objective_value:
+                break
+
+        return median
+
+    def l2distance(p1, p2):
+        # Calculate L2 distance without creating large intermediate tensors
+        diff = p1 - p2
+        dist = torch.sqrt((diff * diff).sum())
+        del diff  # Free memory
+        return dist

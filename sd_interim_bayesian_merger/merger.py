@@ -161,7 +161,10 @@ class Merger:
 
     def _merge_models(self, updated_models, assembled_params, cache):
         """Calls the merging method with appropriate parameters, handling cache if needed."""
+        logger.info(f"Expected models: {self._get_expected_num_models()}, Actual models: {len(updated_models)}")
+        logger.info(f"Attempting to merge {len(updated_models)} models")
         merge_method = getattr(MergeMethods, self.cfg.merge_mode)
+        logger.info(f"Using merge method: {self.cfg.merge_mode}")
         merge_method_signature = inspect.signature(merge_method)
         if 'cache' in merge_method_signature.parameters:
             return merge_method(*updated_models, device=self.cfg.device, cache=cache, **assembled_params)

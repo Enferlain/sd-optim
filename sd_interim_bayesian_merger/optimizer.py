@@ -19,7 +19,6 @@ from sd_interim_bayesian_merger.generator import Generator
 from sd_interim_bayesian_merger.merger import Merger
 from sd_interim_bayesian_merger.prompter import Prompter
 from sd_interim_bayesian_merger.scorer import AestheticScorer
-from sd_interim_bayesian_merger.utils import load_and_prepare_recipe
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.DEBUG)

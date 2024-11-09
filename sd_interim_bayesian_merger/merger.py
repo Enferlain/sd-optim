@@ -52,22 +52,21 @@ class Merger:
         models = []
         for model_path in self.cfg.get("model_paths", []):
             relative_path = os.path.relpath(model_path, self.cfg.models_dir)
+            is_lora = False
 
-            if model_path.endswith((".safetensors", ".ckpt")):  # Handle both safetensors and .ckpt files
+            if model_path.endswith((".safetensors", ".ckpt")):
                 try:
                     with safetensors.safe_open(model_path, framework="pt") as f:
-                        for key in f.keys():
-                            if key.startswith(("lora_unet", "lora_te")):
-                                models.append(sd_mecha.lora(relative_path, self.cfg.model_arch))
-                                logger.info(f"Detected Lora: {model_path}")
-                                break  # Move to the next model after detecting a Lora
+                        # Check for Lora without breaking
+                        if any(key.startswith(("lora_unet", "lora_te")) for key in f.keys()):
+                            models.append(sd_mecha.lora(relative_path, self.cfg.model_arch))
+                            logger.info(f"Detected Lora: {model_path}")
+                            is_lora = True
                 except Exception as e:
                     logger.warning(f"Failed to open or read model file {model_path}: {e}")
-            else:
-                logger.warning(f"Unsupported model file format: {model_path}")
 
-            # If not detected as a Lora, create a regular model node
-            if relative_path not in [model.path for model in models]:
+            # Create regular model if not a Lora
+            if not is_lora:
                 models.append(sd_mecha.model(relative_path, self.cfg.model_arch))
 
         return models

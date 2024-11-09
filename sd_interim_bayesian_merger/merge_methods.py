@@ -20,7 +20,6 @@ from pytorch_wavelets import DWTForward, DWTInverse
 from sd_mecha import Hyper, MergeSpace
 from sd_mecha.merge_methods import SameMergeSpace
 from sd_mecha.extensions.merge_method import LiftFlag, convert_to_recipe
-from sd_interim_bayesian_merger.mm_docs import MERGE_METHOD_DOCS
 from torchvision.models.video import S3D
 
 EPSILON = 1e-10
@@ -97,105 +96,6 @@ class MergeMethods:
     @staticmethod
     def ties_sum_extended(*models, k: Hyper, apply_stock: Hyper = 0.0, apply_median: Hyper = 1.0, eps: Hyper = 1e-5, ftol: Hyper = 1e-11, maxiter: Hyper = 150, **kwargs):
         return sd_mecha.ties_sum_extended(*models, k=k, apply_stock=apply_stock, apply_median=apply_median, eps=eps, ftol=ftol, maxiter=maxiter, **kwargs)
-
-    @staticmethod
-    @convert_to_recipe
-    def ties_sum_with_dropout(
-            *models: Tensor | LiftFlag[MergeSpace.DELTA],
-            probability: Hyper = 0.9,
-            della_eps: Hyper = 0.0,
-            rescale: Hyper = 1.0,
-            k: Hyper = 0.218,
-            vote_sgn: Hyper = 0,
-            apply_stock: Hyper = 0.0,
-            cos_eps: Hyper = 1e-6,
-            apply_median: Hyper = 1.0,
-            eps: Hyper = 1e-5,
-            maxiter: Hyper = 150,
-            ftol: Hyper = 1e-11,
-            seed: Hyper = 218,
-            chunk_size: int = 1000000,
-            **kwargs,
-    ) -> Tensor | LiftFlag[MergeSpace.DELTA]:
-        """
-        Memory-optimized TIES merging with dropout.
-        """
-        if not models or probability == 1:
-            return torch.tensor(0.0, device=models[0].device if models else 'cpu')
-
-        device = models[0].device
-        model_shape = models[0].shape
-        total_elements = torch.numel(models[0])
-
-        generator = torch.Generator(device)
-        if seed is not None:
-            generator.manual_seed(seed)
-
-        # Create a single tensor to store the dropped deltas
-        # This replaces the list of dropped_deltas and saves memory
-        dropped_delta = torch.zeros_like(models[0])
-
-        # Process each model in chunks, applying dropout directly
-        for i in range(0, total_elements, chunk_size):
-            end_idx = min(i + chunk_size, total_elements)
-            chunk_size_current = end_idx - i
-
-            # Create mask for current chunk
-            p_min = torch.full((chunk_size_current,), 1 - probability,
-                               device=device, dtype=models[0].dtype)
-
-            # Process each model's chunk
-            for model in models:
-                chunk = model.flatten()[i:end_idx]
-
-                if della_eps != 0.0:
-                    # Calculate magnitude-based adjustments for chunk
-                    magnitudes = chunk.abs()
-                    chunk_max = magnitudes.max()
-                    if chunk_max > 1e-8:
-                        norm_magnitudes = magnitudes / chunk_max
-                        delta_i = (0.5 - norm_magnitudes) * della_eps
-                        probabilities = torch.clamp(p_min + delta_i, 0.0, 1.0)
-                    else:
-                        probabilities = p_min
-                else:
-                    probabilities = p_min
-
-                # Generate and apply dropout mask
-                mask = torch.bernoulli(probabilities, generator=generator)
-                dropped_delta.flatten()[i:end_idx] += chunk * mask
-
-                del chunk, mask
-                if della_eps != 0.0:
-                    del magnitudes, probabilities
-                    if chunk_max > 1e-8:
-                        del norm_magnitudes, delta_i
-
-            del p_min
-
-        # Apply TIES merging to the dropped delta
-        # Note: We pass a single tensor instead of a list
-        merged_delta = MergeMethods.streaming_ties_sum_extended.__wrapped__(
-            dropped_delta,
-            k=k,
-            vote_sgn=vote_sgn,
-            apply_stock=apply_stock,
-            cos_eps=cos_eps,
-            apply_median=apply_median,
-            eps=eps,
-            maxiter=maxiter,
-            ftol=ftol
-        )
-
-        del dropped_delta  # Free memory
-
-        # Rescale the merged delta
-        rescalar = 1.0 if probability == 1.0 else max(0, (1.0 - probability) ** rescale)
-        return merged_delta / rescalar
-
-    # Removed separate create_dropout_mask function since its functionality
-    # is now integrated into the main function
-
 
     ### CUSTOM METHODS ###
 
@@ -1337,7 +1237,7 @@ class MergeMethods:
             b: Tensor | SameMergeSpace,
             *,
             alpha: Hyper = 0.5,
-            corr_threshold: Hyper = 0.69,
+            corr_threshold: Hyper = 0.5,
             cache: Optional[Dict[str, Dict[str, Tensor]]] = None,
             **kwargs,
     ) -> Tensor | SameMergeSpace:
@@ -1543,7 +1443,7 @@ class MergeMethods:
                     q_a = x @ a.T
                     q_b = x @ b.T
                     sim = F.cosine_similarity(q_a.flatten(), q_b.flatten(), dim=0)
-                    adjusted_alpha = alpha * torch.sigmoid(sim)
+                    adjusted_alpha = alpha * torch.sigmoid(sim * 0.5)
 
                 # Use polar decomposition with adjusted weight
                 return MergeMethods.polar_decomposition(a, b, adjusted_alpha, cache=cache)
@@ -1734,7 +1634,7 @@ class MergeMethods:
                     dim=0
                 )
 
-            if similarity > 0.7:
+            if similarity > 0.5:
                 # Similar activations - interpolate smoothly
                 merged_group = torch.lerp(a_group, b_group, alpha)
             else:
@@ -1942,7 +1842,7 @@ class MergeMethods:
         return res.real
 
     def merge_wavelets(a: Tensor, b: Tensor, alpha: float, wave: str = 'db4',
-                       levels: int = 4) -> Tensor:
+                       levels: int = None) -> Tensor:
         """
         Merges two convolutional layers using a multi-level wavelet transform
         while attempting to preserve original sizes. Kernels are reshaped to 2D
@@ -2165,9 +2065,9 @@ class MergeMethods:
             cos_eps: Hyper = 1e-6,
             apply_median: Hyper = 1.0,
             eps: Hyper = 1e-6,
-            maxiter: Hyper = 100,
-            ftol: Hyper = 1e-20,
-            chunk_size: int = 1000000,  # Process in chunks of 1M elements
+            maxiter: Hyper = 150,
+            ftol: Hyper = 1e-22,
+            chunk_size: int = 2000000,  # Process in chunks of 1M elements
             **kwargs,
     ) -> Tensor | LiftFlag[MergeSpace.DELTA]:
         device = models[0].device
@@ -2389,9 +2289,183 @@ class MergeMethods:
 
         return median
 
-    def l2distance(p1, p2):
-        # Calculate L2 distance without creating large intermediate tensors
-        diff = p1 - p2
-        dist = torch.sqrt((diff * diff).sum())
-        del diff  # Free memory
-        return dist
+    @staticmethod
+    @convert_to_recipe
+    def ties_sum_with_dropout(
+            *models: Tensor | LiftFlag[MergeSpace.DELTA],
+            probability: Hyper = 0.9,  # 0.9 means 90% keep rate
+            della_eps: Hyper = 0.0,
+            rescale: Hyper = 1.0,
+            k: Hyper = 0.218,
+            vote_sgn: Hyper = 0.0,
+            apply_stock: Hyper = 0.0,
+            cos_eps: Hyper = 1e-6,
+            apply_median: Hyper = 1.0,
+            eps: Hyper = 1e-6,
+            maxiter: Hyper = 150,
+            ftol: Hyper = 1e-22,
+            seed: Hyper = 218,
+            chunk_size: int = 1000000,
+            **kwargs,
+    ) -> Tensor | LiftFlag[MergeSpace.DELTA]:
+        if not models or probability == 1:
+            return torch.tensor(0.0, device=models[0].device if models else 'cpu')
+
+        device = models[0].device
+        model_shape = models[0].shape
+        total_elements = torch.numel(models[0])
+
+        generator = torch.Generator(device)
+        if seed is not None:
+            generator.manual_seed(seed)
+
+        # Create list to store dropped models
+        dropped_models = [torch.zeros_like(models[0]) for _ in models]
+
+        # Process each chunk
+        for i in range(0, total_elements, chunk_size):
+            end_idx = min(i + chunk_size, total_elements)
+            chunk_size_current = end_idx - i
+
+            # Process each model separately
+            for idx, (model, dropped_model) in enumerate(zip(models, dropped_models)):
+                chunk = model.flatten()[i:end_idx]
+
+                # Base keep probability (not dropout probability)
+                p_min = torch.full((chunk_size_current,), probability,
+                                   device=device, dtype=model.dtype)
+
+                if della_eps != 0.0:
+                    # Calculate magnitude-based adjustments
+                    magnitudes = chunk.abs()
+                    chunk_max = magnitudes.max()
+                    if chunk_max > eps:  # Using eps from parameters instead of hardcoded 1e-8
+                        # Normalize magnitudes to [0, 1]
+                        norm_magnitudes = magnitudes / chunk_max
+                        # Adjust probabilities based on normalized magnitudes
+                        # Higher magnitude -> higher keep probability
+                        delta_i = (norm_magnitudes - 0.5) * della_eps
+                        probabilities = torch.clamp(p_min + delta_i, 0.0, 1.0)
+                    else:
+                        probabilities = p_min
+                else:
+                    probabilities = p_min
+
+                # Generate and apply dropout mask
+                mask = torch.bernoulli(probabilities, generator=generator)
+                dropped_model.flatten()[i:end_idx] = chunk * mask
+
+                del chunk, mask, probabilities, p_min
+                if della_eps != 0.0:
+                    del magnitudes
+                    if chunk_max > eps:
+                        del norm_magnitudes, delta_i
+
+        # Apply TIES merging to the dropped models
+        merged_delta = MergeMethods.streaming_ties_sum_extended.__wrapped__(
+            *dropped_models,
+            k=k,
+            vote_sgn=vote_sgn,
+            apply_stock=apply_stock,
+            cos_eps=cos_eps,
+            apply_median=apply_median,
+            eps=eps,
+            maxiter=maxiter,
+            ftol=ftol
+        )
+
+        del dropped_models  # Free memory
+
+        # Rescaling with safety check
+        if probability == 1.0:
+            rescalar = 1.0
+        else:
+            rescalar = (1.0 - probability) ** rescale
+            rescalar = rescalar if math.isfinite(rescalar) else 1.0
+        return merged_delta / rescalar
+
+    @staticmethod
+    @convert_to_recipe
+    def ties_sum_with_dropout_full(
+            *models: Tensor | LiftFlag[MergeSpace.DELTA],
+            probability: Hyper = 0.9,
+            della_eps: Hyper = 0.0,
+            rescale: Hyper = 1.0,
+            k: Hyper = 0.218,
+            vote_sgn: Hyper = 0,
+            apply_stock: Hyper = 0.0,
+            cos_eps: Hyper = 1e-6,
+            apply_median: Hyper = 1.0,
+            eps: Hyper = 1e-5,
+            maxiter: Hyper = 150,
+            ftol: Hyper = 1e-11,
+            seed: Hyper = 218,
+            **kwargs,
+    ) -> Tensor | LiftFlag[MergeSpace.DELTA]:
+        """
+        Applies TIES merging with dropout to a variable number of delta tensors.
+
+        Args:
+            *models: The delta tensors to merge.
+            probability: The dropout probability (0 <= probability <= 1).
+            della_eps: The DELLA epsilon parameter, controlling magnitude-based dropout.
+            rescale:  The rescaling factor for the merged delta.
+            k: The TIES parameter trimming threshold.
+            vote_sgn:  The TIES-SOUP mode activation parameter.
+            apply_stock:  The Model Stock activation parameter.
+            cos_eps: The cosine similarity epsilon for Model Stock.
+            apply_median:  The Geometric Median activation parameter.
+            eps: The epsilon for the Geometric Median calculation.
+            maxiter: The maximum number of iterations for Geometric Median.
+            ftol:  The tolerance for convergence for Geometric Median.
+            seed: The random seed for dropout.
+            **kwargs: Additional keyword arguments.
+
+        Returns:
+            The merged delta tensor.
+        """
+        if not models or probability == 1:
+            return torch.tensor(0.0, device=models[0].device if models else 'cpu')
+
+        device = models[0].device
+        generator = torch.Generator(device)
+        if seed is not None:
+            generator.manual_seed(seed)
+
+        # Apply dropout to each delta tensor
+        dropped_deltas = []
+        for delta in models:
+            dropout_mask = MergeMethods.create_dropout_mask(delta, probability, della_eps, generator)
+            dropped_deltas.append(delta * dropout_mask)
+
+        # Apply TIES merging to the dropped deltas
+        merged_delta = sd_mecha.merge_methods.ties_sum_extended.__wrapped__(
+            *dropped_deltas,
+            k=k,
+            vote_sgn=vote_sgn,
+            apply_stock=apply_stock,
+            cos_eps=cos_eps,
+            apply_median=apply_median,
+            eps=eps,
+            maxiter=maxiter,
+            ftol=ftol
+        )
+
+        # Rescale the merged delta based on the dropout probability and rescale factor
+        rescalar = 1.0 if probability == 1.0 else max(0, (1.0 - probability) ** rescale)
+        return merged_delta / rescalar
+
+    def create_dropout_mask(delta: Tensor, probability: float, della_eps: float, generator: torch.Generator) -> Tensor:
+        """Creates a dropout mask using smooth magnitude-based probabilities, following DELLA intuition."""
+        p_min = torch.full(delta.shape, 1 - probability, device=delta.device, dtype=delta.dtype)
+        if della_eps != 0.0:
+            magnitudes = delta.abs()
+            # Invert magnitudes so larger values get lower dropout probabilities
+            inv_magnitudes = 1.0 / (magnitudes + 1e-8)
+            # Use softmax for smooth distribution
+            norm_probs = torch.softmax(inv_magnitudes.flatten() / della_eps, dim=0).reshape(delta.shape)
+            delta_i = (norm_probs - norm_probs.mean()) * della_eps
+            probabilities = torch.clamp(p_min + delta_i, 0.0, 1.0)
+        else:
+            probabilities = p_min
+        return torch.bernoulli(probabilities, generator=generator)

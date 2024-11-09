@@ -72,9 +72,6 @@ class Bounds:
                     for i, group in enumerate(component_config.groups):
                         group_name = "-".join([f"{block}_{param_name}" for block in group])
                         component_bounds[group_name] = (0.0, 1.0)
-                else:  # component_config.optimize == "group-all"
-                    group_name = f"{component_config.name}_default_{param_name}"
-                    component_bounds[group_name] = (0.0, 1.0)
         return component_bounds
 
     @staticmethod
@@ -193,10 +190,11 @@ class Bounds:
                     assembled_params[param_name] = assembled_params.get(param_name, {})
                     assembled_params[param_name].update(param_values)
             elif optimization_strategy == "grouped":
+                groups = component_config.get("groups", [])
                 if not groups:
                     raise ValueError(f"No 'groups' specified for component '{component_name}'")
                 for param_name, param_values in Bounds._assemble_params_for_grouped(
-                        groups, optimizable_params, volatile_hypers, params, cfg
+                        component_config, optimizable_params, volatile_hypers, params, cfg
                 ).items():
                     assembled_params[param_name] = assembled_params.get(param_name, {})
                     assembled_params[param_name].update(param_values)
@@ -248,17 +246,10 @@ class Bounds:
         for param_name in optimizable_params:
             if param_name not in volatile_hypers:
                 component_params[param_name] = {}
-                if component_config.optimize == "grouped":
-                    for i, group in enumerate(component_config.groups):
-                        group_name = "-".join([f"{block}_{param_name}" for block in group])
-                        group_value = params.get(group_name, 0.0)
-                        for block_id in group:
-                            component_params[param_name][block_id] = group_value
-                else:  # component_config.optimize == "group-all"
-                    group_name = f"{component_config.name}_default_{param_name}"
+                for group in component_config.groups:
+                    group_name = "-".join([f"{block}_{param_name}" for block in group])
                     group_value = params.get(group_name, 0.0)
-                    for block_id in [key for key in sd_mecha.extensions.model_arch.resolve(cfg.model_arch).user_keys()
-                                     if f"_{component_config.name}_block_" in key]:
+                    for block_id in group:
                         component_params[param_name][block_id] = group_value
         return component_params
 

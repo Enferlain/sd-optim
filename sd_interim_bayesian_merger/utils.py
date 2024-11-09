@@ -20,7 +20,7 @@ OPTIMIZABLE_HYPERPARAMETERS = {
     "clyb_merge": ["alpha"],
     "ties_sum_extended": ["k"],
     "streaming_ties_sum_extended": ["k"],
-    "ties_sum_with_dropout": ["probability", "della_eps", "rescale"],
+    "ties_sum_with_dropout": ["probability", "della_eps", "k"],
     "slerp_norm_sign": ["alpha"],
     "polar_interpolate": ["alpha"],
     "wavelet_packet_merge": ["alpha"],
@@ -28,6 +28,106 @@ OPTIMIZABLE_HYPERPARAMETERS = {
     "merge_layers": ["alpha"],
     # ... other methods and their optimizable hyperparameters
 }
+
+
+def get_optimizable_hypers_from_recipe(recipe: RecipeNode, optimization_targets: List[str], cfg) -> Dict:
+    """Parses an sd-mecha recipe and extracts optimizable hyperparameters from specified nodes.
+
+    Args:
+        recipe: The sd-mecha recipe.
+        optimization_targets: A list of node identifiers (e.g., "&10", "[&2, &5]") to optimize.
+        cfg: Configuration dictionary
+
+    Returns:
+        A dictionary mapping parameter names to their values and bounds, suitable for use with the Bounds class.
+        Returns an empty dictionary if no optimizable hyperparameters are found.
+    """
+    optimizable_hypers = {}
+    nodes_to_optimize = find_nodes_by_id(recipe, optimization_targets)
+
+    for node in nodes_to_optimize:
+        if not isinstance(node, MergeRecipeNode):
+            raise TypeError(f"Node {node} is not a MergeRecipeNode. Only MergeRecipeNodes can be optimized.")
+
+        merge_method_name = node.merge_method.get_name()
+        available_params = OPTIMIZABLE_HYPERPARAMETERS.get(merge_method_name, node.merge_method.get_hyper_names())
+        if not available_params:
+            raise ValueError(
+                f"Merging method '{merge_method_name}' has no optimizable hyperparameters defined. Cannot proceed with optimization. Please define optimizable parameters for this method or choose a different one.")
+
+        for param_name in available_params:
+            if param_name in node.hypers:
+                param_value = node.hypers[param_name]  # Existing hyperparameter value
+                bounds = (0.0, 1.0)  # Default bounds, can be overridden by custom_bounds
+
+                # Check if there are custom bounds
+                if "custom_bounds" in cfg.optimization_guide and param_name in cfg.optimization_guide.custom_bounds:
+                    bounds = tuple(cfg.optimization_guide.custom_bounds[param_name])
+                    print(f"Custom bounds found and applied for parameter: {param_name}, Bounds: {bounds}")
+
+                optimizable_hypers[param_name] = {"value": param_value, "bounds": bounds}
+
+    return optimizable_hypers
+
+
+def find_nodes_by_id(recipe: RecipeNode, optimization_targets: List[str]) -> List[RecipeNode]:
+
+    """Finds nodes in the recipe by their identifiers.
+
+    Args:
+        recipe: The sd-mecha recipe.
+        optimization_targets: A list of node identifiers (e.g., "&10", "[&2, &5]")
+
+    Returns:
+        List of RecipeNodes with the specified id.
+        Returns every MergeRecipeNode in the recipe if optimization_targets is not set.
+    """
+
+    class NodeFinderVisitor(sd_mecha.recipe_nodes.RecipeVisitor):
+        def __init__(self, target_id):
+            self.target_id = target_id
+            self.found_nodes = []
+
+        def visit_model(self, node):
+            pass
+
+        def visit_parameter(self, node):
+            pass
+
+        def visit_merge(self, node):
+            if str(node) == self.target_id:
+                self.found_nodes.append(node)
+            for model in node.models:
+                model.accept(self)
+
+    nodes = []
+    if optimization_targets is None:  # Default behavior: Optimize all MergeRecipeNodes
+        class MergeNodeCollector(sd_mecha.recipe_nodes.RecipeVisitor):
+            def __init__(self):
+                self.merge_nodes = []
+
+            def visit_model(self, node):
+                pass
+
+            def visit_parameter(self, node):
+                pass
+
+            def visit_merge(self, node):
+                self.merge_nodes.append(node)
+                for model in node.models:
+                    model.accept(self)
+
+        collector = MergeNodeCollector()
+        recipe.accept(collector)
+        nodes = collector.merge_nodes
+
+    else:
+        for target_id in optimization_targets:
+            finder = NodeFinderVisitor(target_id)
+            recipe.accept(finder)
+            nodes.extend(finder.found_nodes)
+
+    return nodes
 
 
 # Custom sorting function that uses component order from config
@@ -45,43 +145,7 @@ def custom_sort_key(key, component_order):
     return component_index, sd_mecha.hypers.natural_sort_key(block_key)
 
 
-def load_and_prepare_recipe(cfg) -> Dict:
-    """Loads a pre-built recipe and prepares bounds for optimization."""
-    recipe_path = cfg.recipe_optimization.recipe_path
-    optimization_target = cfg.recipe_optimization.optimization_target
-    logger.info(f"Loading recipe from: {recipe_path}")
-    logger.info(f"Optimization target: {optimization_target}")
-
-    # Load the recipe using sd-mecha's deserialize function
-    with open(recipe_path, "r") as f:
-        recipe = sd_mecha.deserialize(f.readlines())
-
-    # Get default bounds for all parameters in the recipe
-    from sd_interim_bayesian_merger.bounds import Bounds
-    default_bounds = Bounds.create_default_bounds(cfg)  # No need to modify this further
-
-    # Identify the merge node to optimize
-    target_node = recipe
-    while target_node is not None:
-        for i, child in enumerate(target_node.models):
-            if f"&{i}" == optimization_target:
-                target_node = child
-                break
-        else:
-            break  # Target node not found, exit the loop
-
-    if target_node is None:
-        raise ValueError(f"Invalid optimization target: {optimization_target}")
-
-    # Extract hyperparameters from the target node
-    optimizable_params = target_node.hypers
-
-    # Generate modified bounds for the selected hyperparameters
-    modified_bounds = {k: v for k, v in default_bounds.items() if k in optimizable_params}
-
-    # Return the modified bounds
-    logger.info(f"Modified Bounds: {modified_bounds}")
-    return modified_bounds
+##recipe stuff
 
 
 # Hotkey behavior

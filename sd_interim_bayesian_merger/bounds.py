@@ -31,7 +31,7 @@ class Bounds:
             elif optimization_strategy == "selected":
                 bounds.update(Bounds._create_bounds_for_selected(component_config, optimizable_params, volatile_hypers))
             elif optimization_strategy == "grouped":
-                bounds.update(Bounds._create_bounds_for_grouped(component_config, optimizable_params, volatile_hypers))
+                bounds.update(Bounds._create_bounds_for_grouped(component_config, optimizable_params, volatile_hypers, model_arch))
             elif optimization_strategy == "group-all":
                 bounds.update(
                     Bounds._create_bounds_for_group_all(cfg, component_name, optimizable_params, volatile_hypers))
@@ -64,14 +64,27 @@ class Bounds:
         return component_bounds
 
     @staticmethod
-    def _create_bounds_for_grouped(component_config, optimizable_params, volatile_hypers):
+    def _create_bounds_for_grouped(component_config, optimizable_params, volatile_hypers, model_arch):
         component_bounds = {}
+        is_integer_group = isinstance(component_config.groups, int)
+
+        if is_integer_group:
+            # Get all blocks for automatic grouping
+            block_ids = [block_id for block_id in model_arch.user_keys() if
+                         f"_{component_config.name}_block_" in block_id]
+            num_groups = component_config.groups
+            group_size = max(1, len(block_ids) // num_groups)
+            grouped_blocks = [block_ids[i:i + group_size] for i in range(0, len(block_ids), group_size)]
+        else:
+            # Use only the explicitly specified blocks
+            grouped_blocks = component_config.groups
+
         for param_name in optimizable_params:
             if param_name not in volatile_hypers:
-                if component_config.optimize == "grouped":
-                    for i, group in enumerate(component_config.groups):
-                        group_name = "-".join([f"{block}_{param_name}" for block in group])
-                        component_bounds[group_name] = (0.0, 1.0)
+                for i, group in enumerate(grouped_blocks):
+                    group_name = "-".join([f"{block}_{param_name}" for block in group])
+                    component_bounds[group_name] = (0.0, 1.0)
+
         return component_bounds
 
     @staticmethod
@@ -190,9 +203,6 @@ class Bounds:
                     assembled_params[param_name] = assembled_params.get(param_name, {})
                     assembled_params[param_name].update(param_values)
             elif optimization_strategy == "grouped":
-                groups = component_config.get("groups", [])
-                if not groups:
-                    raise ValueError(f"No 'groups' specified for component '{component_name}'")
                 for param_name, param_values in Bounds._assemble_params_for_grouped(
                         component_config, optimizable_params, volatile_hypers, params, cfg
                 ).items():
@@ -241,16 +251,30 @@ class Bounds:
         return component_params
 
     @staticmethod
-    def _assemble_params_for_grouped(component_config, optimizable_params, volatile_hypers, params, cfg):
+    def _assemble_params_for_grouped(component_config, optimizable_params, volatile_hypers, params, model_arch):
         component_params = {}
+        is_integer_group = isinstance(component_config.groups, int)
+
+        if is_integer_group:
+            # Get all blocks for automatic grouping
+            block_ids = [block_id for block_id in model_arch.user_keys() if
+                         f"_{component_config.name}_block_" in block_id]
+            num_groups = component_config.groups
+            group_size = max(1, len(block_ids) // num_groups)
+            grouped_blocks = [block_ids[i:i + group_size] for i in range(0, len(block_ids), group_size)]
+        else:
+            # Use only the explicitly specified blocks
+            grouped_blocks = component_config.groups
+
         for param_name in optimizable_params:
             if param_name not in volatile_hypers:
                 component_params[param_name] = {}
-                for group in component_config.groups:
+                for group in grouped_blocks:
                     group_name = "-".join([f"{block}_{param_name}" for block in group])
                     group_value = params.get(group_name, 0.0)
                     for block_id in group:
                         component_params[param_name][block_id] = group_value
+
         return component_params
 
     @staticmethod

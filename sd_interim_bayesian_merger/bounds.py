@@ -3,7 +3,8 @@ import sd_mecha
 
 from typing import Dict, List, Tuple, Union
 from omegaconf import DictConfig, ListConfig
-from sd_interim_bayesian_merger.utils import OPTIMIZABLE_HYPERPARAMETERS, custom_sort_key
+
+from sd_interim_bayesian_merger import utils
 
 logger = logging.getLogger(__name__)
 
@@ -17,8 +18,13 @@ class Bounds:
     def create_default_bounds(cfg: DictConfig) -> Dict[str, Tuple[float, float]]:
         model_arch = sd_mecha.extensions.model_arch.resolve(cfg.model_arch)
         mecha_merge_method = sd_mecha.extensions.merge_method.resolve(cfg.merge_mode)
-        optimizable_params = OPTIMIZABLE_HYPERPARAMETERS.get(cfg.merge_mode, mecha_merge_method.get_hyper_names())
         volatile_hypers = mecha_merge_method.get_volatile_hyper_names()
+
+        if cfg.recipe_optimization.enabled:
+            extracted_hypers = utils.get_target_nodes_hypers(cfg.recipe_optimization.recipe_path, cfg.recipe_optimization.optimization_target)
+            optimizable_params = list(extracted_hypers.keys())  # Use keys from extracted_hypers
+        else:
+            optimizable_params = utils.OPTIMIZABLE_HYPERPARAMETERS.get(cfg.merge_mode, mecha_merge_method.get_hyper_names())
 
         bounds = {}
         for component_config in cfg.optimization_guide.components:
@@ -154,15 +160,20 @@ class Bounds:
 
         # Log bounds for each hyperparameter on a single line
         mecha_merge_method = sd_mecha.extensions.merge_method.resolve(cfg.merge_mode)
-        optimizable_params = OPTIMIZABLE_HYPERPARAMETERS.get(cfg.merge_mode, mecha_merge_method.get_hyper_names())
         volatile_hypers = mecha_merge_method.get_volatile_hyper_names()
         component_order = [c.name for c in cfg.optimization_guide.components]
+
+        if cfg.recipe_optimization.enabled:
+            extracted_hypers = utils.get_target_nodes_hypers(cfg.recipe_optimization.recipe_path, cfg.recipe_optimization.optimization_target)
+            optimizable_params = list(extracted_hypers.keys())
+        else:
+            optimizable_params = utils.OPTIMIZABLE_HYPERPARAMETERS.get(cfg.merge_mode, mecha_merge_method.get_hyper_names())
 
         for param_name in optimizable_params:  # Iterate over optimizable params
             if param_name not in volatile_hypers:
                 param_bounds = [
                     f"{key}: {value}"
-                    for key, value in  sorted(bounds.items(), key=lambda item: custom_sort_key(item[0], component_order))
+                    for key, value in  sorted(bounds.items(), key=lambda item: utils.custom_sort_key(item[0], component_order))
                     if f"_{param_name}" in key
                 ]
                 logger.info(f"Bounds for {param_name}: {', '.join(param_bounds)}")
@@ -178,8 +189,13 @@ class Bounds:
 
         model_arch = sd_mecha.extensions.model_arch.resolve(cfg.model_arch)
         mecha_merge_method = sd_mecha.extensions.merge_method.resolve(cfg.merge_mode)
-        optimizable_params = OPTIMIZABLE_HYPERPARAMETERS.get(cfg.merge_mode, mecha_merge_method.get_hyper_names())
         volatile_hypers = mecha_merge_method.get_volatile_hyper_names()
+
+        if cfg.recipe_optimization.enabled:
+            extracted_hypers = utils.get_target_nodes_hypers(cfg.recipe_optimization.recipe_path, cfg.recipe_optimization.optimization_target)
+            optimizable_params = list(extracted_hypers.keys())
+        else:
+            optimizable_params = utils.OPTIMIZABLE_HYPERPARAMETERS.get(cfg.merge_mode, mecha_merge_method.get_hyper_names())
 
         assembled_params = {}
         for component_config in cfg.optimization_guide.components:
@@ -222,7 +238,7 @@ class Bounds:
         # Sort the assembled parameters within each component
         component_order = [c.name for c in cfg.optimization_guide.components]
         for component_name, component_params in assembled_params.items():
-            sorted_component_params = dict(sorted(component_params.items(), key=lambda item: custom_sort_key(item[0], component_order)))
+            sorted_component_params = dict(sorted(component_params.items(), key=lambda item: utils.custom_sort_key(item[0], component_order)))
             assembled_params[component_name] = sorted_component_params
 
         return assembled_params

@@ -34,7 +34,7 @@ class BayesOptimizer(Optimizer):
         self.previous_iterations = []
 
         # First create a fresh logger
-        self.logger = JSONLogger(path=str(self.log_file_path), reset=True)
+        self.logger = JSONLogger(path=str(self.log_file_path), reset=self.cfg.optimizer.reset_log_file)
 
         # Then load previous data if specified
         if self.cfg.optimizer.get("load_log_file"):

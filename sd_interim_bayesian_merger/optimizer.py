@@ -156,6 +156,21 @@ class Optimizer:
     def postprocess(self) -> None:
         raise NotImplementedError("Not implemented")
 
+    @abstractmethod
+    def validate_optimizer_config(self) -> bool:
+        """Validate optimizer-specific configuration"""
+        raise NotImplementedError()
+
+    @abstractmethod
+    def get_best_parameters(self) -> Dict:
+        """Return best parameters found during optimization."""
+        raise NotImplementedError()
+
+    @abstractmethod
+    def get_optimization_history(self) -> List[Dict]:
+        """Return history of optimization attempts."""
+        raise NotImplementedError()
+
     @staticmethod
     def save_best_log(assembled_params: Dict[str, Dict[str, float]], iteration: int) -> None:
         """Saves the best hyperparameters and iteration number to a log file."""

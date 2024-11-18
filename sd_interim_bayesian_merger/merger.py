@@ -11,8 +11,12 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, Optional
 from omegaconf import DictConfig, open_dict
+from sd_mecha import recipe_serializer
 from sd_mecha.recipe_nodes import RecipeNode
+
+from sd_interim_bayesian_merger import utils
 from sd_interim_bayesian_merger.merge_methods import MergeMethods
+from sd_interim_bayesian_merger.utils import save_merge_method_code
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO)
@@ -213,10 +217,24 @@ class Merger:
             models_dir=None,
     ) -> Path:
 
+        r = requests.post(url=f"{self.cfg.url}/bbwm/unload-model?webui={self.cfg.webui}")
+        r.raise_for_status()
+
         model_path = self.best_output_file if save_best else self.output_file
         mecha_merge_method = sd_mecha.extensions.merge_method.resolve(self.cfg.merge_mode)
         input_merge_spaces, varargs_merge_space = mecha_merge_method.get_input_merge_spaces()
         default_hypers = mecha_merge_method.get_default_hypers()
+
+        if self.cfg.recipe_optimization.enabled:
+            recipe_path = self.cfg.recipe_optimization.recipe_path
+            target_nodes = self.cfg.recipe_optimization.optimization_target
+            recipe = recipe_serializer.deserialize(recipe_path)
+            modified_recipe = utils.update_recipe_with_params(recipe, target_nodes, assembled_params)
+
+            self._serialize_and_save_recipe(modified_recipe, model_path)
+            self._execute_sd_mecha_merge(modified_recipe, model_path)
+
+            return model_path  # Return early
 
         requires_base = self._requires_base_model(mecha_merge_method, input_merge_spaces, varargs_merge_space)
         if requires_base:
@@ -224,13 +242,8 @@ class Merger:
         else:
             base_model = None  # or a dummy object, depending on how exactly you want to use it
 
-        r = requests.post(url=f"{self.cfg.url}/bbwm/unload-model?webui={self.cfg.webui}")
-        r.raise_for_status()
-
         updated_models = self._prepare_models(base_model, input_merge_spaces, varargs_merge_space)
-
         updated_models = self._slice_models(updated_models)
-
         merged_model = self._merge_models(updated_models, assembled_params, cache)
 
         if requires_base:
@@ -238,5 +251,8 @@ class Merger:
 
         self._serialize_and_save_recipe(merged_model, model_path)
         self._execute_sd_mecha_merge(merged_model, model_path)
+
+        if self.cfg.get("save_merge_method_code", False):
+            save_merge_method_code(self.cfg.merge_mode, model_path, MergeMethods)
 
         return model_path

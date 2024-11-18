@@ -1,3 +1,4 @@
+import re
 import pywt
 import sd_mecha
 import functools
@@ -11,6 +12,9 @@ import safetensors.torch
 import torch.nn.functional as F
 import numpy as np
 
+from collections import defaultdict
+from dataclasses import dataclass
+from enum import Enum, auto
 from scipy.linalg import sqrtm
 from scipy.stats import binom, rankdata
 from sd_mecha.merge_methods.svd import torch_complex_dtype_map
@@ -2059,7 +2063,7 @@ class MergeMethods:
     @convert_to_recipe
     def streaming_ties_sum_extended(
             *models: Tensor | LiftFlag[MergeSpace.DELTA],
-            k: Hyper = 0.2,
+            k: Hyper = 0.218,
             vote_sgn: Hyper = 0.0,
             apply_stock: Hyper = 0.0,
             cos_eps: Hyper = 1e-6,
@@ -2067,61 +2071,335 @@ class MergeMethods:
             eps: Hyper = 1e-6,
             maxiter: Hyper = 150,
             ftol: Hyper = 1e-22,
-            chunk_size: int = 2000000,  # Process in chunks of 1M elements
+            weight_decay: Hyper = 0.0218,
+            min_agreement: Hyper = 0.3,
+            chunk_size: int = 7,  # Increased default chunk size
+            **kwargs,
+    ) -> Tensor | LiftFlag[MergeSpace.DELTA]:
+        """
+        Memory-efficient TIES implementation with optimized chunking. See mm_docs
+        """
+        if not models:
+            raise ValueError("At least one model must be provided")
+
+        device = models[0].device
+        dtype = models[0].dtype
+        total_models = len(models)
+
+        # Try to process more models at once while monitoring memory
+        try:
+            # Initialize accumulators directly on GPU if memory allows
+            accumulated_filtered = []
+            accumulated_signs = []
+
+            # Process models in chunks
+            for chunk_start in range(0, total_models, chunk_size):
+                chunk_end = min(chunk_start + chunk_size, total_models)
+                chunk_models = models[chunk_start:chunk_end]
+
+                # Process current chunk
+                chunk_filtered, chunk_signs = MergeMethods._process_model_chunk(
+                    chunk_models,
+                    k=k,
+                    device=device,
+                    dtype=dtype
+                )
+
+                # Keep results on GPU if memory allows
+                accumulated_filtered.append(chunk_filtered)
+                accumulated_signs.append(chunk_signs)
+
+                # Only clear cache if memory pressure is high
+                if torch.cuda.memory_allocated() > 0.8 * torch.cuda.get_device_properties(0).total_memory:
+                    torch.cuda.empty_cache()
+
+            # Concatenate results
+            filtered_delta = torch.cat(accumulated_filtered, dim=0)
+            signs = torch.cat(accumulated_signs, dim=0)
+
+            # Compute final results
+            final_results = MergeMethods._compute_final_results(
+                filtered_delta,
+                signs,
+                vote_sgn=vote_sgn,
+                min_agreement=min_agreement,
+                weight_decay=weight_decay
+            )
+
+            filtered_delta, param_counts = final_results
+
+        except RuntimeError as e:
+            if "out of memory" in str(e):
+                print(f"Warning: GPU OOM with chunk_size={chunk_size}, falling back to smaller chunks")
+                # Implement fallback to smaller chunk size if needed
+                raise
+            else:
+                raise
+
+        if apply_median <= 0.0:
+            # Model Stock pathway
+            if apply_stock > 0.0:
+                t = MergeMethods._compute_model_stock_chunked(
+                    filtered_delta,
+                    cos_eps=cos_eps,
+                    chunk_size=chunk_size
+                )
+            else:
+                t = 1.0
+
+            filtered_delta = filtered_delta.sum(dim=0)
+            param_counts = torch.clamp(param_counts, min=eps)
+            result = filtered_delta * t / param_counts
+        else:
+            # Geometric median computation with larger chunks
+            result = MergeMethods._compute_geometric_median_chunked(
+                filtered_delta,
+                eps=eps,
+                maxiter=maxiter,
+                ftol=ftol,
+                chunk_size=chunk_size
+            )
+
+        return torch.nan_to_num(result, nan=0.0, posinf=0.0, neginf=0.0)
+
+    @staticmethod
+    def _process_model_chunk(chunk_models, k, device, dtype):
+        """Process a chunk of models efficiently on GPU."""
+        chunk_filtered = []
+        chunk_signs = []
+
+        for model in chunk_models:
+            # Move single model to GPU, process, and free immediately
+            model_gpu = model.to(device=device, dtype=dtype)
+            filtered = MergeMethods.filter_top_k(model_gpu, k)
+            signs = torch.sign(torch.where(
+                torch.abs(filtered) > 1e-7,
+                filtered,
+                torch.zeros_like(filtered)
+            ))
+
+            chunk_filtered.append(filtered)
+            chunk_signs.append(signs)
+
+            # Clear GPU memory explicitly
+            del model_gpu
+            torch.cuda.empty_cache()
+
+        return (
+            torch.stack(chunk_filtered, dim=0),
+            torch.stack(chunk_signs, dim=0)
+        )
+
+    @staticmethod
+    def _compute_final_results(accumulated_filtered, accumulated_signs, vote_sgn, min_agreement, weight_decay):
+        """Compute final results efficiently on CPU."""
+        vote_tensor = accumulated_filtered if vote_sgn <= 0.0 else accumulated_signs
+        sign_sum = torch.sum(vote_tensor, dim=0)
+        agreement_ratio = torch.sum(accumulated_signs != 0, dim=0).float() / len(accumulated_signs)
+
+        final_sign = torch.where(
+            agreement_ratio >= min_agreement,
+            torch.sign(sign_sum),
+            torch.zeros_like(sign_sum)
+        )
+
+        delta_filters = (accumulated_signs == final_sign).float()
+        param_counts = torch.sum(delta_filters, dim=0)
+
+        if weight_decay > 0.0:
+            accumulated_filtered = accumulated_filtered * (1.0 - weight_decay)
+
+        filtered_delta = accumulated_filtered * delta_filters
+        return filtered_delta, param_counts
+
+    @staticmethod
+    def _compute_model_stock_chunked(filtered_delta, cos_eps, chunk_size):
+        """Compute model stock in memory-efficient chunks."""
+        n_models = filtered_delta.shape[0]
+        cos_sims = torch.zeros(n_models, n_models, device='cpu')
+
+        for i in range(0, n_models, chunk_size):
+            chunk_i = filtered_delta[i:i + chunk_size].flatten(1)
+            chunk_i_norm = torch.norm(chunk_i, dim=1, keepdim=True)
+
+            for j in range(0, n_models, chunk_size):
+                chunk_j = filtered_delta[j:j + chunk_size].flatten(1)
+                chunk_j_norm = torch.norm(chunk_j, dim=1, keepdim=True)
+
+                # Compute cosine similarity for the chunk
+                chunk_cos = torch.mm(chunk_i, chunk_j.t()) / (
+                        torch.mm(chunk_i_norm, chunk_j_norm.t()) + cos_eps
+                )
+
+                cos_sims[i:i + chunk_size, j:j + chunk_size] = chunk_cos.cpu()
+
+                del chunk_j, chunk_j_norm
+                torch.cuda.empty_cache()
+
+            del chunk_i, chunk_i_norm
+            torch.cuda.empty_cache()
+
+        # Compute final t score
+        t = torch.mean(cos_sims > 0).item()
+        return t
+
+    @staticmethod
+    def _compute_geometric_median_chunked(points, eps, maxiter, ftol, chunk_size):
+        """
+        Optimized memory-efficient geometric median computation for 3D tensors.
+        points shape: [n_points, d1, d2] where d1, d2 are the dimensions of each point
+        """
+        n_points = points.shape[0]
+        device = points.device
+        points_shape = points.shape
+
+        # Keep more data on GPU
+        points_flat = points.reshape(n_points, -1)  # Keep on GPU initially
+        weights = torch.ones(n_points, device=device)  # Keep weights on GPU
+
+        # Initialize median on GPU
+        median = torch.mean(points_flat, dim=0)
+        best_objective = float('inf')
+        best_median = median.clone()
+
+        # Process larger chunks on GPU
+        for iter_idx in range(maxiter):
+            prev_objective = 0.0
+            new_weights = torch.zeros_like(weights)
+
+            # Process chunks directly on GPU
+            for i in range(0, n_points, chunk_size):
+                chunk = points_flat[i:i + chunk_size]  # Already on GPU
+                chunk_weights = weights[i:i + chunk_size]
+
+                # Compute distances efficiently on GPU
+                diff = chunk - median.unsqueeze(0)
+                # Use efficient GPU operations
+                distances = torch.norm(diff, dim=1) + eps
+
+                # Update objective and weights on GPU
+                prev_objective += torch.sum(distances * chunk_weights)
+                new_weights[i:i + chunk_size] = chunk_weights / distances
+
+                # Optional: Only clear if memory pressure is high
+                if torch.cuda.memory_allocated() > 0.9 * torch.cuda.max_memory_allocated():
+                    del diff, distances
+                    torch.cuda.empty_cache()
+
+            # Update median efficiently on GPU
+            weighted_sum = torch.zeros_like(median)
+            weight_sum = new_weights.sum()
+
+            # Compute new median in chunks but stay on GPU
+            for i in range(0, n_points, chunk_size):
+                chunk = points_flat[i:i + chunk_size]
+                chunk_weights = new_weights[i:i + chunk_size]
+                weighted_sum += torch.sum(chunk * chunk_weights.unsqueeze(1), dim=0)
+
+            median = weighted_sum / (weight_sum + eps)
+
+            # Check convergence
+            if abs(prev_objective - best_objective) <= ftol * best_objective:
+                break
+
+            if prev_objective < best_objective:
+                best_objective = prev_objective
+                best_median = median.clone()
+
+            weights = new_weights
+
+            # Optional: Print progress every few iterations
+            if iter_idx % 10 == 0:
+                print(f"Iteration {iter_idx}, Objective: {prev_objective:.4e}")
+
+        # Reshape final result
+        final_median = best_median.reshape(points_shape[1:])
+        return final_median
+
+    @staticmethod
+    def filter_top_k(a: Tensor, k: float) -> torch.Tensor:
+        """Improved implementation using kthvalue with chunking."""
+        total_params = torch.numel(a)
+        k_params = max(int((1 - k) * total_params), 1)
+
+        if k_params >= total_params:
+            return torch.zeros_like(a)
+
+        # Process in chunks for memory efficiency
+        chunk_size = 1_000_000
+        abs_values = []
+
+        for i in range(0, total_params, chunk_size):
+            chunk = a.flatten()[i:i + chunk_size]
+            abs_values.append(torch.abs(chunk))
+
+        # Concatenate chunks and find kth value
+        abs_cat = torch.cat(abs_values)
+        k_value = torch.kthvalue(abs_cat, k_params).values
+
+        # Apply threshold with memory efficiency
+        mask = torch.abs(a) >= k_value
+        return a * mask.float()
+
+    @staticmethod
+    @convert_to_recipe
+    def streaming_ties_sum_extended2(
+            *models: Tensor | LiftFlag[MergeSpace.DELTA],
+            k: Hyper = 0.218,
+            vote_sgn: Hyper = 0.0,
+            apply_stock: Hyper = 0.0,
+            cos_eps: Hyper = 1e-6,
+            apply_median: Hyper = 1.0,
+            eps: Hyper = 1e-6,
+            maxiter: Hyper = 150,
+            ftol: Hyper = 1e-22,
+            chunk_size: int = 1000000,
             **kwargs,
     ) -> Tensor | LiftFlag[MergeSpace.DELTA]:
         device = models[0].device
         model_shape = models[0].shape
         total_elements = torch.numel(models[0])
 
-        # Step 1: Calculate k threshold for each model (chunked processing)
+        # Step 1: Calculate k thresholds model by model
         k_thresholds = []
+        k_val = max(int((1 - k) * total_elements), 1)
+
         for model in models:
-            k_val = max(int((1 - k) * total_elements), 1)
-            # Process in chunks to find absolute values
             abs_values = torch.empty(total_elements, device=device)
             for i in range(0, total_elements, chunk_size):
                 end_idx = min(i + chunk_size, total_elements)
                 chunk = model.flatten()[i:end_idx]
                 abs_values[i:end_idx] = torch.abs(chunk)
-
             k_threshold, _ = torch.kthvalue(abs_values, k_val)
-            k_thresholds.append(k_threshold)
-            del abs_values, model  # Free memory
+            k_thresholds.append(k_threshold.item())  # Store as scalar
+            del abs_values  # Free memory immediately
 
-        # Step 2: Chunked sign voting
+        # Step 2: Sign voting with reduced memory
         sign_votes = torch.zeros(model_shape, device=device)
-        for model_idx, (model, k_threshold) in enumerate(zip(models, k_thresholds)):
+        for model_idx, model in enumerate(models):
+            k_threshold = k_thresholds[model_idx]
             for i in range(0, total_elements, chunk_size):
                 end_idx = min(i + chunk_size, total_elements)
                 chunk = model.flatten()[i:end_idx]
-
-                # Process chunk
                 chunk_mask = torch.abs(chunk) >= k_threshold
-                if vote_sgn <= 0.0:
-                    vote_chunk = chunk * chunk_mask.float()
-                else:
-                    vote_chunk = torch.sign(chunk) * chunk_mask.float()
-
-                # Update sign_votes for this chunk
+                vote_chunk = (torch.sign(chunk) if vote_sgn > 0.0 else chunk) * chunk_mask.float()
                 sign_votes.flatten()[i:end_idx] += vote_chunk
-                del chunk, chunk_mask, vote_chunk  # Free memory
-            del model  # Free memory after processing each model
+                del chunk, chunk_mask, vote_chunk
 
         final_signs = torch.sign(sign_votes)
         del sign_votes
 
-        # Step 3: Chunked parameter accumulation
         if apply_median <= 0.0:
+            # Non-median path with optimized memory usage
             param_sum = torch.zeros(model_shape, device=device)
             param_counts = torch.zeros(model_shape, device=device)
 
             if apply_stock > 0.0:
-                cos_sums = torch.zeros(model_shape, device=device)
-                cos_counts = 0
+                cos_sims = []  # Store scalars instead of full tensors
                 prev_filtered = None
 
-            for model_idx, (model, k_threshold) in enumerate(zip(models, k_thresholds)):
+            for model_idx, model in enumerate(models):
+                k_threshold = k_thresholds[model_idx]
                 current_filtered = torch.zeros(model_shape, device=device)
 
                 for i in range(0, total_elements, chunk_size):
@@ -2129,11 +2407,9 @@ class MergeMethods:
                     chunk = model.flatten()[i:end_idx]
                     signs_chunk = final_signs.flatten()[i:end_idx]
 
-                    # Filter chunk
                     chunk_mask = (torch.abs(chunk) >= k_threshold) & (torch.sign(chunk) == signs_chunk)
                     filtered_chunk = chunk * chunk_mask.float()
 
-                    # Update accumulators
                     param_sum.flatten()[i:end_idx] += filtered_chunk
                     param_counts.flatten()[i:end_idx] += chunk_mask.float()
                     current_filtered.flatten()[i:end_idx] = filtered_chunk
@@ -2157,143 +2433,148 @@ class MergeMethods:
 
                         del chunk1, chunk2
 
-                    cos_sim = dot_product / (
-                                torch.sqrt(torch.tensor([norm1_sq])) * torch.sqrt(torch.tensor([norm2_sq])) + cos_eps)
-                    cos_sums += cos_sim
-                    cos_counts += 1
+                    cos_sim = dot_product / (math.sqrt(norm1_sq) * math.sqrt(norm2_sq) + cos_eps)
+                    cos_sims.append(cos_sim)
 
-                prev_filtered = current_filtered if apply_stock > 0.0 else None
-                del model, current_filtered
+                if apply_stock > 0.0:
+                    prev_filtered = current_filtered
+                else:
+                    del current_filtered
 
             # Calculate final result
             if apply_stock > 0.0:
-                cos_theta = cos_sums / max(cos_counts, 1)
+                avg_cos = sum(cos_sims) / len(cos_sims)
                 n = len(models)
-                t = (n * cos_theta / (1 + (n - 1) * cos_theta))
+                t = (n * avg_cos / (1 + (n - 1) * avg_cos))
+                del cos_sims
             else:
                 t = 1.0
 
             result = torch.nan_to_num(param_sum * t / torch.clamp(param_counts, min=1))
+            del param_sum, param_counts
 
         else:
-            # For geometric median, we still need to collect filtered parameters
-            # but we'll do it in chunks to reduce memory usage
-            filtered_models = []
-            for model, k_threshold in zip(models, k_thresholds):
-                filtered = torch.zeros(model_shape, device=device)
+            # Median path with sequential processing
+            result = torch.zeros(model_shape, device=device)
+            weights = torch.ones(len(models), device=device)
+
+            # Initialize at mean
+            for model in models:
                 for i in range(0, total_elements, chunk_size):
                     end_idx = min(i + chunk_size, total_elements)
-                    chunk = model.flatten()[i:end_idx]
-                    signs_chunk = final_signs.flatten()[i:end_idx]
+                    result.flatten()[i:end_idx] += model.flatten()[i:end_idx] / len(models)
 
-                    chunk_mask = (torch.abs(chunk) >= k_threshold) & (torch.sign(chunk) == signs_chunk)
-                    filtered.flatten()[i:end_idx] = chunk * chunk_mask.float()
+            # Weiszfeld iterations
+            for iter_idx in range(maxiter):
+                prev_result = result.clone()
+                denom = torch.zeros(len(models), device=device)
 
-                    del chunk, signs_chunk, chunk_mask
+                # Calculate distances
+                for model_idx, model in enumerate(models):
+                    dist = 0
+                    for i in range(0, total_elements, chunk_size):
+                        end_idx = min(i + chunk_size, total_elements)
+                        chunk_diff = model.flatten()[i:end_idx] - result.flatten()[i:end_idx]
+                        dist += torch.sum(chunk_diff * chunk_diff)
+                        del chunk_diff
+                    denom[model_idx] = torch.sqrt(dist)
 
-                filtered_models.append(filtered)
-                del model
+                # Update weights and calculate new result
+                new_weights = weights / torch.clamp(denom, min=eps)
+                weight_sum = new_weights.sum()
 
-            result = MergeMethods.geometric_median_list_of_array(
-                filtered_models,
-                eps=eps,
-                maxiter=maxiter,
-                ftol=ftol
-            )
+                result.zero_()
+                for model_idx, model in enumerate(models):
+                    for i in range(0, total_elements, chunk_size):
+                        end_idx = min(i + chunk_size, total_elements)
+                        result.flatten()[i:end_idx] += model.flatten()[i:end_idx] * new_weights[model_idx]
+                result /= weight_sum
 
-            for filtered in filtered_models:
-                del filtered
+                # Check convergence
+                if torch.max(torch.abs(result - prev_result)) < ftol:
+                    break
+
+                del prev_result
 
         return result
-
-    def geometric_median_list_of_array(models, eps, maxiter, ftol, chunk_size=1000000):
-        device = models[0].device
-        model_shape = models[0].shape
-        total_elements = torch.numel(models[0])
-        n_models = len(models)
-        weights = torch.ones(n_models, device=device)
-
-        # Initialize median estimate at chunked mean
-        median = torch.zeros(model_shape, device=device)
-        for i in range(0, total_elements, chunk_size):
-            end_idx = min(i + chunk_size, total_elements)
-            chunk_sum = torch.zeros((end_idx - i,), device=device)
-            for model in models:
-                chunk_sum += model.flatten()[i:end_idx]
-            median.flatten()[i:end_idx] = chunk_sum / n_models
-            del chunk_sum
-
-        # Calculate initial objective value in chunks
-        objective_value = 0
-        for model in models:
-            dist = 0
-            for i in range(0, total_elements, chunk_size):
-                end_idx = min(i + chunk_size, total_elements)
-                model_chunk = model.flatten()[i:end_idx]
-                median_chunk = median.flatten()[i:end_idx]
-                diff_chunk = model_chunk - median_chunk
-                dist += (diff_chunk * diff_chunk).sum()
-                del model_chunk, median_chunk, diff_chunk
-            objective_value += torch.sqrt(dist)
-        objective_value /= n_models
-
-        # Weiszfeld iterations
-        for _ in range(max(0, round(maxiter))):
-            prev_obj_value = objective_value
-
-            # Calculate distances and new weights in chunks
-            denom = torch.zeros(n_models, device=device)
-            for model_idx, model in enumerate(models):
-                dist = 0
-                for i in range(0, total_elements, chunk_size):
-                    end_idx = min(i + chunk_size, total_elements)
-                    model_chunk = model.flatten()[i:end_idx]
-                    median_chunk = median.flatten()[i:end_idx]
-                    diff_chunk = model_chunk - median_chunk
-                    dist += (diff_chunk * diff_chunk).sum()
-                    del model_chunk, median_chunk, diff_chunk
-                denom[model_idx] = torch.sqrt(dist)
-
-            new_weights = weights / torch.clamp(denom, min=eps)
-            weight_sum = new_weights.sum()
-
-            # Calculate new median in chunks
-            new_median = torch.zeros(model_shape, device=device)
-            for i in range(0, total_elements, chunk_size):
-                end_idx = min(i + chunk_size, total_elements)
-                chunk_sum = torch.zeros((end_idx - i,), device=device)
-                for model_idx, model in enumerate(models):
-                    chunk_sum += model.flatten()[i:end_idx] * new_weights[model_idx]
-                new_median.flatten()[i:end_idx] = chunk_sum / weight_sum
-                del chunk_sum
-
-            # Update median
-            median = new_median
-
-            # Calculate new objective value in chunks
-            objective_value = 0
-            for model_idx, model in enumerate(models):
-                dist = 0
-                for i in range(0, total_elements, chunk_size):
-                    end_idx = min(i + chunk_size, total_elements)
-                    model_chunk = model.flatten()[i:end_idx]
-                    median_chunk = median.flatten()[i:end_idx]
-                    diff_chunk = model_chunk - median_chunk
-                    dist += (diff_chunk * diff_chunk).sum()
-                    del model_chunk, median_chunk, diff_chunk
-                objective_value += torch.sqrt(dist) * weights[model_idx]
-            objective_value /= n_models
-
-            if abs(prev_obj_value - objective_value) <= ftol * objective_value:
-                break
-
-        return median
 
     @staticmethod
     @convert_to_recipe
     def ties_sum_with_dropout(
             *models: Tensor | LiftFlag[MergeSpace.DELTA],
-            probability: Hyper = 0.9,  # 0.9 means 90% keep rate
+            probability: Hyper = 0.5,
+            della_eps: Hyper = 0.0,
+            rescale: Hyper = 1.0,
+            k: Hyper = 0.218,
+            vote_sgn: Hyper = 0.0,
+            apply_stock: Hyper = 0.0,
+            cos_eps: Hyper = 1e-6,
+            apply_median: Hyper = 1.0,
+            eps: Hyper = 1e-6,
+            maxiter: Hyper = 150,
+            ftol: Hyper = 1e-22,
+            seed: Hyper = 218,
+            chunk_size: int = 1000000,
+            **kwargs,
+    ) -> Tensor | LiftFlag[MergeSpace.DELTA]:
+        if not models:
+            return torch.tensor(0.0, device='cpu')
+        device = models[0].device
+        total_elements = torch.numel(models[0])
+
+        # Initialize dropped models with zeros instead of clones
+        dropped_models = [torch.zeros_like(model) for model in models]
+
+        generator = torch.Generator(device)
+        if seed is not None:
+            generator.manual_seed(seed)
+
+        # Process each chunk
+        for i in range(0, total_elements, chunk_size):
+            end_idx = min(i + chunk_size, total_elements)
+            chunk_size_current = end_idx - i
+
+            for idx, (model, dropped_model) in enumerate(zip(models, dropped_models)):
+                chunk = model.flatten()[i:end_idx]
+                # Calculate magnitudes for ranking
+                magnitudes = chunk.abs()
+                # Get ranks (0 to chunk_size_current-1)
+                ranks = torch.argsort(torch.argsort(magnitudes))
+
+                # Calculate drop probabilities
+                p_min = torch.clamp(probability - della_eps / 2, 0.0, 1.0)
+                normalized_ranks = ranks.float() / (chunk_size_current - 1)
+                delta_i = della_eps * normalized_ranks
+                probabilities = torch.clamp(p_min + delta_i, 0.0, 1.0)
+
+                # Generate dropout mask
+                mask = torch.bernoulli(1.0 - probabilities, generator=generator)  # Inverted mask
+
+                # Apply mask and rescale
+                rescale_factors = torch.where(mask > 0, 1.0 / (torch.clamp(1.0 - probabilities, eps, 1.0)), 0.0)
+                dropped_model.flatten()[i:end_idx] = chunk * mask * rescale_factors
+
+        # Apply TIES merging
+        merged_delta = MergeMethods.streaming_ties_sum_extended.__wrapped__(
+            *dropped_models,
+            k=k,
+            vote_sgn=vote_sgn,
+            apply_stock=apply_stock,
+            cos_eps=cos_eps,
+            apply_median=apply_median,
+            eps=eps,
+            maxiter=maxiter,
+            ftol=ftol
+        )
+
+        # Apply final rescale factor
+        return merged_delta * rescale
+
+    @staticmethod
+    @convert_to_recipe
+    def ties_sum_with_dropoutprev(
+            *models: Tensor | LiftFlag[MergeSpace.DELTA],
+            probability: Hyper = 0.9,
             della_eps: Hyper = 0.0,
             rescale: Hyper = 1.0,
             k: Hyper = 0.218,
@@ -2459,13 +2740,664 @@ class MergeMethods:
         """Creates a dropout mask using smooth magnitude-based probabilities, following DELLA intuition."""
         p_min = torch.full(delta.shape, 1 - probability, device=delta.device, dtype=delta.dtype)
         if della_eps != 0.0:
-            magnitudes = delta.abs()
-            # Invert magnitudes so larger values get lower dropout probabilities
-            inv_magnitudes = 1.0 / (magnitudes + 1e-8)
-            # Use softmax for smooth distribution
-            norm_probs = torch.softmax(inv_magnitudes.flatten() / della_eps, dim=0).reshape(delta.shape)
-            delta_i = (norm_probs - norm_probs.mean()) * della_eps
+            # Calculate rank-based adjustments
+            ranks = torch.argsort(torch.argsort(delta.abs().flatten())).reshape(delta.shape).float()
+            delta_i = ((ranks / delta.numel()) - 0.5) * della_eps
+            # Ensure probabilities are within the valid range
             probabilities = torch.clamp(p_min + delta_i, 0.0, 1.0)
         else:
             probabilities = p_min
+
         return torch.bernoulli(probabilities, generator=generator)
+
+
+    @staticmethod
+    @convert_to_recipe
+    def frequency_merge(
+            a: Tensor | SameMergeSpace,
+            b: Tensor | SameMergeSpace,
+            c: Tensor | SameMergeSpace,
+            *,
+            alpha: Hyper = 1.0,
+            **kwargs,
+    ) -> Tensor | SameMergeSpace:
+        # Get differences from base
+        delta_a = a - c
+        delta_b = b - c
+
+        # Could use FFT for frequency decomposition
+        # Or use something like wavelets
+        # But a simpler approach might be to look at local vs global changes:
+
+        # Global changes (low frequency)
+        global_a = torch.mean(delta_a, dim=-1, keepdim=True)
+        global_b = torch.mean(delta_b, dim=-1, keepdim=True)
+
+        # Local changes (high frequency)
+        local_a = delta_a - global_a
+        local_b = delta_b - global_b
+
+        # Merge differently at each scale
+        # Maybe trust global changes more (higher alpha)
+        # And be more conservative with local changes
+        merged = c + (global_a + alpha * (global_b - global_a)) + \
+                 (local_a + (alpha * 0.5) * (local_b - local_a))
+
+        return merged
+
+    @staticmethod
+    @convert_to_recipe
+    def laplacian_difference1(
+            a: Tensor | SameMergeSpace,
+            b: Tensor | SameMergeSpace,
+            c: Tensor | SameMergeSpace,
+            *,
+            alpha: Hyper = 1.0,
+            n_levels: int = 4,
+            **kwargs,
+    ) -> Tensor | SameMergeSpace:
+        def gaussian_downsample(x: Tensor) -> Tensor:
+            # Smooth and downsample
+            # Using average pooling as simple approximation of Gaussian
+            return torch.nn.functional.avg_pool1d(x, kernel_size=2, stride=2)
+
+        def gaussian_upsample(x: Tensor) -> Tensor:
+            # Upsample and smooth
+            return torch.nn.functional.interpolate(x, scale_factor=2, mode='linear')
+
+        def build_pyramid(x: Tensor) -> List[Tensor]:
+            gaussian = [x]
+            laplacian = []
+
+            # Build Gaussian pyramid
+            for _ in range(n_levels - 1):
+                gaussian.append(gaussian_downsample(gaussian[-1]))
+
+            # Build Laplacian pyramid
+            for i in range(n_levels - 1):
+                upsampled = gaussian_upsample(gaussian[i + 1])
+                # Pad/trim upsampled to match current level size
+                if upsampled.shape != gaussian[i].shape:
+                    diff = gaussian[i].shape[-1] - upsampled.shape[-1]
+                    if diff > 0:
+                        upsampled = torch.nn.functional.pad(upsampled, (0, diff))
+                    else:
+                        upsampled = upsampled[..., :gaussian[i].shape[-1]]
+                laplacian.append(gaussian[i] - upsampled)
+
+            # Add smallest Gaussian level as last Laplacian level
+            laplacian.append(gaussian[-1])
+
+            return laplacian
+
+        # Build pyramids for all three models
+        a_pyr = build_pyramid(a)
+        b_pyr = build_pyramid(b)
+        c_pyr = build_pyramid(c)
+
+        merged_pyr = []
+        for level in range(n_levels):
+            # Adjust alpha based on level
+            # More aggressive at lower frequencies (higher levels)
+            level_alpha = alpha * (1.0 + level / (n_levels - 1))
+
+            # Get changes from base for both models
+            a_delta = a_pyr[level] - c_pyr[level]
+            b_delta = b_pyr[level] - c_pyr[level]
+
+            # Calculate agreement mask
+            # Higher when changes are similar, lower when divergent
+            agreement = torch.cosine_similarity(a_delta, b_delta, dim=-1, eps=1e-8)
+            agreement = torch.clamp(agreement, 0, 1).unsqueeze(-1)
+
+            # Calculate magnitude mask
+            # Favor stronger changes but prevent extreme differences
+            mag_a = torch.norm(a_delta, dim=-1, keepdim=True)
+            mag_b = torch.norm(b_delta, dim=-1, keepdim=True)
+            mag_ratio = torch.minimum(mag_a, mag_b) / torch.maximum(mag_a, mag_b).clamp(min=1e-8)
+
+            # Combined mask considers both agreement and relative magnitudes
+            mask = agreement * mag_ratio
+
+            # For highest frequencies (level 0), be more conservative
+            if level == 0:
+                mask *= 0.5
+
+            # Merge this level
+            # Start with a's changes, blend in b's changes where mask is high
+            merged_delta = a_delta * (1 - mask * level_alpha) + b_delta * (mask * level_alpha)
+            merged_pyr.append(c_pyr[level] + merged_delta)
+
+        # Reconstruct from pyramid
+        result = merged_pyr[-1]
+        for level in range(n_levels - 2, -1, -1):
+            upsampled = gaussian_upsample(result)
+            # Handle size mismatch
+            if upsampled.shape != merged_pyr[level].shape:
+                diff = merged_pyr[level].shape[-1] - upsampled.shape[-1]
+                if diff > 0:
+                    upsampled = torch.nn.functional.pad(upsampled, (0, diff))
+                else:
+                    upsampled = upsampled[..., :merged_pyr[level].shape[-1]]
+            result = upsampled + merged_pyr[level]
+
+        return result
+
+    @staticmethod
+    def model_aware_merge(
+            a: Tensor | LiftFlag[MergeSpace.DELTA],
+            b: Tensor | LiftFlag[MergeSpace.DELTA],
+            *,
+            block_attention: bool = True,
+            alpha: float = 1.0,
+            temperature: float = 1.0,
+            window_size: int = 5,
+            n_levels: int = 4,
+            sigma: float = 1.0,
+            agreement_weights: Optional[Dict[str, float]] = None,
+            **kwargs,
+    ) -> Tensor | LiftFlag[MergeSpace.DELTA]:
+        """
+        Model-aware merge using enhanced agreement metrics and attention with layer-specific handling.
+        All merges use laplacian_difference with appropriate layer-specific agreement calculations.
+
+        Args:
+            a: First model's tensor or state dict
+            b: Second model's tensor or state dict
+            block_attention: Whether to process attention blocks together (True) or separately (False)
+            alpha: Base interpolation strength (0-1). Higher values favor model B more
+            temperature: Temperature for attention pattern softmax
+            window_size: Window size for calculating local agreement metrics
+            n_levels: Number of levels in the Laplacian pyramid
+            sigma: Gaussian blur parameter for Laplacian pyramid
+            agreement_weights: Optional custom weights for different agreement metrics
+                             Default: {'cosine': 0.4, 'structural': 0.4, 'frequency': 0.2}
+        """
+        merged = {}
+
+        # Set default agreement weights if not provided
+        if agreement_weights is None:
+            agreement_weights = {
+                'cosine': 0.4,
+                'structural': 0.4,
+                'frequency': 0.2
+            }
+
+        # Group parameters by layer type and position
+        layer_groups = {
+            'attention': [],
+            'feed_forward': [],
+            'conv': [],
+            'embedding': [],
+            'norm': []
+        }
+
+        for key in a.keys():
+            if 'attn' in key:
+                layer_groups['attention'].append(key)
+            elif 'mlp' in key or 'ff' in key:
+                layer_groups['feed_forward'].append(key)
+            elif 'conv' in key:
+                layer_groups['conv'].append(key)
+            elif 'embed' in key:
+                layer_groups['embedding'].append(key)
+            elif 'norm' in key:
+                layer_groups['norm'].append(key)
+
+        def process_attention_blocks(keys: list[str]) -> None:
+            """Special handling for attention blocks to maintain relationships"""
+            if not block_attention:
+                # Process each attention key individually if blocking is disabled
+                for key in keys:
+                    merged[key] = process_layer(key, a[key], b[key])
+                return
+
+            # Group Q,K,V matrices together
+            qkv_groups = defaultdict(list)
+            for key in keys:
+                match = re.match(r'.*block_(\d+).*(?:query|key|value)', key)
+                if match:
+                    block_num = match.group(1)
+                    qkv_groups[block_num].append(key)
+
+            for block_num, qkv_keys in qkv_groups.items():
+                if len(qkv_keys) != 3:  # Skip incomplete QKV triads
+                    continue
+
+                # Identify layer type and get proper reshape functions
+                layer_info = identify_layer(qkv_keys[0], a[qkv_keys[0]])
+
+                # Process each QKV set while preserving attention structure
+                tensors_a = [a[k] for k in qkv_keys]
+                tensors_b = [b[k] for k in qkv_keys]
+
+                # Reshape tensors properly
+                reshaped_a, restore_fn = zip(*[reshape_for_processing(t, layer_info) for t in tensors_a])
+                reshaped_b, _ = zip(*[reshape_for_processing(t, layer_info) for t in tensors_b])
+
+                # Stack for processing
+                stacked_a = torch.stack(reshaped_a)
+                stacked_b = torch.stack(reshaped_b)
+
+                # Calculate attention-specific agreement with temperature parameter
+                agreement = calculate_attention_agreement_fixed(stacked_a, stacked_b, temperature=temperature)
+
+                # Merge using laplacian_difference with custom parameters
+                merged_qkv = laplacian_difference(
+                    stacked_a,
+                    stacked_b,
+                    alpha=alpha,
+                    n_levels=n_levels,
+                    sigma=sigma
+                )
+
+                # Unstack and restore original shapes
+                for idx, key in enumerate(qkv_keys):
+                    merged[key] = restore_fn[idx](merged_qkv[idx])
+
+        def process_layer(key: str, a: Tensor, b: Tensor) -> Tensor:
+            """Process individual layer using appropriate agreement calculation"""
+            layer_info = identify_layer(key, a)
+
+            # Reshape tensors for processing
+            a_reshaped, restore_fn = reshape_for_processing(a, layer_info)
+            b_reshaped, _ = reshape_for_processing(b, layer_info)
+
+            # Calculate layer-specific agreement with custom parameters
+            if layer_info.type == LayerType.ATTENTION_QKV:
+                agreement = calculate_attention_agreement_fixed(
+                    a_reshaped,
+                    b_reshaped,
+                    temperature=temperature
+                )
+            elif layer_info.type in [LayerType.CONV_3X3, LayerType.CONV_1X1]:
+                agreement = calculate_spatial_agreement_fixed(
+                    a_reshaped,
+                    b_reshaped,
+                    kernel_size=window_size
+                )
+            else:
+                agreement = calculate_advanced_agreement(
+                    a_reshaped,
+                    b_reshaped,
+                    window_size=window_size,
+                    weights=agreement_weights
+                )
+
+            # Merge using laplacian_difference with custom parameters
+            merged_tensor = laplacian_difference(
+                a_reshaped,
+                b_reshaped,
+                alpha=alpha,
+                n_levels=n_levels,
+                sigma=sigma
+            )
+
+            return restore_fn(merged_tensor)
+
+        # Process each layer group
+        for group_name, keys in layer_groups.items():
+            if group_name == 'attention' and block_attention:
+                process_attention_blocks(keys)
+            else:
+                for key in keys:
+                    merged[key] = process_layer(key, a[key], b[key])
+
+        return merged
+
+    def calculate_advanced_agreement(a: Tensor, b: Tensor, window_size: int = 5) -> Tensor:
+        """
+        Calculate enhanced agreement metrics between two delta tensors with layer-aware processing
+        """
+        # Reshape tensors for agreement calculation while preserving structure
+        orig_shape = a.shape
+
+        if len(orig_shape) == 4:  # Convolution layers
+            a_flat = a.view(a.size(0), -1)
+            b_flat = b.view(b.size(0), -1)
+        else:
+            a_flat = a.view(-1, a.shape[-1]) if len(orig_shape) > 2 else a
+            b_flat = b.view(-1, b.shape[-1]) if len(orig_shape) > 2 else b
+
+        # Basic cosine similarity
+        cosine_sim = torch.cosine_similarity(a_flat, b_flat, dim=-1, eps=1e-8)
+
+        # Structural similarity with proper dimensionality handling
+        def local_stats(x: Tensor, kernel_size: int):
+            if x.dim() <= 2:
+                padding = kernel_size // 2
+                padded = torch.nn.functional.pad(x, (padding, padding))
+                windows = padded.unfold(-1, kernel_size, 1)
+                return windows.mean(dim=-1), windows.var(dim=-1)
+            else:
+                # For higher dimensions, use spatial averaging
+                pool = torch.nn.AvgPool2d(kernel_size, stride=1, padding=kernel_size // 2)
+                mean = pool(x)
+                return mean, pool(x.pow(2)) - mean.pow(2)
+
+        # Compute local statistics
+        a_mean, a_var = local_stats(a_flat, window_size)
+        b_mean, b_var = local_stats(b_flat, window_size)
+
+        # Calculate structural similarity
+        C1 = (0.01 * torch.max(torch.abs(a_flat))) ** 2
+        C2 = (0.03 * torch.max(torch.abs(a_flat))) ** 2
+
+        numerator = (2 * a_mean * b_mean + C1) * (2 * torch.sqrt(torch.clamp(a_var * b_var, min=1e-8)) + C2)
+        denominator = (a_mean ** 2 + b_mean ** 2 + C1) * (a_var + b_var + C2)
+        structural_sim = numerator / denominator
+
+        # Frequency domain agreement with proper reshaping
+        if a_flat.dim() <= 2:
+            fft_a = torch.fft.rfft(a_flat, dim=-1)
+            fft_b = torch.fft.rfft(b_flat, dim=-1)
+            freq_agreement = torch.cosine_similarity(
+                torch.abs(fft_a),
+                torch.abs(fft_b),
+                dim=-1
+            )
+        else:
+            # For higher dimensions, use 2D FFT
+            fft_a = torch.fft.rfft2(a)
+            fft_b = torch.fft.rfft2(b)
+            freq_agreement = torch.cosine_similarity(
+                torch.abs(fft_a).view(fft_a.size(0), -1),
+                torch.abs(fft_b).view(fft_b.size(0), -1),
+                dim=-1
+            )
+
+        # Combine metrics with learned weights
+        agreement = (
+                0.4 * cosine_sim +
+                0.4 * structural_sim +
+                0.2 * freq_agreement
+        )
+
+        return torch.clamp(agreement, 0, 1).unsqueeze(-1)
+
+    def calculate_attention_agreement_fixed(
+            a: Tensor,
+            b: Tensor,
+            temperature: float = 1.0
+    ) -> Tensor:
+        """
+        Calculate agreement specifically for attention mechanisms using delta tensors.
+        Takes into account attention pattern similarity and head relationships.
+
+        Args:
+            a: Delta from base model for first model (a - c)
+            b: Delta from base model for second model (b - c)
+            temperature: Softmax temperature for attention pattern comparison
+
+        Returns:
+            Tensor: Agreement scores
+        """
+
+        # Calculate attention patterns from the deltas
+        def get_attention_pattern(x: Tensor) -> Tensor:
+            if x.dim() == 3:  # (num_heads, seq_len, head_dim)
+                q, k, v = x.chunk(3, dim=0)
+            else:
+                q = k = v = x
+
+            # Calculate attention scores from the delta directly
+            attn_pattern = torch.matmul(q, k.transpose(-2, -1)) / temperature
+            return F.softmax(attn_pattern, dim=-1)
+
+        # Get patterns for each delta
+        pattern_a = get_attention_pattern(a)
+        pattern_b = get_attention_pattern(b)
+
+        # Calculate pattern similarity directly between deltas
+        pattern_agreement = F.cosine_similarity(
+            pattern_a.view(pattern_a.size(0), -1),
+            pattern_b.view(pattern_b.size(0), -1),
+            dim=-1
+        )
+
+        # Calculate value space agreement directly between deltas
+        value_agreement = F.cosine_similarity(
+            a.view(a.size(0), -1),
+            b.view(b.size(0), -1),
+            dim=-1
+        )
+
+        # Combine agreements with emphasis on pattern agreement
+        combined_agreement = 0.7 * pattern_agreement + 0.3 * value_agreement
+        return torch.clamp(combined_agreement, 0, 1).unsqueeze(-1)
+
+    def calculate_spatial_agreement_fixed(
+            a: Tensor,
+            b: Tensor,
+            kernel_size: int = 3
+    ) -> Tensor:
+        """
+        Calculate agreement for convolutional layers considering spatial relationships.
+
+        Args:
+            a: Delta from base model for first model (a - c)
+            b: Delta from base model for second model (b - c)
+            kernel_size: Size of the local neighborhood to consider
+
+        Returns:
+            Tensor: Agreement scores
+        """
+
+        # Unfold for local neighborhood analysis
+        def get_local_features(x: Tensor) -> Tensor:
+            padding = kernel_size // 2
+            x_padded = F.pad(x, (padding, padding, padding, padding))
+            return F.unfold(x_padded, kernel_size)
+
+        # Get local features directly from deltas
+        local_a = get_local_features(a)
+        local_b = get_local_features(b)
+
+        # Calculate local structure agreement
+        spatial_agreement = F.cosine_similarity(local_a, local_b, dim=1)
+
+        # Calculate channel-wise agreement
+        channel_agreement = F.cosine_similarity(
+            a.view(a.size(0), -1),
+            b.view(b.size(0), -1),
+            dim=-1
+        )
+
+        # Combine agreements
+        combined_agreement = 0.6 * spatial_agreement + 0.4 * channel_agreement
+        return torch.clamp(combined_agreement, 0, 1).unsqueeze(-1)
+
+    @convert_to_recipe
+    def laplacian_difference(
+            a: Tensor | SameMergeSpace,
+            b: Tensor | SameMergeSpace,
+            c: Tensor | SameMergeSpace,
+            *,
+            alpha: Hyper = 1.0,
+            n_levels: int = 4,
+            sigma: float = 1.0,  # Added Gaussian blur parameter
+            **kwargs,
+    ) -> Tensor | SameMergeSpace:
+        def gaussian_downsample(x: Tensor) -> Tensor:
+            # Use actual Gaussian blur instead of avg_pool approximation
+            kernel_size = int(6 * sigma)
+            if kernel_size % 2 == 0:
+                kernel_size += 1
+            gauss = torch.nn.Conv1d(
+                x.shape[1], x.shape[1], kernel_size,
+                padding=kernel_size // 2, groups=x.shape[1], bias=False
+            )
+            # Generate Gaussian kernel
+            kernel = torch.exp(-torch.linspace(-3 * sigma, 3 * sigma, kernel_size) ** 2 / (2 * sigma ** 2))
+            kernel = kernel / kernel.sum()
+            gauss.weight.data = kernel.view(1, 1, -1).repeat(x.shape[1], 1, 1)
+            gauss.weight.requires_grad = False
+
+            # Apply Gaussian blur then downsample
+            return torch.nn.functional.avg_pool1d(gauss(x), kernel_size=2, stride=2)
+
+        def gaussian_upsample(x: Tensor) -> Tensor:
+            # Use bicubic interpolation for better quality
+            return torch.nn.functional.interpolate(x, scale_factor=2, mode='bicubic', align_corners=False)
+
+        def build_pyramid(x: Tensor) -> List[Tensor]:
+            gaussian = [x]
+            laplacian = []
+
+            # Build Gaussian pyramid
+            for _ in range(n_levels - 1):
+                gaussian.append(gaussian_downsample(gaussian[-1]))
+
+            # Build Laplacian pyramid
+            for i in range(n_levels - 1):
+                upsampled = gaussian_upsample(gaussian[i + 1])
+                # Pad/trim upsampled to match current level size
+                if upsampled.shape != gaussian[i].shape:
+                    diff = gaussian[i].shape[-1] - upsampled.shape[-1]
+                    if diff > 0:
+                        upsampled = torch.nn.functional.pad(upsampled, (0, diff))
+                    else:
+                        upsampled = upsampled[..., :gaussian[i].shape[-1]]
+                laplacian.append(gaussian[i] - upsampled)
+
+            # Add smallest Gaussian level as last Laplacian level
+            laplacian.append(gaussian[-1])
+
+            return laplacian
+
+        # Build pyramids for all three models
+        a_pyr = build_pyramid(a)
+        b_pyr = build_pyramid(b)
+        c_pyr = build_pyramid(c)
+
+        merged_pyr = []
+        for level in range(n_levels):
+            # Adjust alpha based on level
+            # More aggressive at lower frequencies (higher levels)
+            level_alpha = alpha * (1.0 + level / (n_levels - 1))
+
+            # Get changes from base for both models
+            a_delta = a_pyr[level] - c_pyr[level]
+            b_delta = b_pyr[level] - c_pyr[level]
+
+            # Calculate agreement mask
+            # Higher when changes are similar, lower when divergent
+            agreement = torch.cosine_similarity(a_delta, b_delta, dim=-1, eps=1e-8)
+            agreement = torch.clamp(agreement, 0, 1).unsqueeze(-1)
+
+            # Calculate magnitude mask
+            # Favor stronger changes but prevent extreme differences
+            mag_a = torch.norm(a_delta, dim=-1, keepdim=True)
+            mag_b = torch.norm(b_delta, dim=-1, keepdim=True)
+            mag_ratio = torch.minimum(mag_a, mag_b) / torch.maximum(mag_a, mag_b).clamp(min=1e-8)
+
+            # Combined mask considers both agreement and relative magnitudes
+            mask = agreement * mag_ratio
+
+            # For highest frequencies (level 0), be more conservative
+            if level == 0:
+                mask *= 0.5
+
+            # Merge this level
+            # Start with a's changes, blend in b's changes where mask is high
+            merged_delta = a_delta * (1 - mask * level_alpha) + b_delta * (mask * level_alpha)
+            merged_pyr.append(c_pyr[level] + merged_delta)
+
+        # Reconstruct from pyramid
+        result = merged_pyr[-1]
+        for level in range(n_levels - 2, -1, -1):
+            upsampled = gaussian_upsample(result)
+            # Handle size mismatch
+            if upsampled.shape != merged_pyr[level].shape:
+                diff = merged_pyr[level].shape[-1] - upsampled.shape[-1]
+                if diff > 0:
+                    upsampled = torch.nn.functional.pad(upsampled, (0, diff))
+                else:
+                    upsampled = upsampled[..., :merged_pyr[level].shape[-1]]
+            result = upsampled + merged_pyr[level]
+
+        return result
+
+    class LayerType2(Enum):
+        ATTENTION_QKV = auto()
+        ATTENTION_OUTPUT = auto()
+        CONV_3X3 = auto()
+        CONV_1X1 = auto()
+        LINEAR = auto()
+        NORM = auto()
+        EMBEDDING = auto()
+        TIME_EMBEDDING = auto()
+        SCALAR = auto()
+
+    @dataclass
+    class LayerInfo:
+        type: 'LayerType'
+        shape: Tuple[int, ...]
+        head_dim: Optional[int] = None
+        num_heads: Optional[int] = None
+
+    def identify_layer(key: str, tensor: Tensor) -> LayerInfo:
+        """Identify layer type and extract relevant shape information"""
+        shape = tuple(tensor.shape)
+
+        # Handle attention layers specially
+        if 'attn' in key:
+            if any(x in key for x in ['query', 'key', 'value']):
+                # Most SD models use 8 attention heads
+                num_heads = 8 if len(shape) >= 2 else 1
+                head_dim = shape[-1] // num_heads if len(shape) >= 2 else shape[-1]
+                return LayerInfo(LayerType.ATTENTION_QKV, shape, head_dim, num_heads)
+            if 'output' in key:
+                return LayerInfo(LayerType.ATTENTION_OUTPUT, shape)
+
+        # Convolution layers
+        if len(shape) == 4:
+            if shape[-1] == 1:
+                return LayerInfo(LayerType.CONV_1X1, shape)
+            return LayerInfo(LayerType.CONV_3X3, shape)
+
+        # Other common layer types
+        if 'norm' in key or 'ln_' in key:
+            return LayerInfo(LayerType.NORM, shape)
+        if 'emb' in key:
+            if 'time' in key:
+                return LayerInfo(LayerType.TIME_EMBEDDING, shape)
+            return LayerInfo(LayerType.EMBEDDING, shape)
+        if not shape:  # Scalar parameters
+            return LayerInfo(LayerType.SCALAR, (1,))
+
+        # Default to linear for other matrix operations
+        return LayerInfo(LayerType.LINEAR, shape)
+
+    def reshape_for_processing(tensor: Tensor, layer_info: LayerInfo) -> Tuple[Tensor, callable]:
+        """Reshape tensor for processing while preserving structural information"""
+        original_shape = tensor.shape
+
+        if layer_info.type == LayerType.ATTENTION_QKV:
+            # Preserve attention head structure
+            reshaped = tensor.view(-1, layer_info.num_heads, layer_info.head_dim)
+            restore_fn = lambda x: x.view(original_shape)
+            return reshaped, restore_fn
+
+        if layer_info.type in [LayerType.CONV_3X3, LayerType.CONV_1X1]:
+            # Preserve channel structure for convolutions
+            flat_shape = (-1, functools.reduce(operator.mul, original_shape[1:]))
+            reshaped = tensor.view(flat_shape)
+            restore_fn = lambda x: x.view(original_shape)
+            return reshaped, restore_fn
+
+        if layer_info.type == LayerType.NORM:
+            # Keep norm parameters as is
+            return tensor, lambda x: x
+
+        if layer_info.type == LayerType.SCALAR:
+            return tensor.view(1), lambda x: x.view(())
+
+        # Default reshape for linear layers
+        if len(original_shape) > 2:
+            flat_shape = (-1, original_shape[-1])
+            reshaped = tensor.view(flat_shape)
+            restore_fn = lambda x: x.view(original_shape)
+            return reshaped, restore_fn
+
+        return tensor, lambda x: x

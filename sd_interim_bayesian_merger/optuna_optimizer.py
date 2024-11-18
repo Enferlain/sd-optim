@@ -20,6 +20,32 @@ class OptunaOptimizer(Optimizer):
         super().__init__(*args, **kwargs)
         self.study = None
         self._param_bounds = None
+        self.log_name = self.cfg.get("log_name", "default")  # Add default log name
+
+        # Initialize logger for trials
+        self.logger = self._setup_trial_logger()
+
+    def _setup_trial_logger(self):
+        """Setup logging for optimization trials."""
+        import json
+        from pathlib import Path
+
+        class TrialLogger:
+            def __init__(self, log_path):
+                self.log_path = Path(log_path)
+                self.log_path.parent.mkdir(parents=True, exist_ok=True)
+
+            def log(self, data):
+                mode = 'a' if self.log_path.exists() else 'w'
+                with open(self.log_path, mode, encoding='utf-8') as f:
+                    json.dump(data, f)
+                    f.write('\n')
+
+        return TrialLogger(Path(os.getcwd()) / f"trials_{self.log_name}.jsonl")
+
+    def validate_optimizer_config(self) -> bool:
+        required_fields = ['n_iters', 'init_points', 'random_state']
+        return all(hasattr(self.cfg.optimizer, field) for field in required_fields)
 
     def optimize(self) -> None:
         self._param_bounds = self.init_params()
@@ -37,29 +63,43 @@ class OptunaOptimizer(Optimizer):
                 multivariate=True
             )
 
-        # Create or load study
+        # Create or load study with error handling
         study_name = f"optimization_{self.log_name}"
-        storage = f"sqlite:///{os.path.join(os.getcwd(), f'{study_name}.db')}"
+        storage_path = os.path.join(os.getcwd(), f'{study_name}.db')
+        storage = f"sqlite:///{storage_path}"
 
-        load_if_exists = bool(self.cfg.optimizer.get("load_log_file", False))
-
-        self.study = optuna.create_study(
-            study_name=study_name,
-            storage=storage,
-            sampler=sampler,
-            direction="maximize",
-            load_if_exists=load_if_exists
-        )
+        try:
+            load_if_exists = bool(self.cfg.optimizer.get("load_log_file", False))
+            self.study = optuna.create_study(
+                study_name=study_name,
+                storage=storage,
+                sampler=sampler,
+                direction="maximize",
+                load_if_exists=load_if_exists
+            )
+        except Exception as e:
+            logger.error(f"Failed to create/load study: {e}")
+            # Fallback to in-memory storage if database fails
+            logger.info("Falling back to in-memory storage")
+            self.study = optuna.create_study(
+                study_name=study_name,
+                sampler=sampler,
+                direction="maximize"
+            )
 
         # Register callback for logging
         self.study.add_trial_callback(self._trial_callback)
 
         # Run optimization
-        self.study.optimize(
-            func=self._objective,
-            n_trials=self.cfg.optimizer.n_iters + self.cfg.optimizer.init_points,
-            show_progress_bar=True
-        )
+        try:
+            self.study.optimize(
+                func=self._objective,
+                n_trials=self.cfg.optimizer.n_iters + self.cfg.optimizer.init_points,
+                show_progress_bar=True
+            )
+        except Exception as e:
+            logger.error(f"Optimization failed: {e}")
+            raise
 
     def _objective(self, trial: Trial) -> float:
         """Objective function for Optuna optimization."""

@@ -16,7 +16,7 @@ from sd_mecha.recipe_nodes import RecipeNode
 
 from sd_interim_bayesian_merger import utils
 from sd_interim_bayesian_merger.merge_methods import MergeMethods
-from sd_interim_bayesian_merger.utils import save_merge_method_code
+from sd_interim_bayesian_merger.utils import MergeMethodCodeSaver
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO)
@@ -227,12 +227,29 @@ class Merger:
 
         if self.cfg.recipe_optimization.enabled:
             recipe_path = self.cfg.recipe_optimization.recipe_path
-            target_nodes = self.cfg.recipe_optimization.optimization_target
+            target_nodes = self.cfg.recipe_optimization.target_nodes
             recipe = recipe_serializer.deserialize(recipe_path)
-            modified_recipe = utils.update_recipe_with_params(recipe, target_nodes, assembled_params)
+            modified_recipe = utils.update_recipe(
+                recipe,
+                target_nodes,
+                assembled_params
+            )
+
+            # Configure RecipeMerger with device, threads, and models_dir
+            merger = sd_mecha.RecipeMerger(
+                models_dir=Path(self.cfg.model_paths[0]).parent,  # Use passed models_dir or default
+                default_device=device or self.cfg.device,  # Use passed device or default from config
+            )
+
+            merger.merge_and_save(
+                modified_recipe,
+                output=model_path,
+                threads=self.cfg.threads,  # Use threads from config
+                save_dtype=precision_mapping[self.cfg.precision]
+            )
+            logging.info(f"Merged model using sd-mecha recipe.")
 
             self._serialize_and_save_recipe(modified_recipe, model_path)
-            self._execute_sd_mecha_merge(modified_recipe, model_path)
 
             return model_path  # Return early
 
@@ -253,6 +270,6 @@ class Merger:
         self._execute_sd_mecha_merge(merged_model, model_path)
 
         if self.cfg.get("save_merge_method_code", False):
-            save_merge_method_code(self.cfg.merge_mode, model_path, MergeMethods)
+            MergeMethodCodeSaver.save_merge_method_code(self.cfg.merge_mode, model_path, MergeMethods)
 
         return model_path

@@ -2,13 +2,18 @@ import inspect
 import json
 import os
 import pathlib
+import textwrap
+
 import sd_mecha
 import logging
-
+import ast
 import threading
-from pathlib import Path
-from typing import List, Tuple, Dict, Set, Union, Any
 
+from pathlib import Path
+from typing import List, Tuple, Dict, Set, Union, Any, ClassVar, Optional
+from dataclasses import field, dataclass
+
+import yaml
 from hydra.core.hydra_config import HydraConfig
 from pynput import keyboard
 from copy import deepcopy
@@ -20,13 +25,13 @@ from sd_mecha.hypers import Hyper
 logger = logging.getLogger(__name__)
 
 
-### for methods that require selective optimization, ie contains on/off hypers, learning rate hypers, and such
+### What to pik
 OPTIMIZABLE_HYPERPARAMETERS = {
     "lu_merge": ["alpha", "theta"],
     "orth_pro": ["alpha"],
     "clyb_merge": ["alpha"],
     "ties_sum_extended": ["k"],
-    "streaming_ties_sum_extended": ["k"],
+    "streaming_ties_sum_extended": ["k", "min_agreement"],
     "ties_sum_with_dropout": ["probability", "della_eps", "k", "rescale"],
     "slerp_norm_sign": ["alpha"],
     "polar_interpolate": ["alpha"],
@@ -38,160 +43,218 @@ OPTIMIZABLE_HYPERPARAMETERS = {
 
 
 ### Recipe optimization
-class NodeCollectorVisitor(RecipeVisitor):
-    """Enhanced visitor that collects nodes and provides validation methods."""
-
-    def __init__(self):
-        self.nodes_by_ref = {}
-        self.current_index = 0
-
-    def visit_model(self, node: ModelRecipeNode):
-        ref = f"&{self.current_index}"
-        self.nodes_by_ref[ref] = node
-        self.current_index += 1
-
-    def visit_parameter(self, node: ParameterRecipeNode):
-        ref = f"&{self.current_index}"
-        self.nodes_by_ref[ref] = node
-        self.current_index += 1
-
-    def visit_merge(self, node: MergeRecipeNode):
-        for model in node.models:
-            model.accept(self)
-
-        ref = f"&{self.current_index}"
-        self.nodes_by_ref[ref] = node
-        self.current_index += 1
-
-
-def get_target_nodes_hypers(recipe_path: Union[str, pathlib.Path], target_nodes: List[str]) -> Dict[str, Hyper]:
+def get_target_nodes(recipe_path: Union[str, pathlib.Path], target_nodes: Union[str, List[str]]) -> Dict[
+    str, Dict[str, Any]]:
     """
-    Retrieves hyperparameters from specified target nodes in a recipe.
+    Extract hyperparameters from specified target nodes in the recipe.
 
     Args:
         recipe_path: Path to the recipe file
-        target_nodes: List of node references (e.g., ["&6", "&10"])
+        target_nodes: Target node(s) specified as '&N' or ['&N', '&M', ...]
 
     Returns:
-        Dictionary mapping hyperparameter names to their values
-
-    Raises:
-        ValueError: If target node not found
-        TypeError: If target node is not a MergeRecipeNode
+        Dict mapping node references to their hyperparameters
     """
-    recipe = recipe_serializer.deserialize(recipe_path)
+    if isinstance(target_nodes, str):
+        target_nodes = [target_nodes]
 
-    # Collect all nodes and their references
-    collector = NodeCollectorVisitor()
-    recipe.accept(collector)
+    recipe = sd_mecha.deserialize(recipe_path)
+    node_map = _build_node_map(recipe)
 
-    # Extract hypers from target nodes
     extracted_hypers = {}
-    for node_ref in target_nodes:
-        if node_ref not in collector.nodes_by_ref:
-            raise ValueError(f"Target node '{node_ref}' not found in recipe.")
-
-        target_node = collector.nodes_by_ref[node_ref]
-        if not isinstance(target_node, MergeRecipeNode):
-            raise TypeError(
-                f"Target node '{node_ref}' must be a MergeRecipeNode, "
-                f"not {type(target_node).__name__}"
-            )
-
-        extracted_hypers.update(target_node.hypers)
+    for target in target_nodes:
+        node_index = int(target.strip('&'))
+        if node_index in node_map:
+            node = node_map[node_index]
+            if isinstance(node, MergeRecipeNode):
+                extracted_hypers[target] = {
+                    'merge_method': node.merge_method.get_name(),
+                    'hypers': node.hypers
+                }
 
     return extracted_hypers
 
 
-class RecipeUpdaterVisitor(RecipeVisitor):
-    """Visitor that updates hyperparameters in specified target nodes."""
+def update_recipe(recipe: RecipeNode, target_nodes: Union[str, List[str]],
+                  assembled_params: Dict[str, Any]) -> RecipeNode:
+    """
+    Update recipe with new hyperparameters, inserting dict nodes as needed.
 
-    def __init__(self, target_nodes: List[str], assembled_params: Dict[str, Dict[str, float]]):
-        self.target_nodes = target_nodes
-        self.assembled_params = assembled_params
-        self.current_index = 0
+    Args:
+        recipe: The recipe to modify
+        target_nodes: Target node(s) to update
+        assembled_params: New parameter values to apply
 
-    def visit_model(self, node: recipe_nodes.ModelRecipeNode):
-        self.current_index += 1
-        return node
-
-    def visit_parameter(self, node: recipe_nodes.ParameterRecipeNode):
-        self.current_index += 1
-        return node
-
-    def visit_merge(self, node: recipe_nodes.MergeRecipeNode):
-        # First process all child nodes
-        updated_models = [model.accept(self) for model in node.models]
-
-        # Check if current node needs updating
-        node_ref = f"&{self.current_index}"
-        self.current_index += 1
-
-        if node_ref in self.target_nodes:
-            # Create new node with updated hypers
-            return MergeRecipeNode(
-                merge_method=node.merge_method,
-                *updated_models,
-                hypers={**node.hypers, **self.assembled_params},
-                volatile_hypers=node.volatile_hypers,
-                device=node.device,
-                dtype=node.dtype
-            )
-
-        return node
-
-
-def update_recipe_with_params(
-    recipe: RecipeNode,
-    target_nodes: Union[str, List[str]],
-    assembled_params: Dict[str, Union[float, Dict[str, float]]]
-) -> RecipeNode:
-    """Updates the recipe, handling all hyperparameter modification scenarios."""
-
+    Returns:
+        Modified recipe with updated hyperparameters
+    """
     if isinstance(target_nodes, str):
-        target_nodes = [target_nodes.strip()]
+        target_nodes = [target_nodes]
 
-    collector = NodeCollectorVisitor()
-    recipe.accept(collector)
+    # Convert recipe to text form for manipulation
+    recipe_lines = sd_mecha.serialize(recipe).split('\n')
 
-    updated_recipe = deepcopy(recipe)
+    # Track existing dict nodes and their parameters
+    dict_nodes: Dict[int, Dict[str, Any]] = {}
+    dict_lines = [i for i, line in enumerate(recipe_lines) if line.startswith('dict')]
+    for i in dict_lines:
+        dict_nodes[i] = _parse_dict_line(recipe_lines[i])
 
-    class UpdatingVisitor(recipe_nodes.RecipeVisitor):
-        def __init__(self, target_nodes, assembled_params, nodes_by_ref):
-            self.target_nodes = target_nodes
-            self.assembled_params = assembled_params
-            self.current_index = 0
-            self.nodes_by_ref = nodes_by_ref
+    # Handle each target node
+    for target in target_nodes:
+        node_index = int(target.strip('&'))
+        target_line = recipe_lines[node_index]
 
-        def visit_model(self, node: recipe_nodes.ModelRecipeNode):
-            self.current_index += 1
+        if not target_line.startswith('merge'):
+            continue
 
-        def visit_parameter(self, node: recipe_nodes.ParameterRecipeNode):
-            self.current_index += 1
+        # For each parameter in assembled_params
+        for param_key, param_value in assembled_params.items():
+            current_value = _extract_param_value(target_line, param_key)
 
-        def visit_merge(self, node: recipe_nodes.MergeRecipeNode):
-            node_ref = f"&{self.current_index}"
-            self.current_index += 1
+            # Handle the case where we need to convert a numeric/string value to a dict
+            if isinstance(param_value, dict):
+                # Check if parameter already references a dict
+                if current_value and current_value.startswith('&'):
+                    # Update existing dict node
+                    dict_index = int(current_value.strip('&'))
+                    if dict_index in dict_nodes:
+                        dict_nodes[dict_index].update(param_value)
+                        recipe_lines[dict_index] = _create_dict_line(dict_nodes[dict_index])
+                else:
+                    # Create new dict node for the parameter
+                    dict_line = _create_dict_line(param_value)
+                    recipe_lines.insert(0, dict_line)
 
-            if node_ref in self.target_nodes:
-                for key, value in self.assembled_params.items():
-                    if key in node.hypers and isinstance(node.hypers[key], dict) and isinstance(value, dict):
-                        node.hypers[key].update(value)  # Merge nested dictionaries.
-                    else:
-                        node.hypers[key] = value  # Set values directly or for non-nested dicts.
-            for model in node.models:  # Go through the tree
-                model.accept(self)
+                    # Update all references in the line to account for the new node
+                    parts = target_line.split()
+                    updated_parts = []
+                    for part in parts:
+                        if '=' in part:
+                            key, value = part.split('=', 1)
+                            if value.startswith('&'):
+                                ref_num = int(value[1:])
+                                updated_parts.append(f'{key}=&{ref_num + 1}')
+                            else:
+                                if key == param_key:
+                                    updated_parts.append(f'{key}=&0')
+                                else:
+                                    updated_parts.append(part)
+                        elif part.startswith('&'):
+                            ref_num = int(part[1:])
+                            updated_parts.append(f'&{ref_num + 1}')
+                        else:
+                            updated_parts.append(part)
+                    target_line = ' '.join(updated_parts)
 
-    updated_recipe.accept(UpdatingVisitor(target_nodes, assembled_params, collector.nodes_by_ref))
-    new_recipe_lines = recipe_serializer.serialize(updated_recipe).splitlines()
+                    # Increment all references in other lines
+                    recipe_lines = [target_line if i == node_index + 1 else line
+                                    for i, line in enumerate(_increment_node_refs(recipe_lines, 1))]
+            else:
+                # Handle non-dict parameters
+                target_line = _replace_param_value(target_line, param_key, str(param_value))
+                recipe_lines[node_index] = target_line
 
-    # Handle newly created dict params
-    created_dict_params = {} # New dict hyperparameters, to be inserted.
+    # Convert back to recipe object
+    return sd_mecha.deserialize(recipe_lines)
 
-    new_recipe_lines = [f"dict {' '.join(f'{k}={v}' for k, v in dict_value.items())}" # Format new dict hyperparameters as strings, to be appended to the recipe later.
-                        for dict_key, dict_value in created_dict_params.items()] + new_recipe_lines #P repend new dictionary nodes to recipe
+def _build_node_map(recipe: RecipeNode) -> Dict[int, RecipeNode]:
+    """Build a map of node indices to their corresponding RecipeNode objects."""
+    lines = sd_mecha.serialize(recipe).split('\n')
+    node_map = {}
 
-    return recipe_serializer.deserialize("\n".join(new_recipe_lines)) # Deserialize updated recipe.
+    current_recipe = []
+    for i, line in enumerate(lines):
+        current_recipe.append(line)
+        node = sd_mecha.deserialize(current_recipe)
+        node_map[i] = node
+
+    return node_map
+
+def _parse_dict_line(line: str) -> Dict[str, Any]:
+    """Parse a dict line into a dictionary of parameter values."""
+    parts = line.split()
+    result = {}
+    for part in parts[1:]:  # Skip 'dict' command
+        if '=' in part:
+            key, value = part.split('=', 1)
+            # Convert string value to appropriate type
+            try:
+                if value.replace('.', '').replace('e-', '').replace('e+', '').isdigit():
+                    value = float(value)
+            except ValueError:
+                pass  # Keep as string if conversion fails
+            result[key] = value
+    return result
+
+def _increment_refs_in_line(line: str, increment: int) -> str:
+    """Increment all node references in a single line by a specified amount."""
+    parts = line.split()
+    for i, part in enumerate(parts):
+        if part.startswith('&') and part[1:].isdigit():
+            ref_num = int(part[1:])
+            parts[i] = f'&{ref_num + increment}'
+        elif '=' in part:
+            key, value = part.split('=', 1)
+            if value.startswith('&') and value[1:].isdigit():
+                ref_num = int(value[1:])
+                parts[i] = f'{key}=&{ref_num + increment}'
+    return ' '.join(parts)
+
+def _create_dict_line(params: Dict[str, Any]) -> str:
+    """Create a dict line from a dictionary of parameters."""
+    param_strs = []
+    for key, value in params.items():
+        if isinstance(value, (int, float)):
+            param_strs.append(f"{key}={value}")
+        else:
+            param_strs.append(f'{key}="{value}"')
+    return 'dict ' + ' '.join(param_strs)
+
+def _extract_param_value(line: str, param: str) -> Optional[str]:
+    """Extract the value of a parameter from a merge line."""
+    parts = line.split()
+    for part in parts:
+        if part.startswith(f'{param}='):
+            return part.split('=', 1)[1]
+    return None
+
+def _update_dict_line(line: str, updates: Dict[str, Any]) -> str:
+    """Update parameters in a dict line."""
+    parts = line.split()
+    params = {p.split('=')[0]: p.split('=')[1] for p in parts[1:]}
+    params.update(updates)
+    return 'dict ' + ' '.join(f'{k}={v}' for k, v in params.items())
+
+def _replace_param_value(line: str, param: str, new_value: str) -> str:
+    """Replace the value of a parameter in a merge line."""
+    parts = line.split()
+    found = False
+    for i, part in enumerate(parts):
+        if part.startswith(f'{param}='):
+            parts[i] = f'{param}={new_value}'
+            found = True
+            break
+    if not found:
+        parts.append(f'{param}={new_value}')
+    return ' '.join(parts)
+
+def _increment_node_refs(lines: List[str], increment: int) -> List[str]:
+    """Increment all node references in the recipe by a specified amount."""
+    updated_lines = []
+    for line in lines:
+        parts = line.split()
+        for i, part in enumerate(parts):
+            if '=' in part:
+                key, value = part.split('=', 1)
+                if value.startswith('&'):
+                    ref_num = int(value[1:])
+                    parts[i] = f'{key}=&{ref_num + increment}'
+            elif part.startswith('&'):
+                ref_num = int(part[1:])
+                parts[i] = f'&{ref_num + increment}'
+        updated_lines.append(' '.join(parts))
+    return updated_lines
 
 
 ### Custom sorting function that uses component order from config ###
@@ -210,104 +273,224 @@ def custom_sort_key(key, component_order):
 
 
 ### Save mm code
-def get_method_dependencies(method: Any, cls: Any) -> Set[str]:
-    """Recursively get all function dependencies from the method's source code."""
-    dependencies = set()
-    try:
-        # Get the source code of the method
-        source = inspect.getsource(method)
+@dataclass
+class ImportInfo:
+    """Store information about imports."""
+    module: str
+    names: Set[str] = field(default_factory=set)  # For 'from' imports
+    alias: str = None  # For regular imports with 'as'
+    is_from_import: bool = False
 
-        # Get all methods from the class directly using the passed cls parameter
-        all_methods = inspect.getmembers(cls, predicate=inspect.isfunction)
-        method_names = [name for name, _ in all_methods]
-
-        # Look for calls to other methods in the source code
-        for name in method_names:
-            if name in source and name != method.__name__:
-                dependencies.add(name)
-                # Recursively get dependencies of the called method
-                called_method = getattr(cls, name)
-                dependencies.update(get_method_dependencies(called_method, cls))
-        return dependencies
-    except (TypeError, OSError) as e:
-        logger.warning(f"Could not analyze dependencies for {method.__name__}: {e}")
-        return set()
+    def to_source(self) -> str:
+        """Convert the import back to source code."""
+        if self.is_from_import:
+            names_str = ", ".join(sorted(self.names))
+            return f"from {self.module} import {names_str}"
+        else:
+            if self.alias:
+                return f"import {self.module} as {self.alias}"
+            return f"import {self.module}"
 
 
-def get_full_method_source(method_name: str, cls: Any, visited: Set[str] = None) -> str:
-    """Get the source code of the method and all its dependencies."""
-    if visited is None:
-        visited = set()
-    if method_name in visited:
-        return ""
+class CodeAnalysisVisitor(ast.NodeVisitor):
+    """AST visitor that finds method calls and imports within a function."""
 
-    visited.add(method_name)
-    try:
-        method = getattr(cls, method_name)
-    except AttributeError as e:
-        logger.error(f"Method {method_name} not found in class: {e}")
-        return f"# Error: Method {method_name} not found in class"
+    def __init__(self, class_methods: List[str]):
+        self.class_methods = class_methods
+        self.called_methods = set()
+        self.imports: Dict[str, ImportInfo] = {}
+        self.used_names = set()
 
-    try:
-        # Get the source of the main method
-        source = inspect.getsource(method)
+    def visit_Call(self, node: ast.Call) -> None:
+        """Visit a function call node in the AST."""
+        # Track method calls
+        if isinstance(node.func, ast.Attribute) and isinstance(node.func.value, ast.Name):
+            if node.func.value.id in ('self', 'cls'):
+                method_name = node.func.attr
+                if method_name in self.class_methods:
+                    self.called_methods.add(method_name)
 
-        # Get dependencies
-        dependencies = get_method_dependencies(method, cls)
+        # Track all names used in function calls
+        self.generic_visit(node)
+        if isinstance(node.func, ast.Name):
+            self.used_names.add(node.func.id)
+        elif isinstance(node.func, ast.Attribute):
+            if isinstance(node.func.value, ast.Name):
+                self.used_names.add(node.func.value.id)
 
-        # Build the complete source code
-        full_source = [
-            f"\n# {'-' * 20} Main merge method {'-' * 20}",
-            source
-        ]
+    def visit_Name(self, node: ast.Name) -> None:
+        """Visit a name node to track used variables."""
+        if isinstance(node.ctx, ast.Load):
+            self.used_names.add(node.id)
+        self.generic_visit(node)
 
-        # Add dependencies if any
-        if dependencies:
+    def visit_Import(self, node: ast.Import) -> None:
+        """Visit an import node."""
+        for alias in node.names:
+            import_info = ImportInfo(
+                module=alias.name,
+                alias=alias.asname
+            )
+            self.imports[alias.asname or alias.name] = import_info
+        self.generic_visit(node)
+
+    def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
+        """Visit a from-import node."""
+        if node.module is None:  # Handle "from . import x"
+            return
+
+        import_info = ImportInfo(
+            module=node.module,
+            is_from_import=True
+        )
+        for alias in node.names:
+            import_info.names.add(alias.asname or alias.name)
+
+        # Use the module name as key for from-imports
+        self.imports[node.module] = import_info
+        self.generic_visit(node)
+
+
+class MergeMethodCodeSaver:
+    """A class to handle saving merge method code with caching to prevent duplicate saves."""
+
+    _saved_methods: ClassVar[Set[str]] = set()
+
+    @classmethod
+    def analyze_code(cls, source: str, class_methods: List[str]) -> Tuple[Set[str], Dict[str, ImportInfo]]:
+        """Analyze source code for dependencies and imports."""
+        tree = ast.parse(source)
+        visitor = CodeAnalysisVisitor(class_methods)
+        visitor.visit(tree)
+        return visitor.called_methods, visitor.imports
+
+    @classmethod
+    def get_method_dependencies(cls, method: Any, class_obj: Any) -> Tuple[Set[str], Dict[str, ImportInfo]]:
+        """Recursively get all function dependencies and their imports from the method's source code."""
+        all_dependencies = set()
+        all_imports: Dict[str, ImportInfo] = {}
+
+        try:
+            source = inspect.getsource(method)
+            all_methods = inspect.getmembers(class_obj, predicate=inspect.isfunction)
+            method_names = [name for name, _ in all_methods]
+
+            # Get direct dependencies and imports
+            called_methods, imports = cls.analyze_code(source, method_names)
+            all_imports.update(imports)
+
+            # Recursively analyze dependencies
+            for called_method_name in called_methods:
+                if called_method_name != method.__name__:
+                    all_dependencies.add(called_method_name)
+                    called_method = getattr(class_obj, called_method_name)
+                    dep_methods, dep_imports = cls.get_method_dependencies(called_method, class_obj)
+                    all_dependencies.update(dep_methods)
+                    all_imports.update(dep_imports)
+
+            return all_dependencies, all_imports
+        except (TypeError, OSError) as e:
+            logger.warning(f"Could not analyze dependencies for {method.__name__}: {e}")
+            return set(), {}
+
+    @classmethod
+    def get_full_method_source(cls, method_name: str, class_obj: Any, visited: Set[str] = None) -> str:
+        """Get the source code of the method and all its dependencies."""
+        if visited is None:
+            visited = set()
+        if method_name in visited:
+            return ""
+
+        visited.add(method_name)
+        try:
+            method = getattr(class_obj, method_name)
+        except AttributeError as e:
+            logger.error(f"Method {method_name} not found in class: {e}")
+            return f"# Error: Method {method_name} not found in class"
+
+        try:
+            # Get the source and analyze dependencies
+            source = inspect.getsource(method)
+            dependencies, imports = cls.get_method_dependencies(method, class_obj)
+
+            # Build the complete source code starting with imports
+            full_source = []
+
+            # Add imports section
+            if imports:
+                full_source.extend([
+                    "# Required imports",
+                    *[imp_info.to_source() for imp_info in imports.values()],
+                    "\n"
+                ])
+
+            # Add main method
             full_source.extend([
-                f"\n# {'-' * 20} Dependencies {'-' * 20}"
+                f"# {'-' * 20} Main merge method {'-' * 20}",
+                source
             ])
-            for dep_name in dependencies:
-                if dep_name not in visited:
-                    dep_method = getattr(cls, dep_name)
-                    full_source.extend([
-                        f"\n# Dependency: {dep_name}",
-                        inspect.getsource(dep_method)
-                    ])
-                    visited.add(dep_name)
-        return "\n".join(full_source)
-    except (TypeError, OSError) as e:
-        logger.error(f"Failed to get source code for {method_name}: {e}")
-        return f"# Error getting source code for {method_name}: {str(e)}"
 
+            # Add dependencies if any
+            if dependencies:
+                full_source.extend([
+                    f"\n# {'-' * 20} Dependencies {'-' * 20}"
+                ])
+                for dep_name in dependencies:
+                    if dep_name not in visited:
+                        dep_method = getattr(class_obj, dep_name)
+                        full_source.extend([
+                            f"\n# Dependency: {dep_name}",
+                            inspect.getsource(dep_method)
+                        ])
+                        visited.add(dep_name)
 
-def save_merge_method_code(merge_mode: str, model_path: Path, cls: Any) -> None:
-    """Save the merge method code and its dependencies to a file."""
-    try:
-        # Verify that the method exists in the class
-        if not hasattr(cls, merge_mode):
-            raise AttributeError(f"Method '{merge_mode}' not found in class {cls.__name__}")
+            return "\n".join(full_source)
+        except (TypeError, OSError) as e:
+            logger.error(f"Failed to get source code for {method_name}: {e}")
+            return f"# Error getting source code for {method_name}: {str(e)}"
 
-        log_dir = Path(os.getcwd()) if "HydraConfig" not in globals() else Path(HydraConfig.get().runtime.output_dir)
-        merge_code_dir = log_dir / "merge_methods"
-        os.makedirs(merge_code_dir, exist_ok=True)
+    @classmethod
+    def save_merge_method_code(cls, merge_mode: str, model_path: Path, class_obj: Any) -> None:
+        """Save the merge method code and its dependencies to a file if not already saved."""
+        if merge_mode in cls._saved_methods:
+            logger.debug(f"Merge method {merge_mode} already saved in this run, skipping...")
+            return
 
-        # Get the complete source code including dependencies
-        full_source = get_full_method_source(merge_mode, cls)
+        try:
+            if not hasattr(class_obj, merge_mode):
+                raise AttributeError(f"Method '{merge_mode}' not found in class {class_obj.__name__}")
 
-        # Save the merge method code
-        iteration_file_name = model_path.stem
-        code_file_path = merge_code_dir / f"{iteration_file_name}_merge_method.py"
+            # Determine log directory
+            log_dir = Path(os.getcwd()) if "HydraConfig" not in globals() else Path(
+                HydraConfig.get().runtime.output_dir)
+            merge_code_dir = log_dir / "merge_methods"
+            os.makedirs(merge_code_dir, exist_ok=True)
 
-        with open(code_file_path, "w", encoding="utf-8") as f:
-            f.write(f"# Merge method: {merge_mode}\n")
-            f.write(f"# Used in merge: {iteration_file_name}\n")
-            f.write("# This file includes the main merge method and all its dependencies\n\n")
-            f.write(full_source)
+            # Get the complete source code including dependencies
+            full_source = cls.get_full_method_source(merge_mode, class_obj)
+            if not full_source.strip():
+                logger.warning(f"Source code for merge method '{merge_mode}' is empty.")
+                return
 
-        logger.info(f"Saved merge method code to {code_file_path}")
-    except Exception as e:
-        logger.error(f"Failed to save merge method code: {e}")
-        raise  # Re-raise the exception to see the full error trace
+            # Dedent and clean the source code to ensure consistent formatting
+            full_source_cleaned = textwrap.dedent(full_source)
+
+            # Save the merge method code
+            iteration_file_name = model_path.stem
+            code_file_path = merge_code_dir / f"{iteration_file_name}_merge_method.py"
+
+            with open(code_file_path, "w", encoding="utf-8") as f:
+                f.write(f"# Merge method: {merge_mode}\n")
+                f.write(f"# Used in merge: {iteration_file_name}\n")
+                f.write("# This file includes the main merge method and all its dependencies\n\n")
+                f.write(full_source_cleaned)
+
+            logger.info(f"Saved merge method code to {code_file_path}")
+            cls._saved_methods.add(merge_mode)
+
+        except Exception as e:
+            logger.error(f"Failed to save merge method code: {e}")
+            raise
 
 
 # Hotkey behavior

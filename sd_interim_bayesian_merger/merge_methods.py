@@ -2073,11 +2073,12 @@ class MergeMethods:
             ftol: Hyper = 1e-22,
             weight_decay: Hyper = 0.0218,
             min_agreement: Hyper = 0.3,
-            chunk_size: int = 7,  # Increased default chunk size
+            chunk_size: int = 4,  # Will be adjusted based on available memory
+            memory_safety_margin: float = 0.8,  # Fraction of available memory to use
             **kwargs,
     ) -> Tensor | LiftFlag[MergeSpace.DELTA]:
         """
-        Memory-efficient TIES implementation with optimized chunking. See mm_docs
+        Memory-efficient TIES implementation with dynamic chunking based on available GPU memory.
         """
         if not models:
             raise ValueError("At least one model must be provided")
@@ -2086,63 +2087,90 @@ class MergeMethods:
         dtype = models[0].dtype
         total_models = len(models)
 
-        # Try to process more models at once while monitoring memory
-        try:
-            # Initialize accumulators directly on GPU if memory allows
-            accumulated_filtered = []
-            accumulated_signs = []
+        # Calculate adaptive chunk size based on available memory if using CUDA
+        def get_adaptive_chunk_size(sample_model, total_models):
+            if device.type == 'cuda':
+                # Get available memory
+                available_memory = torch.cuda.get_device_properties(device).total_memory
+                free_memory = torch.cuda.memory_allocated(device)
+                usable_memory = (available_memory - free_memory) * memory_safety_margin
 
-            # Process models in chunks
-            for chunk_start in range(0, total_models, chunk_size):
-                chunk_end = min(chunk_start + chunk_size, total_models)
-                chunk_models = models[chunk_start:chunk_end]
+                # Estimate memory needed per model
+                sample_size = sample_model.nelement() * sample_model.element_size()
+                # Account for additional tensors created during processing
+                estimated_overhead = sample_size * 3  # For filtered, signs, and temporary computations
 
-                # Process current chunk
-                chunk_filtered, chunk_signs = MergeMethods._process_model_chunk(
-                    chunk_models,
-                    k=k,
-                    device=device,
-                    dtype=dtype
-                )
+                # Calculate maximum models that can fit in memory
+                max_chunk_size = int(usable_memory / estimated_overhead)
 
-                # Keep results on GPU if memory allows
-                accumulated_filtered.append(chunk_filtered)
-                accumulated_signs.append(chunk_signs)
+                # Ensure chunk size is at least 1 and no more than total models
+                return max(1, min(max_chunk_size, total_models))
+            return chunk_size  # Return default chunk size for CPU
 
-                # Only clear cache if memory pressure is high
-                if torch.cuda.memory_allocated() > 0.8 * torch.cuda.get_device_properties(0).total_memory:
+        # Get adaptive chunk size
+        adaptive_chunk_size = get_adaptive_chunk_size(models[0], total_models)
+
+        # Initialize accumulators
+        accumulated_filtered = []
+        accumulated_signs = []
+
+        # Process models in chunks with adaptive size
+        for chunk_start in range(0, total_models, adaptive_chunk_size):
+            chunk_end = min(chunk_start + adaptive_chunk_size, total_models)
+            chunk_models = models[chunk_start:chunk_end]
+
+            # Monitor memory before processing chunk
+            if device.type == 'cuda':
+                current_memory = torch.cuda.memory_allocated(device)
+                max_memory = torch.cuda.get_device_properties(device).total_memory
+
+                # If memory usage is too high, reduce chunk size
+                if current_memory > max_memory * 0.9:  # 90% memory threshold
+                    adaptive_chunk_size = max(1, adaptive_chunk_size // 2)
+                    print(f"Memory pressure detected. Reducing chunk size to {adaptive_chunk_size}")
                     torch.cuda.empty_cache()
 
-            # Concatenate results
-            filtered_delta = torch.cat(accumulated_filtered, dim=0)
-            signs = torch.cat(accumulated_signs, dim=0)
-
-            # Compute final results
-            final_results = MergeMethods._compute_final_results(
-                filtered_delta,
-                signs,
-                vote_sgn=vote_sgn,
-                min_agreement=min_agreement,
-                weight_decay=weight_decay
+            # Process current chunk
+            chunk_filtered, chunk_signs = MergeMethods._process_model_chunk(
+                chunk_models,
+                k=k,
+                device=device,
+                dtype=dtype
             )
 
-            filtered_delta, param_counts = final_results
+            accumulated_filtered.append(chunk_filtered)
+            accumulated_signs.append(chunk_signs)
 
-        except RuntimeError as e:
-            if "out of memory" in str(e):
-                print(f"Warning: GPU OOM with chunk_size={chunk_size}, falling back to smaller chunks")
-                # Implement fallback to smaller chunk size if needed
-                raise
-            else:
-                raise
+            # Clear cache if memory pressure is high
+            if device.type == 'cuda' and torch.cuda.memory_allocated(device) > 0.8 * max_memory:
+                torch.cuda.empty_cache()
+
+        # Concatenate results
+        filtered_delta = torch.cat(accumulated_filtered, dim=0)
+        signs = torch.cat(accumulated_signs, dim=0)
+
+        # Update chunk size for downstream operations based on current memory state
+        if device.type == 'cuda':
+            adaptive_chunk_size = get_adaptive_chunk_size(filtered_delta, total_models)
+
+        # Compute final results with adaptive chunk size
+        final_results = MergeMethods._compute_final_results(
+            filtered_delta,
+            signs,
+            vote_sgn=vote_sgn,
+            min_agreement=min_agreement,
+            weight_decay=weight_decay
+        )
+
+        filtered_delta, param_counts = final_results
 
         if apply_median <= 0.0:
-            # Model Stock pathway
+            # Model Stock pathway with adaptive chunking
             if apply_stock > 0.0:
                 t = MergeMethods._compute_model_stock_chunked(
                     filtered_delta,
                     cos_eps=cos_eps,
-                    chunk_size=chunk_size
+                    chunk_size=adaptive_chunk_size
                 )
             else:
                 t = 1.0
@@ -2151,13 +2179,13 @@ class MergeMethods:
             param_counts = torch.clamp(param_counts, min=eps)
             result = filtered_delta * t / param_counts
         else:
-            # Geometric median computation with larger chunks
+            # Geometric median computation with adaptive chunks
             result = MergeMethods._compute_geometric_median_chunked(
                 filtered_delta,
                 eps=eps,
                 maxiter=maxiter,
                 ftol=ftol,
-                chunk_size=chunk_size
+                chunk_size=adaptive_chunk_size
             )
 
         return torch.nan_to_num(result, nan=0.0, posinf=0.0, neginf=0.0)

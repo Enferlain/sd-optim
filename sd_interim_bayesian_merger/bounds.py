@@ -21,8 +21,23 @@ class Bounds:
         volatile_hypers = mecha_merge_method.get_volatile_hyper_names()
 
         if cfg.recipe_optimization.enabled:
-            extracted_hypers = utils.get_target_nodes_hypers(cfg.recipe_optimization.recipe_path, cfg.recipe_optimization.optimization_target)
-            optimizable_params = list(extracted_hypers.keys())  # Use keys from extracted_hypers
+            # Extract hyperparameters from target nodes
+            extracted_hypers = utils.get_target_nodes(
+                cfg.recipe_optimization.recipe_path,
+                cfg.recipe_optimization.target_nodes
+            )
+
+            # Get merge method from first target node
+            first_target = cfg.recipe_optimization.target_nodes
+            if isinstance(first_target, list):
+                first_target = first_target[0]
+            merge_mode = extracted_hypers[first_target]['merge_method']
+
+            # Filter through optimizable parameters
+            optimizable_params = utils.OPTIMIZABLE_HYPERPARAMETERS.get(
+                merge_mode,
+                extracted_hypers[first_target]['hypers'].keys()
+            )
         else:
             optimizable_params = utils.OPTIMIZABLE_HYPERPARAMETERS.get(cfg.merge_mode, mecha_merge_method.get_hyper_names())
 
@@ -164,8 +179,23 @@ class Bounds:
         component_order = [c.name for c in cfg.optimization_guide.components]
 
         if cfg.recipe_optimization.enabled:
-            extracted_hypers = utils.get_target_nodes_hypers(cfg.recipe_optimization.recipe_path, cfg.recipe_optimization.optimization_target)
-            optimizable_params = list(extracted_hypers.keys())
+            # Extract hyperparameters from target nodes
+            extracted_hypers = utils.get_target_nodes(
+                cfg.recipe_optimization.recipe_path,
+                cfg.recipe_optimization.target_nodes
+            )
+
+            # Get merge method from first target node
+            first_target = cfg.recipe_optimization.target_nodes
+            if isinstance(first_target, list):
+                first_target = first_target[0]
+            merge_mode = extracted_hypers[first_target]['merge_method']
+
+            # Filter through optimizable parameters
+            optimizable_params = utils.OPTIMIZABLE_HYPERPARAMETERS.get(
+                merge_mode,
+                extracted_hypers[first_target]['hypers'].keys()
+            )
         else:
             optimizable_params = utils.OPTIMIZABLE_HYPERPARAMETERS.get(cfg.merge_mode, mecha_merge_method.get_hyper_names())
 
@@ -192,8 +222,23 @@ class Bounds:
         volatile_hypers = mecha_merge_method.get_volatile_hyper_names()
 
         if cfg.recipe_optimization.enabled:
-            extracted_hypers = utils.get_target_nodes_hypers(cfg.recipe_optimization.recipe_path, cfg.recipe_optimization.optimization_target)
-            optimizable_params = list(extracted_hypers.keys())
+            # Extract hyperparameters from target nodes
+            extracted_hypers = utils.get_target_nodes(
+                cfg.recipe_optimization.recipe_path,
+                cfg.recipe_optimization.target_nodes
+            )
+
+            # Get merge method from first target node
+            first_target = cfg.recipe_optimization.target_nodes
+            if isinstance(first_target, list):
+                first_target = first_target[0]
+            merge_mode = extracted_hypers[first_target]['merge_method']
+
+            # Filter through optimizable parameters
+            optimizable_params = utils.OPTIMIZABLE_HYPERPARAMETERS.get(
+                merge_mode,
+                extracted_hypers[first_target]['hypers'].keys()
+            )
         else:
             optimizable_params = utils.OPTIMIZABLE_HYPERPARAMETERS.get(cfg.merge_mode, mecha_merge_method.get_hyper_names())
 

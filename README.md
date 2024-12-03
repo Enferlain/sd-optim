@@ -27,6 +27,9 @@ Don't expect it to always be in a working state, but I generally try to only pus
 - probably trying optuna first, then hyperactive sometime later
 - more that I can't remember or will randomly come up with
 
+To use, install a working commit as an extension for a1111 on forge, and launch bayesian_merger.py while the webui is running. 
+For now you can configure what hypers to optimize in utils.py, the rest is in config.yaml, and custom bounds in guide.yaml.
+
 wip text
 
 -----------

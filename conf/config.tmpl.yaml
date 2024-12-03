@@ -29,9 +29,9 @@ model_arch: sdxl  # specify model architecture (sd1, sdxl, sd3, flux)
 save_merge_method_code: False # Utility for easier tracking of method changes (True to enable)
 
 recipe_optimization:
-  enabled: False  # Enable/disable the feature
+  enabled: False # Enable/disable the feature
   recipe_path: path/to/recipe.mecha
-  optimization_target:  # Merge node identifier or hyperparameter names
+  target_nodes: '&1' # Optimize the hypers at selected nodes. Example: '&2' or ['&3', '&4']
 
 optimizer:
   bayes: True               # Enable Bayesian optimization

@@ -59,6 +59,38 @@ basically project A onto B, optionally using C as the foundational base to creat
 2. Project the A diff onto the orthogonal base of model B
 3. Add onto model B
 
+## ties_sum_extended
+
+#### Parameters:
+    models (Tensor | LiftFlag[MergeSpace.DELTA]):
+        The models to merge. Each model is expected to be a tensor with the same
+        shape. At least one model must be provided.
+    k (Hyper, default=0.218):
+        The proportion of parameters to retain during the filtering process. 
+        A value between 0 and 1.
+    vote_sgn (Hyper, default=0.0):
+        Threshold for parameter sign agreement in voting mechanisms.
+    apply_stock (Hyper, default=0.0):
+        Indicates whether to apply the model stock adjustment. A value > 0 applies the stock.
+    cos_eps (Hyper, default=1e-6):
+        Small epsilon to avoid division by zero during cosine similarity calculations.
+    apply_median (Hyper, default=1.0):
+        Flag to apply geometric median computation if > 0. Disables stock computation.
+    eps (Hyper, default=1e-6):
+        Small epsilon value to prevent numerical instability.
+    maxiter (Hyper, default=150):
+        Maximum number of iterations for geometric median computation.
+    ftol (Hyper, default=1e-22):
+        Tolerance for the geometric median optimization convergence.
+    weight_decay (Hyper, default=0.0218):
+        Decay rate for parameter adjustments during the merging process.
+    min_agreement (Hyper, default=0.3):
+        Minimum parameter agreement ratio required to retain sign consistency.
+    chunk_size (int, default=4):
+        The number of models to process in each chunk for memory efficiency.
+    **kwargs:
+        Additional parameters for future extensions or overrides.
+
 
 ## ties_sum_with_dropout
 

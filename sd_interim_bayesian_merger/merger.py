@@ -78,7 +78,16 @@ class Merger:
     def _create_model_output_name(self, it: int = 0, best: bool = False) -> Path:
         """Generates the output file name for the merged model."""
         model_names = [Path(path).stem for path in self.cfg.model_paths]
-        combined_name = f"{model_names[0]}-{model_names[1]}-{self.cfg.merge_mode}-it_{it}"
+
+        if self.cfg.recipe_optimization.enabled:
+            first_target = self.cfg.recipe_optimization.target_nodes
+            if isinstance(first_target, list):
+                first_target = first_target[0]
+            merge_mode = self.get_merge_mode(first_target)  # Corrected this line
+        else:
+            merge_mode = self.cfg.merge_mode
+
+        combined_name = f"{model_names[0]}-{model_names[1]}-{merge_mode}-it_{it}"
         if best:
             combined_name += f"_best-{self.cfg.precision.lower()}"
         return Path(Path(self.cfg.model_paths[0]).parent, f"bbwm-{combined_name}.safetensors")
@@ -88,6 +97,13 @@ class Merger:
 
     def create_best_model_out_name(self, it: int = 0) -> None:
         self.best_output_file = self._create_model_output_name(it=it, best=True)
+
+    def get_merge_mode(self, target_node: str) -> str:
+        """Extract the merge_mode from the target node."""
+        recipe_path = self.cfg.recipe_optimization.recipe_path
+        target_nodes = [target_node]
+        extracted_hypers = utils.get_target_nodes(recipe_path, target_nodes)
+        return extracted_hypers[target_node]['merge_method']
 
     def _get_expected_num_models(self) -> int:
         mecha_merge_method = sd_mecha.extensions.merge_method.resolve(self.cfg.merge_mode)

@@ -75,8 +75,7 @@ def get_target_nodes(recipe_path: Union[str, pathlib.Path], target_nodes: Union[
     return extracted_hypers
 
 
-def update_recipe(recipe: RecipeNode, target_nodes: Union[str, List[str]],
-                  assembled_params: Dict[str, Any]) -> RecipeNode:
+def update_recipe(recipe: RecipeNode, target_nodes: Union[str, List[str]], assembled_params: Dict[str, Any]) -> RecipeNode:
     """
     Update recipe with new hyperparameters, inserting dict nodes as needed.
 
@@ -94,69 +93,54 @@ def update_recipe(recipe: RecipeNode, target_nodes: Union[str, List[str]],
     # Convert recipe to text form for manipulation
     recipe_lines = sd_mecha.serialize(recipe).split('\n')
 
-    # Track existing dict nodes and their parameters
-    dict_nodes: Dict[int, Dict[str, Any]] = {}
-    dict_lines = [i for i, line in enumerate(recipe_lines) if line.startswith('dict')]
-    for i in dict_lines:
-        dict_nodes[i] = _parse_dict_line(recipe_lines[i])
+    # Prepare new dict lines from assembled_params
+    new_dicts = []
+    for param_set in assembled_params.values():
+        dict_line = _create_dict_line(param_set)
+        new_dicts.append(dict_line)
+
+    # Insert new dict lines at the top
+    recipe_lines = new_dicts + recipe_lines
+
+    # Determine the increment value (number of new dicts inserted)
+    increment = len(new_dicts)
+
+    # Update all references in existing lines
+    recipe_lines = _increment_node_refs(recipe_lines, increment)
+
+    # Create a mapping from param_key to new dict index
+    param_key_to_new_dict_index = {key: idx for idx, key in enumerate(assembled_params.keys())}
 
     # Handle each target node
     for target in target_nodes:
-        node_index = int(target.strip('&'))
+        node_index = int(target.strip('&')) + increment  # Adjust for new dicts
+        if node_index >= len(recipe_lines):
+            continue  # Skip if the node index is out of range after increment
+
         target_line = recipe_lines[node_index]
 
         if not target_line.startswith('merge'):
             continue
 
-        # For each parameter in assembled_params
-        for param_key, param_value in assembled_params.items():
-            current_value = _extract_param_value(target_line, param_key)
-
-            # Handle the case where we need to convert a numeric/string value to a dict
-            if isinstance(param_value, dict):
-                # Check if parameter already references a dict
-                if current_value and current_value.startswith('&'):
-                    # Update existing dict node
-                    dict_index = int(current_value.strip('&'))
-                    if dict_index in dict_nodes:
-                        dict_nodes[dict_index].update(param_value)
-                        recipe_lines[dict_index] = _create_dict_line(dict_nodes[dict_index])
-                else:
-                    # Create new dict node for the parameter
-                    dict_line = _create_dict_line(param_value)
-                    recipe_lines.insert(0, dict_line)
-
-                    # Update all references in the line to account for the new node
-                    parts = target_line.split()
-                    updated_parts = []
-                    for part in parts:
-                        if '=' in part:
-                            key, value = part.split('=', 1)
-                            if value.startswith('&'):
-                                ref_num = int(value[1:])
-                                updated_parts.append(f'{key}=&{ref_num + 1}')
-                            else:
-                                if key == param_key:
-                                    updated_parts.append(f'{key}=&0')
-                                else:
-                                    updated_parts.append(part)
-                        elif part.startswith('&'):
-                            ref_num = int(part[1:])
-                            updated_parts.append(f'&{ref_num + 1}')
-                        else:
-                            updated_parts.append(part)
-                    target_line = ' '.join(updated_parts)
-
-                    # Increment all references in other lines
-                    recipe_lines = [target_line if i == node_index + 1 else line
-                                    for i, line in enumerate(_increment_node_refs(recipe_lines, 1))]
+        # Update parameters in the merge line to reference new dicts
+        parts = target_line.split()
+        for param_key in assembled_params.keys():
+            # Find the parameter position in the merge line
+            for i, part in enumerate(parts):
+                if part.startswith(f'{param_key}='):
+                    # Replace the existing reference with the new dict reference
+                    parts[i] = f'{param_key}=&{param_key_to_new_dict_index[param_key]}'
+                    break
             else:
-                # Handle non-dict parameters
-                target_line = _replace_param_value(target_line, param_key, str(param_value))
-                recipe_lines[node_index] = target_line
+                # If parameter doesn't exist, append it
+                parts.append(f'{param_key}=&{param_key_to_new_dict_index[param_key]}')
+
+        # Update the target line
+        recipe_lines[node_index] = ' '.join(parts)
 
     # Convert back to recipe object
-    return sd_mecha.deserialize(recipe_lines)
+    modified_recipe = sd_mecha.deserialize(recipe_lines)
+    return modified_recipe
 
 def _build_node_map(recipe: RecipeNode) -> Dict[int, RecipeNode]:
     """Build a map of node indices to their corresponding RecipeNode objects."""

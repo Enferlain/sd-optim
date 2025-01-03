@@ -47,25 +47,44 @@ class CardDealer:
                 replacements.append(wildcard_pattern)
         return "".join(replacements)
 
-def assemble_payload(defaults: Dict, payload: Dict) -> Dict:
-    for k, v in defaults.items():
-        if k not in payload.keys():
-            payload[k] = v
-    return payload
 
-def unpack_cargo(cargo: DictConfig) -> Tuple[Dict, Dict]:
+def assemble_payload(defaults: Dict, payload: Dict, webui_type: str) -> Dict:
+    """Assembles payloads differently based on the webui_type."""
+    if webui_type in ["a1111", "forge", "reforge"]: # Handle the structure for a1111-like UIs
+        for k, v in defaults.items():
+            if k not in payload.keys():
+                payload[k] = v
+        return payload
+    elif webui_type == "comfy":
+       for k, v in defaults.items():
+            if k not in payload.keys():
+               payload[k] = { "value": v}
+       return payload
+    elif webui_type == "swarm":
+        for k, v in defaults.items():
+            if k not in payload.keys():
+                payload[k] = { "value": v}
+            else:
+                if "id" not in payload[k]:
+                     payload[k] = { "value": payload[k], "id": k }
+
+        return payload
+    else:
+        raise ValueError(f"Unsupported webui_type: {webui_type}")
+
+
+def unpack_cargo(cargo: DictConfig, webui_type: str) -> Tuple[Dict, Dict]:
     defaults = {}
     payloads = {}
     for k, v in cargo.items():
         if k == "cargo":
-            for p_name, p in v.items():
+           for p_name, p in v.items():
                 payloads[p_name] = OmegaConf.to_container(p)
         elif isinstance(v, (DictConfig, ListConfig)):
             defaults[k] = OmegaConf.to_container(v)
         else:
             defaults[k] = v
     return defaults, payloads
-
 
 @dataclass
 class Prompter:
@@ -77,20 +96,30 @@ class Prompter:
 
     def load_payloads(self) -> None:
         self.raw_payloads = {}
-        defaults, payloads = unpack_cargo(self.cfg.payloads)
+        cargo_file = f"cargo_{self.cfg.webui}.yaml"
+        defaults, payloads = unpack_cargo(self.cfg.payloads.get(cargo_file, self.cfg.payloads), self.cfg.webui)
         for payload_name, payload in payloads.items():
-            self.raw_payloads[payload_name] = assemble_payload(defaults, payload)
+            self.raw_payloads[payload_name] = assemble_payload(defaults, payload, self.cfg.webui)
 
     def render_payloads(self, batch_size: int = 0) -> Tuple[List[Dict], List[str]]:
         payloads = []
         paths = []
         for p_name, p in self.raw_payloads.items():
             for _ in range(batch_size):
-                rendered_payload = p  # Start with the original payload
-                if "__" in p["prompt"]:  # Only process if wildcards are present
-                    rendered_payload = p.copy()  # Create a copy only if needed
+                rendered_payload = p.copy()  # Always create a copy
+                if "__" in p["prompt"]:
                     processed_prompt = self.dealer.replace_wildcards(p["prompt"])
                     rendered_payload["prompt"] = processed_prompt
+
+                # Add alwayson_scripts if vpred_enabled is true
+                if rendered_payload.get("vpred_enabled", False):
+                    extension_name = rendered_payload.get("extension_name", "Forge2 extras")
+                    rendered_payload["alwayson_scripts"] = {
+                        extension_name: {
+                            "args": [True, 0, 0, 0, 0, 'v_prediction']
+                        }
+                    }
+
                 paths.append(p_name)
                 payloads.append(rendered_payload)
         return payloads, paths

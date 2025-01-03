@@ -3,6 +3,7 @@ from omegaconf import DictConfig
 
 from sd_interim_bayesian_merger import ATPEOptimizer, BayesOptimizer, TPEOptimizer
 
+
 @hydra.main(version_base=None, config_path="conf", config_name="config")
 def main(cfg: DictConfig) -> None:
     # Remove the draw_unet_weights and draw_unet_base_alpha block, handled by artist
@@ -19,6 +20,7 @@ def main(cfg: DictConfig) -> None:
     bo = cls(cfg)
     bo.optimize()
     bo.postprocess()
+
 
 if __name__ == "__main__":
     main()

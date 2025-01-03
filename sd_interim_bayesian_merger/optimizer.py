@@ -9,7 +9,7 @@ import logging
 import requests
 
 from hydra.core.hydra_config import HydraConfig
-from omegaconf import DictConfig, open_dict
+from omegaconf import DictConfig, open_dict, OmegaConf
 from tqdm import tqdm
 
 from sd_interim_bayesian_merger.bounds import Bounds
@@ -31,7 +31,7 @@ class Optimizer:
 
     def __post_init__(self) -> None:
         self.bounds_initializer = Bounds()
-        self.generator = Generator(self.cfg.url, self.cfg.batch_size)
+        self.generator = Generator(self.cfg.url, self.cfg.batch_size, self.cfg.webui)
         self.merger = Merger(self.cfg)
         self.scorer = AestheticScorer(self.cfg, {}, {}, {})
         self.prompter = Prompter(self.cfg)
@@ -78,16 +78,16 @@ class Optimizer:
         self.merger.create_model_out_name(self.iteration)
 
         # Unload the currently loaded model
-        r = requests.post(url=f"{self.cfg.url}/bbwm/unload-model?webui={self.cfg.webui}")  # Use query parameter
+        r = requests.post(url=f"{self.cfg.url}/bbwm/unload-model", params={"webui": self.cfg.webui, "url": self.cfg.url})
         r.raise_for_status()
 
-        # Pass the models directory to the merge function
+        # Merge the models using the Merger class
         model_path = self.merger.merge(assembled_params, cfg=self.cfg, device=self.cfg.device, cache=self.cache,
                                        models_dir=Path(self.cfg.model_paths[0]).parent)
 
         # Send a request to the API to load the merged model
         r = requests.post(url=f"{self.cfg.url}/bbwm/load-model",
-                          json={"model_path": str(model_path), "webui": self.cfg.webui})
+                      json={"model_path": str(model_path), "webui": self.cfg.webui, "url": self.cfg.url})
         r.raise_for_status()
 
         # Generate images and score

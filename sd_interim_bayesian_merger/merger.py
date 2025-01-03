@@ -10,7 +10,7 @@ from hydra.core.hydra_config import HydraConfig
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, Optional
-from omegaconf import DictConfig, open_dict
+from omegaconf import DictConfig, open_dict, OmegaConf
 from sd_mecha import recipe_serializer
 from sd_mecha.recipe_nodes import RecipeNode
 
@@ -233,13 +233,13 @@ class Merger:
             models_dir=None,
     ) -> Path:
 
-        r = requests.post(url=f"{self.cfg.url}/bbwm/unload-model?webui={self.cfg.webui}")
+        r = requests.post(url=f"{self.cfg.url}/bbwm/unload-model", params={"webui": self.cfg.webui, "url": self.cfg.url})
         r.raise_for_status()
 
         model_path = self.best_output_file if save_best else self.output_file
         mecha_merge_method = sd_mecha.extensions.merge_method.resolve(self.cfg.merge_mode)
         input_merge_spaces, varargs_merge_space = mecha_merge_method.get_input_merge_spaces()
-        default_hypers = mecha_merge_method.get_default_hypers()
+#        default_hypers = mecha_merge_method.get_default_hypers()
 
         if self.cfg.recipe_optimization.enabled:
             recipe_path = self.cfg.recipe_optimization.recipe_path
@@ -287,5 +287,9 @@ class Merger:
 
         if self.cfg.get("save_merge_method_code", False):
             MergeMethodCodeSaver.save_merge_method_code(self.cfg.merge_mode, model_path, MergeMethods)
+
+        # Add extra keys only if the option is enabled
+        if self.cfg.get("add_extra_keys", False):
+            utils.add_extra_keys(model_path, self.cfg)
 
         return model_path

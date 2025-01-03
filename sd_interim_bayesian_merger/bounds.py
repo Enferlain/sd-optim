@@ -259,7 +259,8 @@ class Bounds:
                 if not selected_blocks:
                     raise ValueError(f"No 'selected_blocks' specified for component '{component_name}'")
                 for param_name, param_values in Bounds._assemble_params_for_selected(
-                        selected_blocks, optimizable_params, volatile_hypers, params
+                        component_config, optimizable_params, volatile_hypers, params
+                        # Pass component_config instead of selected_blocks
                 ).items():
                     assembled_params[param_name] = assembled_params.get(param_name, {})
                     assembled_params[param_name].update(param_values)
@@ -306,7 +307,8 @@ class Bounds:
         for param_name in optimizable_params:
             if param_name not in volatile_hypers:
                 component_params[param_name] = {}
-                for block_id in component_config.selected_blocks:
+                # Iterate through selected blocks correctly
+                for block_id in component_config["selected_blocks"]:
                     key = f"{block_id}_{param_name}"
                     component_params[param_name][block_id] = params.get(key, 0.0)
         return component_params

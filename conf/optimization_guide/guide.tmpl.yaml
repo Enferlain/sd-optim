@@ -1,0 +1,117 @@
+# https://github.com/ljleb/sd-mecha/tree/main/sd_mecha/models
+components:
+  - name: txt            # Component name
+    optimize: group-all  # "all", "selected", "grouped", "group-all", "none"
+    selected_blocks:     # List of block identifiers if "optimize: selected"
+    groups:              # List of lists of block identifiers if "optimize: grouped"
+  - name: txt2
+    optimize: group-all
+    selected_blocks:
+    groups:
+  - name: unet
+    optimize: all
+    selected_blocks:
+    groups:
+
+# ===================================================================
+# Optimization Guide: 'guide.yaml'
+# ===================================================================
+#
+# This file provides configuration options for guiding the optimization
+# process in the Bayesian Merger. It allows you to specify which
+# components and blocks of the model to optimize, how to group them,
+# and set custom ranges and bounds for hyperparameters.
+#
+# Refer to 'bounds.py' for detailed information on how these settings
+# are used during the optimization process.
+#
+
+# ===================================================================
+# Components Configuration
+# ===================================================================
+#
+# 'components': Defines the model components to be optimized and their
+#               optimization strategies.
+#
+# - 'name': The name of the component (e.g., 'txt', 'txt2', 'unet').
+#           Must be a valid component name from the chosen model architecture in config.yaml.
+#           Use the command:
+#           python -m sd_mecha info <model_arch>
+#           to determine the names of the blocks without guessing
+#           (i.e. "sd1", "sdxl", "sd3", "flux")
+# - 'optimize': The optimization strategy for the component.
+#   - 'all': Optimize all blocks within the component. Each hyperparameter
+#            specified in 'custom_bounds' will be optimized independently for each block.
+#            Example: If 'alpha' is in 'custom_bounds', each block will have its own 'alpha'.
+#   - 'selected': Optimize only the specified blocks in 'selected_blocks'. Each
+#                 selected block will have its own set of hyperparameters.
+#   - 'grouped': Optimize groups of blocks, where each group shares the same
+#                hyperparameter values. Groups are defined in the 'groups' list.
+#   - 'group-all': Optimize all blocks within the component as a single group,
+#                  sharing the same hyperparameter values.
+#   - 'none': Do not optimize this component.
+# - 'selected_blocks': (Only for 'optimize: selected')
+#   - A list of block identifiers to optimize.
+#     Example: ['sdxl_unet_block_out0', 'sdxl_unet_block_out1']
+# - 'groups': (Only for 'optimize: grouped')
+#   - A list of lists, where each inner list defines a group of block
+#     identifiers to be optimized together.
+#   - Alternatively, an integer can be used to automatically group
+#     all blocks within the component into the specified number of groups.
+#     Example:
+#       groups:
+#         - ['sdxl_txt2_block_in0', 'sdxl_txt_block_in1']
+#         - ['sdxl_txt2_block_in2', 'sdxl_txt2_block_in3']
+#     Example (automatic grouping):
+#       groups: 3  # Automatically groups all blocks in the component into 3 groups
+#
+# https://github.com/ljleb/sd-mecha/tree/main/sd_mecha/models
+
+# set ranges
+custom_ranges:
+#  sdxl_unet_block_in0: [0.0, 0.5]
+
+# customize bound
+custom_bounds:
+  # Example for della_eps with a range:
+#  della_eps: [-1.0, 1.0]
+
+  # Example for apply_stock with binary values:
+#  apply_stock: [0, 1]
+
+  # Example for maxiter with a custom range:
+#  maxiter: [100, 200]
+
+  # Example for cos_eps with a specific range:
+#  cos_eps: [1e-4, 1e-6]
+
+# ===================================================================
+# Custom Ranges and Bounds
+# ===================================================================
+#
+# 'custom_ranges': Defines custom ranges for specific hyperparameters within
+#                  individual blocks.
+#   - Format: 'block_identifier_hyperparameter: [min, max]'
+#   - This is used to modify the default ranges for specific blocks, which is (0.0, 1.0) for all blocks.
+#   - Example: 'sdxl_unet_block_in0_alpha: [0.1, 0.5]'
+#
+# 'custom_bounds': Defines custom bounds for hyperparameters that apply
+#                  globally across all matching keys, unless overridden by
+#                  'custom_ranges' for specific blocks.
+#   - Format: 'hyperparameter: [min, max]' or 'hyperparameter: value'
+#     - For range bounds: '[min, max]' specifies the minimum and maximum values.
+#     - For binary bounds: '[0, 1]' restricts the parameter to values 0 or 1.
+#     - For a fixed value: 'value' sets the parameter to a constant value.
+#   - This is used to set specific boundaries or fixed values for hyperparameters
+#     across the entire model or for specific merge methods.
+#   - Note: 'custom_bounds' will apply these bounds to all hyperparameters that
+#     match the name, unlike 'custom_ranges' which only affects specific blocks.
+#     If a hyperparameter is defined in both 'custom_ranges' and 'custom_bounds',
+#     the setting in 'custom_ranges' takes precedence for the specified block.
+#   - Example: 'alpha: [0.0, 1.0]' sets the bounds for 'alpha' across all blocks
+#     unless overridden by 'custom_ranges'.
+#   - Example: 'probability: [0.85, 0.98]' sets a custom range for 'probability'.
+#   - Example: 'apply_median: [0, 1]' restricts 'apply_median' to binary values (0 or 1).
+#   - Example: 'maxiter: 150' fixes the 'maxiter' parameter to a constant value of 150.
+#
+# Refer to 'bounds.py' for implementation details of 'custom_ranges' and 'custom_bounds'.

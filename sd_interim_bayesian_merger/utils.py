@@ -3,18 +3,21 @@ import json
 import os
 import pathlib
 import textwrap
-
+import torch
+import safetensors.torch
 import sd_mecha
 import logging
 import ast
+import torch
+import yaml
 import threading
 
 from pathlib import Path
 from typing import List, Tuple, Dict, Set, Union, Any, ClassVar, Optional
 from dataclasses import field, dataclass
 
-import yaml
 from hydra.core.hydra_config import HydraConfig
+from omegaconf import DictConfig
 from pynput import keyboard
 from copy import deepcopy
 
@@ -31,7 +34,7 @@ OPTIMIZABLE_HYPERPARAMETERS = {
     "orth_pro": ["alpha"],
     "clyb_merge": ["alpha"],
     "ties_sum_extended": ["k"],
-    "streaming_ties_sum_extended": ["k", "min_agreement"],
+    "streaming_ties_sum_extended": ["k"],
     "ties_sum_with_dropout": ["probability", "della_eps", "k", "rescale"],
     "slerp_norm_sign": ["alpha"],
     "polar_interpolate": ["alpha"],
@@ -73,7 +76,6 @@ def get_target_nodes(recipe_path: Union[str, pathlib.Path], target_nodes: Union[
                 }
 
     return extracted_hypers
-
 
 def update_recipe(recipe: RecipeNode, target_nodes: Union[str, List[str]], assembled_params: Dict[str, Any]) -> RecipeNode:
     """
@@ -475,6 +477,24 @@ class MergeMethodCodeSaver:
         except Exception as e:
             logger.error(f"Failed to save merge method code: {e}")
             raise
+
+
+### Add keys to models
+def add_extra_keys(
+    model_path: Path
+) -> None:
+    """Loads a model, adds 'v_pred' and 'ztsnr' keys with empty tensors to its state dictionary, and saves it.
+
+    Args:
+        model_path: Path to the merged model file.
+        cfg: The project configuration.
+    """
+    state_dict = safetensors.torch.load_file(model_path)
+    state_dict["v_pred"] = torch.tensor([])
+    state_dict["ztsnr"] = torch.tensor([])
+    logger.info("Added 'v_pred' and 'ztsnr' keys to state_dict.")
+    safetensors.torch.save_file(state_dict, model_path)
+    logger.info(f"Saved model with additional keys to: {model_path}")
 
 
 # Hotkey behavior

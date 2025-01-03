@@ -17,14 +17,13 @@ from dataclasses import dataclass
 from enum import Enum, auto
 from scipy.linalg import sqrtm
 from scipy.stats import binom, rankdata
-from sd_mecha.merge_methods.svd import torch_complex_dtype_map
 from torch import Tensor, polar
+from torch.utils import checkpoint
 from typing import Optional, Callable, Dict, Tuple, TypeVar, Generic, get_type_hints, get_origin, Union, get_args, List, Set, Iterable
 from pytorch_wavelets import DWTForward, DWTInverse
 from sd_mecha import Hyper, MergeSpace
 from sd_mecha.merge_methods import SameMergeSpace
 from sd_mecha.extensions.merge_method import LiftFlag, convert_to_recipe
-from torchvision.models.video import S3D
 
 EPSILON = 1e-10
 
@@ -102,6 +101,54 @@ class MergeMethods:
         return sd_mecha.ties_sum_extended(*models, k=k, apply_stock=apply_stock, apply_median=apply_median, eps=eps, ftol=ftol, maxiter=maxiter, **kwargs)
 
     ### CUSTOM METHODS ###
+
+    @staticmethod
+    @convert_to_recipe
+    def weighted_sum_out(
+            a: Tensor | SameMergeSpace,
+            b: Tensor | SameMergeSpace,
+            *,
+            alpha: Hyper = 0.0,
+            **kwargs,
+    ) -> Tensor | SameMergeSpace:
+        key = kwargs.get("key", "")  # Get the key from kwargs
+
+        # Check if the key matches the last four layers
+        if key in {
+            "model.diffusion_model.out.0.bias",
+            "model.diffusion_model.out.0.weight",
+            "model.diffusion_model.out.2.bias",
+            "model.diffusion_model.out.2.weight",
+        }:
+            # Perform the weighted sum for these specific layers
+            return (1 - alpha) * a + alpha * b
+        else:
+            # Return 'a' for all other keys
+            return a
+
+    @staticmethod
+    @convert_to_recipe
+    def weighted_sum_0(
+            a: Tensor | SameMergeSpace,
+            b: Tensor | SameMergeSpace,
+            *,
+            alpha: Hyper = 0.0,  # to 0 out non-selected blocks
+            **kwargs,
+    ) -> Tensor | SameMergeSpace:
+        return (1 - alpha) * a + alpha * b
+
+    @staticmethod
+    @convert_to_recipe
+    def parallel_component(
+            a: Tensor | SameMergeSpace,
+            b: Tensor | SameMergeSpace,
+            **kwargs,
+    ) -> Tensor | SameMergeSpace:
+        norm_a = torch.linalg.norm(a)
+        res = a * (a / norm_a * (b / norm_a)).sum()
+        if res.isnan().any():
+            return torch.zeros_like(a)
+        return res
 
     @staticmethod
     @convert_to_recipe(volatile_hypers=["cache"])
@@ -246,9 +293,9 @@ class MergeMethods:
             alpha: Hyper = 0.5,
             beta: Hyper = 0.5,
             kernel_size: int = 3,
-            centroid_margin_factor: float = 0.08,
-            frequency_weight: float = 0.4,
-            use_cross_attention: bool = True,
+            centroid_margin_factor: Hyper = 0.08,
+            frequency_weight: Hyper = 0.4,
+            use_cross_attention: float = 1.0,
             **kwargs,
     ) -> Tensor | SameMergeSpace:
         try:
@@ -266,7 +313,8 @@ class MergeMethods:
                 freq_aligned_b = torch.utils.checkpoint.checkpoint(
                     MergeMethods.frequency_selective_alignment,
                     a, b, c,
-                    centroid_margin_factor
+                    centroid_margin_factor,
+                    use_reentrant=False
                 )
 
                 # Step 2: Spatial domain processing
@@ -277,10 +325,11 @@ class MergeMethods:
                 freq_aligned_b_2d = freq_aligned_b.reshape(*shape_2d)
 
                 # Calculate importance weights using cross-attention if enabled
-                if use_cross_attention and min(shape_2d) > 1:
+                if use_cross_attention > 0 and min(shape_2d) > 1:
                     importance_weights = torch.utils.checkpoint.checkpoint(
                         MergeMethods.calculate_cross_attention,
-                        a_2d.detach(), b_2d.detach(), c_2d.detach()
+                        a_2d.detach(), b_2d.detach(), c_2d.detach(),
+                        use_reentrant=False
                     )
                 else:
                     importance_weights = torch.ones_like(a_2d)
@@ -288,7 +337,8 @@ class MergeMethods:
                 # Calculate dissimilarity with anchor using checkpointing
                 dissimilarity = torch.utils.checkpoint.checkpoint(
                     MergeMethods.calculate_dissimilarity,
-                    a_2d.detach(), b_2d.detach(), c_2d.detach()
+                    a_2d.detach(), b_2d.detach(), c_2d.detach(),
+                    use_reentrant = False
                 )
 
                 dissimilarity = MergeMethods.gaussian_blur(dissimilarity, kernel_size)
@@ -1240,12 +1290,17 @@ class MergeMethods:
             a: Tensor | SameMergeSpace,
             b: Tensor | SameMergeSpace,
             *,
-            alpha: Hyper = 0.5,
+            alpha: Hyper = 0.0,
             corr_threshold: Hyper = 0.5,
+            early_exit_on_zero: bool = True,  # New flag
             cache: Optional[Dict[str, Dict[str, Tensor]]] = None,
             **kwargs,
     ) -> Tensor | SameMergeSpace:
         key = kwargs.get("key", "")
+
+        # Early exit if alpha is 0.0 and the flag is True
+        if early_exit_on_zero and alpha == 0.0:
+            return a
 
         if cache is not None:
             if key not in cache:
@@ -1450,7 +1505,7 @@ class MergeMethods:
                     adjusted_alpha = alpha * torch.sigmoid(sim * 0.5)
 
                 # Use polar decomposition with adjusted weight
-                return MergeMethods.polar_decomposition(a, b, adjusted_alpha, cache=cache)
+                return MergeMethods.polar_decomposition(a, b, alpha=adjusted_alpha, cache=cache)
 
             # For key/value projections (different dimensions), focus caching on SVD and transform
             def get_cached_svd(matrix: Tensor, prefix: str) -> Tuple[Tensor, Tensor, Tensor]:
@@ -1546,7 +1601,7 @@ class MergeMethods:
                 adjusted_alpha = alpha * torch.sigmoid(1.0 - kl_div)
 
             # Call polar_decomposition without caching, due to dynamic adjusted_alpha
-            return MergeMethods.polar_decomposition(a, b, adjusted_alpha)
+            return MergeMethods.polar_decomposition(a, b, alpha=adjusted_alpha)
 
     def merge_attention_output(a: Tensor, b: Tensor, alpha: float, key: str,
                                cache: Optional[Dict] = None) -> Tensor:
@@ -1579,7 +1634,7 @@ class MergeMethods:
             adjusted_alpha = alpha * torch.sigmoid(1.0 - stats_diff)
 
         # Call polar_decomposition without caching, due to dynamic adjusted_alpha
-        merged = MergeMethods.polar_decomposition(a, b, adjusted_alpha)
+        merged = MergeMethods.polar_decomposition(a, b, alpha=adjusted_alpha)
 
         # Scale to preserve activation magnitude
         scale_a = torch.norm(out_a) / torch.norm(x)

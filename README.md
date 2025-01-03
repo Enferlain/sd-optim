@@ -10,11 +10,12 @@ Don't expect it to always be in a working state, but I generally try to only pus
 
 ### Stuff that's new:
 - entirely different merge backend [mecha](https://github.com/ljleb/sd-mecha) (everyone say thank you to ljleb for boosting the merge game)
+- optimize merge nodes and existing/new dicts of their parameters inside existing **mecha recipes**
 - pick what components to optimize
 - group/select components/blocks in various ways, customize their bounds
-- new juicer scorer
-- both a1111 and forge support (comfy and swarm eventually)
-- ability to skip during manual scoring
+- new juicer scorer [cityaesthetics](https://github.com/city96/CityClassifiers)
+- both a1111 and forge support (reforge, comfy and swarm soon ish)
+- ability to skip during manual scoring via the **OVERRIDE_SCORE** command
 
 ### Planned:
 - more (and better) visualizations
@@ -25,6 +26,9 @@ Don't expect it to always be in a working state, but I generally try to only pus
 - scoring rethinking, categories, character objective, perceptual similarity metrics(lpips)
 - probably trying optuna first, then hyperactive sometime later
 - more that I can't remember or will randomly come up with
+
+To use, install a working commit as an extension for a1111 on forge, and launch bayesian_merger.py while the webui is running. 
+For now you can configure what hypers to optimize in utils.py, the rest is in config.yaml, and custom bounds in guide.yaml.
 
 wip text
 

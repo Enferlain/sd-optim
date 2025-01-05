@@ -193,7 +193,7 @@ class MergeMethods:
         a_neurons = a.reshape(*shape_2d)
         b_neurons = b.reshape(*shape_2d)
 
-        svd_driver = "gesvd" if a.is_cuda else None
+        svd_driver = "gesvdj" if a.is_cuda else None
 
         # Cache handling
         if cache is not None:
@@ -1292,14 +1292,14 @@ class MergeMethods:
             *,
             alpha: Hyper = 0.0,
             corr_threshold: Hyper = 0.5,
-            early_exit_on_zero: bool = True,  # New flag
+            early_exit: float = 0.0,  # New flag
             cache: Optional[Dict[str, Dict[str, Tensor]]] = None,
             **kwargs,
     ) -> Tensor | SameMergeSpace:
         key = kwargs.get("key", "")
 
-        # Early exit if alpha is 0.0 and the flag is True
-        if early_exit_on_zero and alpha == 0.0:
+        # Early exit if alpha is 0.0 and flag is above 0.0
+        if early_exit > 0.0 and alpha == 0.0:
             return a
 
         if cache is not None:
@@ -1359,7 +1359,8 @@ class MergeMethods:
                 vt = cache[f"{prefix}_vt"].to(device, dtype)
             else:
                 # Calculate and cache SVD components
-                u, s, vt = torch.linalg.svd(matrix, full_matrices=False)
+                svd_driver = "gesvdj" if matrix.is_cuda else "none"
+                u, s, vt = torch.linalg.svd(matrix, full_matrices=False, driver=svd_driver)
                 u_polar = u @ vt  # Pre-compute polar component
 
                 if cache is not None:
@@ -1393,6 +1394,62 @@ class MergeMethods:
         merged_p = torch.lerp(p_a, p_b, alpha)
 
         return (merged_u @ merged_p).reshape(original_shape)
+
+    # def polar_decomposition(a: Tensor, b: Tensor, alpha: float,
+    # regularization_eps: float = 1e-6,
+    # cache: Optional[Dict] = None) -> Tensor:
+    # device = a.device
+    # dtype = a.dtype
+    # original_shape = a.shape
+
+    # if not original_shape:
+    # shape_2d = (1, 1)
+    # elif len(a.shape) == 4:
+    # shape_2d = (-1, functools.reduce(operator.mul, a.shape[1:]))
+    # else:
+    # shape_2d = (-1, a.shape[-1])
+    # a = a.reshape(*shape_2d)
+    # b = b.reshape(*shape_2d)
+
+    # def get_cached_svd(matrix: Tensor, prefix: str) -> Tuple[Tensor, Tensor, Tensor]:
+    # """Helper to handle SVD caching for either matrix."""
+    # if cache is not None and f"{prefix}_polar" in cache:
+    # # Cached polar decomposition available
+    # u_polar = cache[f"{prefix}_polar"].to(device, dtype)
+    # s = cache[f"{prefix}_s"].to(device, dtype)
+    # vt = cache[f"{prefix}_vt"].to(device, dtype)
+    # else:
+    # # Calculate and cache SVD components
+    # svd_driver = "gesvdj" if matrix.is_cuda else "gesvd"
+    # u, s, vt = torch.linalg.svd(matrix, full_matrices=False, driver=driver)
+    # u_polar = u @ vt  # Pre-compute polar component
+
+    # if cache is not None:
+    # cache[f"{prefix}_polar"] = u_polar.to("cpu")
+    # cache[f"{prefix}_s"] = s.to("cpu")
+    # cache[f"{prefix}_vt"] = vt.to("cpu")
+
+    # return u_polar, s, vt
+
+    # # Get decompositions (from cache or compute)
+    # u_a_polar, s_a, vt_a = get_cached_svd(a, "a")
+    # u_b_polar, s_b, vt_b = get_cached_svd(b, "b")
+
+    # # Compute transformation directly
+    # transform = u_a_polar.T @ u_b_polar
+
+    # # Align polar decompositions
+    # u_b_polar_aligned = u_b_polar @ transform
+
+    # # Compute positive semidefinite parts
+    # p_a = vt_a.t() @ torch.diag(s_a + regularization_eps) @ vt_a
+    # p_b = vt_b.t() @ torch.diag(s_b + regularization_eps) @ vt_b
+
+    # # Merge components
+    # merged_u = slerp_unitary_taylor(u_a_polar, u_b_polar_aligned, alpha)
+    # merged_p = torch.lerp(p_a, p_b, alpha)
+
+    # return (merged_u @ merged_p).reshape(original_shape)
 
     def slerp_unitary_taylor(A: Tensor, B: Tensor, alpha: float, num_terms: int = 5) -> Tensor:
         """
@@ -1516,7 +1573,7 @@ class MergeMethods:
                     s = cache[f"{cache_key}_s"].to(device, dtype)
                     vh = cache[f"{cache_key}_vh"].to(device, dtype)
                 else:
-                    svd_driver = "gesvdj" if matrix.is_cuda else "gesvd"
+                    svd_driver = "gesvdj" if matrix.is_cuda else "none"
                     u, s, vh = torch.linalg.svd(matrix, full_matrices=False, driver=svd_driver)
 
                     if cache is not None:
@@ -1594,14 +1651,14 @@ class MergeMethods:
             # Calculate attention similarity and adjusted alpha (not cached)
             with torch.no_grad():
                 x = torch.randn(min(100, a.shape[-1]), a.shape[-1], device=a.device, dtype=a.dtype)
-                attn_a = torch.softmax(x @ a.T / math.sqrt(a.shape[-1]), dim=-1)
-                attn_b = torch.softmax(x @ b.T / math.sqrt(b.shape[-1]), dim=-1)
+                attn_a = torch.softmax(x @ a.mT / math.sqrt(a.shape[-1]), dim=-1)  # Fix: Use .mT
+                attn_b = torch.softmax(x @ b.mT / math.sqrt(b.shape[-1]), dim=-1)  # Fix: Use .mT
 
                 kl_div = F.kl_div(attn_a.log(), attn_b, reduction='batchmean')
                 adjusted_alpha = alpha * torch.sigmoid(1.0 - kl_div)
 
             # Call polar_decomposition without caching, due to dynamic adjusted_alpha
-            return MergeMethods.polar_decomposition(a, b, alpha=adjusted_alpha)
+            return MergeMethods.polar_decomposition(a, b, alpha=adjusted_alpha, cache=cache)
 
     def merge_attention_output(a: Tensor, b: Tensor, alpha: float, key: str,
                                cache: Optional[Dict] = None) -> Tensor:
@@ -1611,7 +1668,7 @@ class MergeMethods:
         """
         with torch.no_grad():
             # Generate sample inputs
-            x = torch.randn(min(512, a.shape[-1]), a.shape[-1], device=a.device)
+            x = torch.randn(min(512, a.shape[-1]), a.shape[-1], device=a.device, dtype=a.dtype)
 
             # Get output representations
             out_a = x @ a.T
@@ -1634,7 +1691,7 @@ class MergeMethods:
             adjusted_alpha = alpha * torch.sigmoid(1.0 - stats_diff)
 
         # Call polar_decomposition without caching, due to dynamic adjusted_alpha
-        merged = MergeMethods.polar_decomposition(a, b, alpha=adjusted_alpha)
+        merged = MergeMethods.polar_decomposition(a, b, alpha=adjusted_alpha, cache=cache)
 
         # Scale to preserve activation magnitude
         scale_a = torch.norm(out_a) / torch.norm(x)
@@ -1988,41 +2045,61 @@ class MergeMethods:
     def get_layer_type(shape, kwargs):
         key = kwargs["key"]
 
-        # Check for attention layers first
-        if any(x in key for x in
-               [".to_q.", ".to_k.", ".to_v.", "self_attn.q_proj", "self_attn.k_proj", "self_attn.v_proj"]):
-            # Add cross-attention check
-            if ".attn2." in key:
-                return MergeMethods.LayerType.CROSS_ATTENTION_QKV
-            return MergeMethods.LayerType.ATTENTION_QKV
-
-        elif any(x in key for x in [".to_out.", "self_attn.out_proj"]) and ".bias" in key:
-            return MergeMethods.LayerType.OFFSET
-
-        # Feed Forward Network (FFN)
-        elif ".ff.net." in key and ".proj." in key:
-            return MergeMethods.LayerType.FFN_PROJ
-        elif ".ff.net." in key and ".weight" in key:
-            return MergeMethods.LayerType.FFN_OUT
-        elif ".ff.net." in key and ".bias" in key:
+        # Prioritize checks for bias and other specific types
+        if key.endswith(".bias") or "bias" in key:
             return MergeMethods.LayerType.OFFSET
 
         # Layer Norms
-        elif ".norm" in key:
+        elif any(x in key for x in [".norm", "layer_norm", "ln_final", "ln_1", "ln_2", "layer_norm1", "layer_norm2",
+                                    "final_layer_norm"]) or "norm" in key:
+            return MergeMethods.LayerType.SCALAR
+
+        # Scalar Layer (like `logit_scale` in CLIP models)
+        elif "logit_scale" in key:
             return MergeMethods.LayerType.SCALAR
 
         # True embeddings (vocabulary mappings)
         elif "token_embedding" in key or "shared.weight" in key:
             return MergeMethods.LayerType.EMBEDD
 
-        # Treat other embedding-like layers as matrix transformations
+        # Check for attention layers first
+        elif any(x in key for x in
+                 [".to_q.", ".to_k.", ".to_v.", "self_attn.q_proj", "self_attn.k_proj", "self_attn.v_proj",
+                  ".in_proj_"]):
+            # Add cross-attention check
+            if ".attn2." in key:
+                return MergeMethods.LayerType.CROSS_ATTENTION_QKV
+            return MergeMethods.LayerType.ATTENTION_QKV
+
+        # Attention Projection (output projection in both CLIP-G and CLIP-L)
+        elif any(x in key for x in [".to_out.", "self_attn.out_proj"]) and ".weight" in key:
+            return MergeMethods.LayerType.ATTENTION_PROJ
+
+        # Feed Forward Network (FFN) in Stable Diffusion layers
+        elif ".ff.net." in key and ".proj." in key:
+            return MergeMethods.LayerType.FFN_PROJ
+        elif ".ff.net." in key and ".weight" in key:
+            return MergeMethods.LayerType.FFN_OUT
+
+        # Feed Forward Network (FFN) in CLIP-G and CLIP-L
+        #        elif "mlp.c_fc" in key and ".weight" in key:
+        #            return MergeMethods.LayerType.FFN_PROJ
+        #        elif "mlp.c_proj" in key and ".weight" in key:
+        #            return MergeMethods.LayerType.FFN_OUT
+        #        elif "mlp.fc1" in key and ".weight" in key:
+        #            return MergeMethods.LayerType.FFN_PROJ
+        #        elif "mlp.fc2" in key and ".weight" in key:
+        #            return MergeMethods.LayerType.FFN_OUT
+
+        # Matrix Transformation for Embedding-Like Layers (positional embeddings, projections)
         elif any(x in key for x in ["positional_embedding", "text_projection", "label_emb"]):
             return MergeMethods.LayerType.MATMUL
 
-        # Your existing fallbacks
+        # Convolutional Layers
         elif len(shape) == 4:
             return MergeMethods.LayerType.CONV2D
 
+        # Default to matrix transformations
         return MergeMethods.LayerType.MATMUL
 
     class LayerType(enum.Enum):

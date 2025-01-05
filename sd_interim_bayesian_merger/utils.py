@@ -242,6 +242,29 @@ def _increment_node_refs(lines: List[str], increment: int) -> List[str]:
         updated_lines.append(' '.join(parts))
     return updated_lines
 
+def traverse_recipe(node: RecipeNode) -> List[RecipeNode]:
+    """Traverses the recipe tree and yields all nodes."""
+    yield node
+    if isinstance(node, MergeRecipeNode):
+        for model in node.models:
+            yield from traverse_recipe(model)
+
+def get_model_names_from_recipe(recipe: RecipeNode) -> List[str]:
+    """Extracts model names from a recipe."""
+    model_names = []
+    for node in traverse_recipe(recipe):
+        if isinstance(node, ModelRecipeNode):
+            # Extract model name from path, handling potential None
+            model_name = Path(node.path).stem if node.path else "unknown_model"
+            model_names.append(model_name)
+    return model_names
+
+def get_merge_mode(recipe_path: Union[str, Path], target_node: str) -> str:
+    """Extract the merge_mode from the target node in a recipe."""
+    target_nodes = [target_node]
+    extracted_hypers = get_target_nodes(recipe_path, target_nodes)  # Use existing get_target_nodes
+    return extracted_hypers[target_node]['merge_method']
+
 
 ### Custom sorting function that uses component order from config ###
 def custom_sort_key(key, component_order):

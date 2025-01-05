@@ -77,16 +77,23 @@ class Merger:
 
     def _create_model_output_name(self, it: int = 0, best: bool = False) -> Path:
         """Generates the output file name for the merged model."""
-        model_names = [Path(path).stem for path in self.cfg.model_paths]
-
         if self.cfg.recipe_optimization.enabled:
-            first_target = self.cfg.recipe_optimization.target_nodes
-            if isinstance(first_target, list):
-                first_target = first_target[0]
-            merge_mode = self.get_merge_mode(first_target)  # Corrected this line
+            recipe_path = self.cfg.recipe_optimization.recipe_path
+
+            # Get model names from the recipe using the utility function
+            recipe = sd_mecha.deserialize(recipe_path)
+            model_names = utils.get_model_names_from_recipe(recipe)
+
+            # Use utility function to get merge mode
+            target_node_key = self.cfg.recipe_optimization.target_nodes
+            if isinstance(target_node_key, list):
+                target_node_key = target_node_key[0]
+            merge_mode = utils.get_merge_mode(recipe_path, target_node_key)
         else:
+            model_names = [Path(path).stem for path in self.cfg.model_paths]
             merge_mode = self.cfg.merge_mode
 
+        # Use only the first two model names for the combined name
         combined_name = f"{model_names[0]}-{model_names[1]}-{merge_mode}-it_{it}"
         if best:
             combined_name += f"_best-{self.cfg.precision.lower()}"
@@ -97,13 +104,6 @@ class Merger:
 
     def create_best_model_out_name(self, it: int = 0) -> None:
         self.best_output_file = self._create_model_output_name(it=it, best=True)
-
-    def get_merge_mode(self, target_node: str) -> str:
-        """Extract the merge_mode from the target node."""
-        recipe_path = self.cfg.recipe_optimization.recipe_path
-        target_nodes = [target_node]
-        extracted_hypers = utils.get_target_nodes(recipe_path, target_nodes)
-        return extracted_hypers[target_node]['merge_method']
 
     def _get_expected_num_models(self) -> int:
         mecha_merge_method = sd_mecha.extensions.merge_method.resolve(self.cfg.merge_mode)
@@ -223,6 +223,8 @@ class Merger:
         )
         logging.info(f"Merged model using sd-mecha.")
 
+
+
     def merge(
             self,
             assembled_params: Dict,
@@ -257,12 +259,23 @@ class Merger:
                 default_device=device or self.cfg.device,  # Use passed device or default from config
             )
 
-            merger.merge_and_save(
-                modified_recipe,
-                output=model_path,
-                threads=self.cfg.threads,  # Use threads from config
-                save_dtype=precision_mapping[self.cfg.precision]
-            )
+            # Check if the merge method has 'cache' in its signature
+            merge_method_signature = inspect.signature(mecha_merge_method)
+            if 'cache' in merge_method_signature.parameters:
+                merger.merge_and_save(
+                    modified_recipe,
+                    output=model_path,
+                    threads=self.cfg.threads,
+                    save_dtype=precision_mapping[self.cfg.precision],
+                    cache=cache
+                )
+            else:
+                merger.merge_and_save(
+                    modified_recipe,
+                    output=model_path,
+                    threads=self.cfg.threads,
+                    save_dtype=precision_mapping[self.cfg.precision]
+                )
             logging.info(f"Merged model using sd-mecha recipe.")
 
             self._serialize_and_save_recipe(modified_recipe, model_path)
@@ -290,6 +303,6 @@ class Merger:
 
         # Add extra keys only if the option is enabled
         if self.cfg.get("add_extra_keys", False):
-            utils.add_extra_keys(model_path, self.cfg)
+            utils.add_extra_keys(model_path)
 
         return model_path

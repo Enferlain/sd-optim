@@ -81,9 +81,20 @@ class Optimizer:
         r = requests.post(url=f"{self.cfg.url}/bbwm/unload-model", params={"webui": self.cfg.webui, "url": self.cfg.url})
         r.raise_for_status()
 
-        # Merge the models using the Merger class
-        model_path = self.merger.merge(assembled_params, cfg=self.cfg, device=self.cfg.device, cache=self.cache,
-                                       models_dir=Path(self.cfg.model_paths[0]).parent)
+        # Handle different optimization modes
+        if self.cfg.optimization_mode == "merge":
+            # Perform model merging
+            model_path = self.merger.merge(assembled_params, cfg=self.cfg, device=self.cfg.device, cache=self.cache,
+                                           models_dir=Path(self.cfg.model_paths[0]).parent)
+        elif self.cfg.optimization_mode == "layer_adjust":
+            # Perform color adjustment
+            model_path = self.merger.layer_adjust(assembled_params, self.cfg)  # Assuming color_adjust returns the path
+        elif self.cfg.optimization_mode == "recipe":
+            # Perform recipe optimization
+            model_path = self.merger.merge(assembled_params, cfg=self.cfg, device=self.cfg.device, cache=self.cache,
+                                           models_dir=Path(self.cfg.model_paths[0]).parent)  # Pass cache for recipe optimization
+        else:
+            raise ValueError(f"Invalid optimization mode: {self.cfg.optimization_mode}")
 
         # Send a request to the API to load the merged model
         r = requests.post(url=f"{self.cfg.url}/bbwm/load-model",
@@ -184,6 +195,10 @@ class Optimizer:
 
             for param_name, param_values in assembled_params.items():
                 f.write(f"Parameter: {param_name}\n")
-                for key, value in param_values.items():
-                    f.write(f"\t{key}: {value}\n")  # Write the nested key-value pairs
-                f.write("\n")
+                if isinstance(param_values, dict):
+                    for key, value in param_values.items():
+                        f.write(f"\t{key}: {value}\n")
+                else:
+                    # Handle non-dictionary values directly
+                    f.write(f"\t{param_name}: {param_values}\n")
+            f.write("\n")

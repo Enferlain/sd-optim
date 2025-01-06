@@ -268,15 +268,22 @@ def get_merge_mode(recipe_path: Union[str, Path], target_node: str) -> str:
 
 ### Custom sorting function that uses component order from config ###
 def custom_sort_key(key, component_order):
-    # Extract the component (txt, txt2, unet, etc.) and parameter from the key
     parts = key.split("_")
-    component = parts[1]  # Assumes component is the second element
 
-    # Determine the index of the component in the order from the config
-    component_index = component_order.index(component) if component in component_order else len(component_order)
-
-    # Apply natural sorting to the rest of the key
-    block_key = "_".join(parts[2:])
+    # Check if the key matches the expected format for layer adjustments
+    if parts[0] in ["detail1", "detail2", "detail3", "contrast", "brightness", "col1", "col2", "col3"]:
+        # Assign a high priority to layer_adjustments by setting component_index to -1
+        component_index = -1
+        block_key = parts[0]  # The parameter name itself is the block key
+    else:
+        # Handle the original format for other keys
+        if len(parts) > 2 and parts[1] in component_order:
+            component_index = component_order.index(parts[1])
+            block_key = "_".join(parts[2:])
+        else:
+            # Default sorting if component not found or key is too short
+            component_index = len(component_order)  # Ensure these keys are sorted last
+            block_key = key
 
     return component_index, sd_mecha.hypers.natural_sort_key(block_key)
 
@@ -518,6 +525,87 @@ def add_extra_keys(
     logger.info("Added 'v_pred' and 'ztsnr' keys to state_dict.")
     safetensors.torch.save_file(state_dict, model_path)
     logger.info(f"Saved model with additional keys to: {model_path}")
+
+
+### Layer tuning
+# --- Constants for Color Adjustments ---
+COLS = [[-1, 1 / 3, 2 / 3], [1, 1, 0], [0, -1, -1], [1, 0, 1]]
+COLSXL = [[0, 0, 1], [1, 0, 0], [-1, -1, 0], [-1, 1, 0]]
+
+# --- Layer Mapping for Adjustments ---
+LAYER_MAPPING = {
+    0: "model.diffusion_model.input_blocks.0.0.weight",
+    1: "model.diffusion_model.input_blocks.0.0.bias",
+    2: "model.diffusion_model.out.0.weight",
+    3: "model.diffusion_model.out.0.bias",
+    4: "model.diffusion_model.out.2.weight",
+    5: "model.diffusion_model.out.2.bias",
+}
+
+# --- Helper Functions ---
+def colorcalc(cols, isxl):
+    colors = COLSXL if isxl else COLS
+    outs = [[y * cols[i] * 0.02 for y in x] for i, x in enumerate(colors)]
+    return [sum(x) for x in zip(*outs)]
+
+def fineman(fine, isxl):
+    if isinstance(fine, str) and fine.find(",") != -1:
+        tmp = [t.strip() for t in fine.split(",")]
+        fines = [0.0] * 8
+        for i, f in enumerate(tmp[0:8]):
+            try:
+                fines[i] = float(f)
+            except ValueError:
+                print(f"Warning: Could not convert '{f}' to float. Using 0.0 instead.")
+                fines[i] = 0.0
+        fine = fines
+    elif not isinstance(fine, list):
+        print("Error: Invalid input type for 'fine'. Expected a comma-separated string or a list.")
+        return None
+
+    fine = [
+        1 - fine[0] * 0.01,
+        1 + fine[0] * 0.02,
+        1 - fine[1] * 0.01,
+        1 + fine[1] * 0.02,
+        1 - fine[2] * 0.01,
+        [fine[3] * 0.02] + colorcalc(fine[4:8], isxl)
+    ]
+    return fine
+
+def weighttoxl(weights):
+    """
+    Possibly converts weights to SDXL format by removing elements 9 to 11 and adding a zero at the end.
+    """
+    if len(weights) >= 22:
+        weights = weights[:9] + weights[12:22] + [0]
+    return weights
+
+def modify_state_dict(state_dict: Dict, adjustments: Dict, is_xl_model: bool) -> Dict:
+    """Modifies the state_dict based on the given adjustments."""
+
+    fine_adjustments = fineman(",".join(map(str, adjustments.values())), is_xl_model)
+
+    if fine_adjustments is None:
+        raise ValueError("Error: Invalid 'fine' string format for fineman function.")
+
+    modified_state_dict = state_dict.copy()
+
+    if is_xl_model:
+        fine_adjustments = weighttoxl(fine_adjustments)
+
+    for index, layer_name in LAYER_MAPPING.items():
+        if layer_name in state_dict:
+            if index < 5:
+                modified_state_dict[layer_name] = state_dict[layer_name] * fine_adjustments[index]
+            else:
+                modified_state_dict[layer_name] = state_dict[layer_name] + torch.tensor(
+                    fine_adjustments[index], dtype=state_dict[layer_name].dtype, device=state_dict[layer_name].device
+                )
+        else:
+            print(f"Warning: Layer '{layer_name}' not found in the state_dict.")
+
+    return modified_state_dict
 
 
 # Hotkey behavior

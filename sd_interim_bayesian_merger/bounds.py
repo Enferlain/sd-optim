@@ -20,7 +20,7 @@ class Bounds:
         mecha_merge_method = sd_mecha.extensions.merge_method.resolve(cfg.merge_mode)
         volatile_hypers = mecha_merge_method.get_volatile_hyper_names()
 
-        if cfg.recipe_optimization.enabled:
+        if cfg.optimization_mode == "recipe":
             # Extract hyperparameters from target nodes
             extracted_hypers = utils.get_target_nodes(
                 cfg.recipe_optimization.recipe_path,
@@ -58,6 +58,9 @@ class Bounds:
                     Bounds._create_bounds_for_group_all(cfg, component_name, optimizable_params, volatile_hypers))
             elif optimization_strategy == "none":
                 logger.info(f"Optimization disabled for component '{component_name}'.")
+            elif optimization_strategy == "layer_adjustments":
+                bounds.update(
+                    Bounds._create_bounds_for_layer_adjustments(component_config))
             else:
                 raise ValueError(f"Invalid optimization strategy: {optimization_strategy}")
 
@@ -107,7 +110,6 @@ class Bounds:
                     component_bounds[group_name] = (0.0, 1.0)
 
         return component_bounds
-
     @staticmethod
     def _create_bounds_for_group_all(cfg, component_name, optimizable_params, volatile_hypers):
         component_bounds = {}
@@ -117,6 +119,29 @@ class Bounds:
                 component_bounds[key] = (0.0, 1.0)
         return component_bounds
 
+    @staticmethod
+    def _create_bounds_for_layer_adjustments(component_config):
+        component_bounds = {}
+        # Check if 'groups' exists and is iterable
+        if "groups" in component_config and isinstance(component_config.groups, (list, ListConfig)):
+            for group in component_config.groups:
+                if all(param_name in component_config.parameters for param_name in group):
+                    group_name = "-".join(group)
+                    component_bounds[group_name] = tuple(component_config.parameters[group[0]])
+                else:
+                    missing_params = [param for param in group if param not in component_config.parameters]
+                    logger.warning(
+                        f"For component '{component_config.name}', the following parameters in group '{group}' are not defined in 'parameters': {missing_params}. This group will be ignored."
+                    )
+        # Handle cases where 'groups' is not defined or is not iterable
+        elif "parameters" in component_config:
+            for param_name, bounds in component_config.parameters.items():
+                component_bounds[param_name] = tuple(bounds)
+        else:
+            logger.warning(
+                f"Neither 'groups' nor 'parameters' are defined properly for component '{component_config.name}'. Skipping.")
+
+        return component_bounds
     @staticmethod
     def validate_custom_bounds(custom_bounds: Dict[str, Union[List[float], List[int], ListConfig, int, float]]) -> Dict:
         """Validates the custom_bounds dictionary."""
@@ -178,7 +203,7 @@ class Bounds:
         volatile_hypers = mecha_merge_method.get_volatile_hyper_names()
         component_order = [c.name for c in cfg.optimization_guide.components]
 
-        if cfg.recipe_optimization.enabled:
+        if cfg.optimization_mode == "recipe":
             # Extract hyperparameters from target nodes
             extracted_hypers = utils.get_target_nodes(
                 cfg.recipe_optimization.recipe_path,
@@ -221,7 +246,7 @@ class Bounds:
         mecha_merge_method = sd_mecha.extensions.merge_method.resolve(cfg.merge_mode)
         volatile_hypers = mecha_merge_method.get_volatile_hyper_names()
 
-        if cfg.recipe_optimization.enabled:
+        if cfg.optimization_mode == "recipe":
             # Extract hyperparameters from target nodes
             extracted_hypers = utils.get_target_nodes(
                 cfg.recipe_optimization.recipe_path,
@@ -246,8 +271,8 @@ class Bounds:
         for component_config in cfg.optimization_guide.components:
             component_name = component_config.name
             optimization_strategy = component_config.optimize
-            groups = component_config.get("groups", [])  # Get groups, default to empty list
-            selected_blocks = component_config.get("selected_blocks", [])  # Get selected_blocks, default to empty list
+            groups = component_config.get("groups", [])
+            selected_blocks = component_config.get("selected_blocks", [])
 
             if optimization_strategy == "all":
                 for param_name, param_values in Bounds._assemble_params_for_all(
@@ -260,7 +285,6 @@ class Bounds:
                     raise ValueError(f"No 'selected_blocks' specified for component '{component_name}'")
                 for param_name, param_values in Bounds._assemble_params_for_selected(
                         component_config, optimizable_params, volatile_hypers, params
-                        # Pass component_config instead of selected_blocks
                 ).items():
                     assembled_params[param_name] = assembled_params.get(param_name, {})
                     assembled_params[param_name].update(param_values)
@@ -276,6 +300,10 @@ class Bounds:
                 ).items():
                     assembled_params[param_name] = assembled_params.get(param_name, {})
                     assembled_params[param_name].update(param_values)
+            elif optimization_strategy == "layer_adjustments":
+                # Directly update assembled_params with the result from _assemble_params_for_layer_adjustments
+                param_values = Bounds._assemble_params_for_layer_adjustments(component_config, params)
+                assembled_params.update(param_values)
             elif optimization_strategy == "none":
                 logger.info(f"Optimization disabled for component '{component_name}' in assemble_params.")
             else:
@@ -283,12 +311,14 @@ class Bounds:
 
         # Sort the assembled parameters within each component
         component_order = [c.name for c in cfg.optimization_guide.components]
+
         for component_name, component_params in assembled_params.items():
-            sorted_component_params = dict(sorted(component_params.items(), key=lambda item: utils.custom_sort_key(item[0], component_order)))
-            assembled_params[component_name] = sorted_component_params
+            if isinstance(component_params, dict):
+                sorted_component_params = dict(
+                    sorted(component_params.items(), key=lambda item: utils.custom_sort_key(item[0], component_order)))
+                assembled_params[component_name] = sorted_component_params
 
         return assembled_params
-
     @staticmethod
     def _assemble_params_for_all(model_arch, component_name, optimizable_params, volatile_hypers, params):
         component_params = {}
@@ -349,4 +379,23 @@ class Bounds:
                 component_params[param_name] = {
                     f"{cfg.model_arch}_{component_name}_default": params.get(key, 0.0)
                 }
+        return component_params
+
+    @staticmethod
+    def _assemble_params_for_layer_adjustments(component_config, params):
+        component_params = {}
+        if "groups" in component_config and isinstance(component_config.groups, (list, ListConfig)):
+            for group in component_config.groups:
+                group_name = "-".join(group)
+                if group_name in params:
+                    # Assign the group value to each parameter in the group
+                    group_value = params[group_name]
+                    for p_name in group:
+                        component_params[p_name] = group_value
+                else:
+                    logger.warning(
+                        f"Group '{group_name}' not found in optimization parameters. Skipping this group.")
+        elif "parameters" in component_config:
+            for param_name in component_config.parameters:
+                component_params[param_name] = params.get(param_name, 0.0)
         return component_params

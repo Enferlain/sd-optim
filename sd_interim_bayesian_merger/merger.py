@@ -5,6 +5,7 @@ import os
 import requests
 import inspect
 import safetensors
+import safetensors.torch
 
 from hydra.core.hydra_config import HydraConfig
 from dataclasses import dataclass
@@ -77,24 +78,37 @@ class Merger:
 
     def _create_model_output_name(self, it: int = 0, best: bool = False) -> Path:
         """Generates the output file name for the merged model."""
-        if self.cfg.recipe_optimization.enabled:
+        if self.cfg.optimization_mode == "recipe":
             recipe_path = self.cfg.recipe_optimization.recipe_path
+            if not recipe_path:
+                raise ValueError("`recipe_path` must be specified when `optimization_mode` is 'recipe'.")
 
-            # Get model names from the recipe using the utility function
             recipe = sd_mecha.deserialize(recipe_path)
             model_names = utils.get_model_names_from_recipe(recipe)
+            if len(model_names) < 2:
+                logger.warning(
+                    f"Recipe '{recipe_path}' contains less than 2 models. Using available model names for file naming."
+                )
+                model_names.extend(["unknown_model"] * (2 - len(model_names)))  # Pad with "unknown_model" if necessary
 
-            # Use utility function to get merge mode
             target_node_key = self.cfg.recipe_optimization.target_nodes
             if isinstance(target_node_key, list):
                 target_node_key = target_node_key[0]
             merge_mode = utils.get_merge_mode(recipe_path, target_node_key)
-        else:
+            combined_name = f"{model_names[0]}-{model_names[1]}-{merge_mode}-it_{it}"
+
+        elif self.cfg.optimization_mode == "layer_adjust":
+            if not self.cfg.model_paths:
+                raise ValueError("`model_paths` must contain at least one model for 'layer_adjust' mode.")
+            model_name = Path(self.cfg.model_paths[0]).stem
+            combined_name = f"layer_adjusted-{model_name}-it_{it}"
+        else:  # Assume "merge" mode
+            if not self.cfg.model_paths or len(self.cfg.model_paths) < 2:
+                raise ValueError("`model_paths` must contain at least two models for 'merge' mode.")
             model_names = [Path(path).stem for path in self.cfg.model_paths]
             merge_mode = self.cfg.merge_mode
+            combined_name = f"{model_names[0]}-{model_names[1]}-{merge_mode}-it_{it}"
 
-        # Use only the first two model names for the combined name
-        combined_name = f"{model_names[0]}-{model_names[1]}-{merge_mode}-it_{it}"
         if best:
             combined_name += f"_best-{self.cfg.precision.lower()}"
         return Path(Path(self.cfg.model_paths[0]).parent, f"bbwm-{combined_name}.safetensors")
@@ -223,8 +237,6 @@ class Merger:
         )
         logging.info(f"Merged model using sd-mecha.")
 
-
-
     def merge(
             self,
             assembled_params: Dict,
@@ -243,7 +255,7 @@ class Merger:
         input_merge_spaces, varargs_merge_space = mecha_merge_method.get_input_merge_spaces()
 #        default_hypers = mecha_merge_method.get_default_hypers()
 
-        if self.cfg.recipe_optimization.enabled:
+        if self.cfg.optimization_mode == "recipe":
             recipe_path = self.cfg.recipe_optimization.recipe_path
             target_nodes = self.cfg.recipe_optimization.target_nodes
             recipe = recipe_serializer.deserialize(recipe_path)
@@ -306,3 +318,35 @@ class Merger:
             utils.add_extra_keys(model_path)
 
         return model_path
+
+    def layer_adjust(self, assembled_params: Dict, cfg: DictConfig) -> Path:
+        """Loads a model, applies layer adjustments, and saves the modified model."""
+        # Determine model path: use first model from model_paths if not specified
+        if not cfg.model_paths:
+            raise ValueError("No model paths specified for layer adjustment.")
+
+        model_path = Path(cfg.model_paths[0])
+
+        if not model_path.exists():
+            raise FileNotFoundError(f"Model not found at {model_path}")
+
+        # Load the model
+        if model_path.suffix == ".safetensors":
+            state_dict = safetensors.torch.load_file(model_path, device=self.cfg.device)
+        elif model_path.suffix in (".pth", ".pt"):
+            state_dict = torch.load(model_path, map_location=self.cfg.device)
+        else:
+            raise ValueError(f"Unsupported file type: {model_path.suffix}")
+
+        # Determine if the model is an SDXL model
+        is_xl_model = cfg.model_arch == "sdxl"
+
+        # Apply color adjustments
+        modified_state_dict = utils.modify_state_dict(state_dict, assembled_params, is_xl_model)
+
+        # Save the modified model
+        output_path = self.output_file  # You might want to generate a specific name based on parameters
+        safetensors.torch.save_file(modified_state_dict, output_path)
+
+        print(f"Modified model saved to {output_path}")
+        return output_path

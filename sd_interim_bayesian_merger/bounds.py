@@ -142,6 +142,7 @@ class Bounds:
                 f"Neither 'groups' nor 'parameters' are defined properly for component '{component_config.name}'. Skipping.")
 
         return component_bounds
+
     @staticmethod
     def validate_custom_bounds(custom_bounds: Dict[str, Union[List[float], List[int], ListConfig, int, float]]) -> Dict:
         """Validates the custom_bounds dictionary."""
@@ -199,39 +200,43 @@ class Bounds:
                 logger.warning(f"No matching keys found for custom bound '{custom_param}'. Skipping.")
 
         # Log bounds for each hyperparameter on a single line
-        mecha_merge_method = sd_mecha.extensions.merge_method.resolve(cfg.merge_mode)
-        volatile_hypers = mecha_merge_method.get_volatile_hyper_names()
-        component_order = [c.name for c in cfg.optimization_guide.components]
+        if cfg.optimization_mode != "layer_adjust":  # Check optimization mode
+            mecha_merge_method = sd_mecha.extensions.merge_method.resolve(cfg.merge_mode)
+            volatile_hypers = mecha_merge_method.get_volatile_hyper_names()
+            component_order = [c.name for c in cfg.optimization_guide.components]
 
-        if cfg.optimization_mode == "recipe":
-            # Extract hyperparameters from target nodes
-            extracted_hypers = utils.get_target_nodes(
-                cfg.recipe_optimization.recipe_path,
-                cfg.recipe_optimization.target_nodes
-            )
+            if cfg.optimization_mode == "recipe":
+                # Extract hyperparameters from target nodes
+                extracted_hypers = utils.get_target_nodes(
+                    cfg.recipe_optimization.recipe_path,
+                    cfg.recipe_optimization.target_nodes
+                )
 
-            # Get merge method from first target node
-            first_target = cfg.recipe_optimization.target_nodes
-            if isinstance(first_target, list):
-                first_target = first_target[0]
-            merge_mode = extracted_hypers[first_target]['merge_method']
+                # Get merge method from first target node
+                first_target = cfg.recipe_optimization.target_nodes
+                if isinstance(first_target, list):
+                    first_target = first_target[0]
+                merge_mode = extracted_hypers[first_target]['merge_method']
 
-            # Filter through optimizable parameters
-            optimizable_params = utils.OPTIMIZABLE_HYPERPARAMETERS.get(
-                merge_mode,
-                extracted_hypers[first_target]['hypers'].keys()
-            )
-        else:
-            optimizable_params = utils.OPTIMIZABLE_HYPERPARAMETERS.get(cfg.merge_mode, mecha_merge_method.get_hyper_names())
+                # Filter through optimizable parameters
+                optimizable_params = utils.OPTIMIZABLE_HYPERPARAMETERS.get(
+                    merge_mode,
+                    extracted_hypers[first_target]['hypers'].keys()
+                )
+            else:
+                optimizable_params = utils.OPTIMIZABLE_HYPERPARAMETERS.get(cfg.merge_mode,
+                                                                           mecha_merge_method.get_hyper_names())
 
-        for param_name in optimizable_params:  # Iterate over optimizable params
-            if param_name not in volatile_hypers:
-                param_bounds = [
-                    f"{key}: {value}"
-                    for key, value in  sorted(bounds.items(), key=lambda item: utils.custom_sort_key(item[0], component_order))
-                    if f"_{param_name}" in key
-                ]
-                logger.info(f"Bounds for {param_name}: {', '.join(param_bounds)}")
+            for param_name in optimizable_params:
+                if param_name not in volatile_hypers:
+                    param_bounds = [
+                        f"{key}: {value}"
+                        for key, value in
+                        sorted(bounds.items(), key=lambda item: utils.custom_sort_key(item[0], component_order))
+                        if param_name in key and not key.startswith("layer_adjustments")
+                        # make sure we skip layer_adjustments params
+                    ]
+                    logger.info(f"Bounds for {param_name}: {', '.join(param_bounds)}")
 
         return bounds  # Return the final bounds
 

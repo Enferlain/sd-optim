@@ -1,7 +1,10 @@
+import functools
+import gc
 import inspect
 import json
 import os
 import pathlib
+import re
 import textwrap
 import torch
 import safetensors.torch
@@ -13,7 +16,7 @@ import yaml
 import threading
 
 from pathlib import Path
-from typing import List, Tuple, Dict, Set, Union, Any, ClassVar, Optional
+from typing import List, Tuple, Dict, Set, Union, Any, ClassVar, Optional, MutableMapping, Mapping
 from dataclasses import field, dataclass
 
 from hydra.core.hydra_config import HydraConfig
@@ -21,9 +24,11 @@ from omegaconf import DictConfig
 from pynput import keyboard
 from copy import deepcopy
 
-from sd_mecha import recipe_nodes, recipe_serializer
+from sd_mecha import recipe_nodes, recipe_serializer, model_detection
 from sd_mecha.recipe_nodes import RecipeNode, MergeRecipeNode, RecipeVisitor, ModelRecipeNode, ParameterRecipeNode
+from sd_mecha.recipe_merger import RecipeMerger
 from sd_mecha.hypers import Hyper
+from torch import Tensor
 
 logger = logging.getLogger(__name__)
 
@@ -34,13 +39,15 @@ OPTIMIZABLE_HYPERPARAMETERS = {
     "orth_pro": ["alpha"],
     "clyb_merge": ["alpha"],
     "ties_sum_extended": ["k"],
-    "streaming_ties_sum_extended": ["k"],
+    "streaming_ties_sum_extended": ["min_agreement"],
+    "svd_ties_sum_extended": ["k"],
     "ties_sum_with_dropout": ["probability", "della_eps", "k", "rescale"],
     "slerp_norm_sign": ["alpha"],
     "polar_interpolate": ["alpha"],
     "wavelet_packet_merge": ["alpha"],
     "multi_domain_alignment": ["alpha", "beta"],
     "merge_layers": ["alpha"],
+    "model_aware_merge": ["alpha"],
     # ... other methods and their optimizable hyperparameters
 }
 
@@ -288,7 +295,239 @@ def custom_sort_key(key, component_order):
     return component_index, sd_mecha.hypers.natural_sort_key(block_key)
 
 
-### Save mm code
+### Cache for recipes (does it work tho?) ###
+class CacheInjectorVisitor(RecipeVisitor):
+    def __init__(self, cache: Optional[Dict[str, Dict[str, Tensor]]]):
+        self.cache = cache
+
+    def visit_model(self, node: ModelRecipeNode, *args, **kwargs) -> ModelRecipeNode:
+        # Return the original ModelRecipeNode without modification
+        return node
+
+    def visit_parameter(self, node: ParameterRecipeNode, *args, **kwargs) -> ParameterRecipeNode:
+        return node
+
+    def visit_merge(self, node: MergeRecipeNode, *args, **kwargs) -> MergeRecipeNode:
+        # Recursively visit and reconstruct child nodes
+        new_models = [model.accept(self, *args, **kwargs) for model in node.models]
+
+        # Check if the merge method supports caching
+        merge_method_signature = inspect.signature(node.merge_method)
+
+        # Create a copy of volatile_hypers and add cache if supported
+        new_volatile_hypers = node.volatile_hypers.copy()
+        if 'cache' in merge_method_signature.parameters:
+            new_volatile_hypers['cache'] = self.cache
+
+        # Reconstruct the merge node with modified volatile_hypers
+        return MergeRecipeNode(
+            node.merge_method,
+            *new_models,
+            hypers=node.hypers,
+            volatile_hypers=new_volatile_hypers,
+            device=node.device,
+            dtype=node.dtype,
+        )
+
+
+### Recipe merger patch for key merging ###
+class ModelsListVisitor(RecipeVisitor):
+    def __init__(self):
+        self.models = []  # Stores individual ModelRecipeNode objects
+
+    def visit_model(self, node: ModelRecipeNode):
+        self.models.append(node)  # Add single model node
+
+    def visit_merge(self, node: MergeRecipeNode):
+        # Recursively visit child models in merge nodes
+        for model in node.models:
+            model.accept(self)
+
+    def visit_parameter(self, node: ParameterRecipeNode):
+        pass  # Ignore parameters
+
+
+def patch_recipe_merger(merge_keys_config: Dict[str, Any], cfg: DictConfig):
+    """Patches the RecipeMerger.merge_and_save method to enable selective merging."""
+
+    original_merge_and_save = RecipeMerger.merge_and_save
+
+    @functools.wraps(original_merge_and_save)
+    def patched_merge_and_save(
+        self, recipe: sd_mecha.extensions.merge_method.RecipeNodeOrPath, *,
+        output: MutableMapping[str, torch.Tensor] | pathlib.Path | str = "merge",
+        fallback_model: Optional[sd_mecha.Mapping[str, torch.Tensor] | sd_mecha.recipe_nodes.ModelRecipeNode | pathlib.Path | str] = None,
+        save_device: Optional[str] = "cpu",
+        save_dtype: Optional[torch.dtype] = torch.float16,
+        threads: Optional[int] = None,
+        total_buffer_size: int = 2**28,
+        strict_weight_space: bool = True
+    ):
+        # Early exit if merge keys are not enabled
+        if not merge_keys_config or not merge_keys_config.get("enabled", False):
+            print("Merge keys not enabled, using default merge_and_save")
+            return original_merge_and_save(self, recipe, output=output, fallback_model=fallback_model, save_device=save_device, save_dtype=save_dtype, threads=threads, total_buffer_size=total_buffer_size)
+
+        merge_keys = merge_keys_config.get("keys", [])
+        default_behavior = merge_keys_config.get("default_behavior", "keep_a")
+
+        # Resolve the recipe path to a node
+        recipe = sd_mecha.extensions.merge_method.path_to_node(recipe)
+        if recipe.merge_space != sd_mecha.recipe_nodes.MergeSpace.BASE:
+            raise ValueError(f"recipe should be in model merge space, not {str(recipe.merge_space).split('.')[-1]}")
+
+        # Resolve the fallback model path to a node
+        if isinstance(fallback_model, (str, pathlib.Path)):
+            fallback_model = sd_mecha.extensions.merge_method.path_to_node(fallback_model)
+        elif not isinstance(fallback_model, (sd_mecha.recipe_nodes.ModelRecipeNode, Mapping, type(None))):
+            raise ValueError(f"fallback_model should be a simple model or None, not {type(fallback_model)}")
+
+        # Clear model paths cache
+        sd_mecha.extensions.merge_method.clear_model_paths_cache()
+
+        # Determine fallback model node
+        fallback_model_index = merge_keys_config.get("fallback_model_index", 0)
+        models_visitor = ModelsListVisitor()
+        recipe.accept(models_visitor)
+        models_in_recipe = models_visitor.models
+
+        # Validate fallback_model_index
+        if fallback_model_index >= len(models_in_recipe):
+            raise ValueError(
+                f"fallback_model_index {fallback_model_index} is out of range. "
+                f"Recipe only contains {len(models_in_recipe)} models: "
+                f"{[model.path for model in models_in_recipe]}"
+            )
+
+        fallback_model_node = models_in_recipe[fallback_model_index] if len(models_in_recipe) > 0 else None
+
+        # Determine if fallback model is external
+        fallback_is_external = fallback_model_node is not None and fallback_model_node not in recipe
+
+        # ==============================================
+        # Calculate total_files_open based on the models involved
+        # ==============================================
+        total_files_open = (
+            len(models_in_recipe) +
+            int(isinstance(output, (str, pathlib.Path))) +
+            int(fallback_is_external)
+        )
+
+        buffer_size_per_file = total_buffer_size // max(total_files_open, 1)  # Prevent division by zero
+        threads = threads or total_files_open
+
+        # ==============================================
+        # Load state_dicts with calculated buffer size
+        # ==============================================
+        load_input_dicts_visitor = sd_mecha.recipe_merger.LoadInputDictsVisitor(
+            self._RecipeMerger__base_dirs,
+            buffer_size_per_file,
+        )
+        recipe.accept(load_input_dicts_visitor)
+
+        # Load fallback model's state_dict if it's external
+        if fallback_is_external:
+            fallback_model_node.accept(load_input_dicts_visitor)
+            fallback_model = fallback_model_node.state_dict
+        elif fallback_model_node:
+            fallback_model = fallback_model_node.state_dict
+        else:
+            fallback_model = None
+
+        # ==============================================
+        # Rest of selective merging logic
+        # ==============================================
+
+        # Get model configuration
+        model_config = recipe.accept(sd_mecha.model_detection.DetermineConfigVisitor())
+
+        # Normalize output
+        output = self._RecipeMerger__normalize_output_to_dict(
+            output,
+            model_config.get_minimal_dummy_header(),
+            model_config.get_keys_to_merge(),
+            recipe_serializer.serialize(recipe),
+            buffer_size_per_file // threads,
+            save_dtype,
+        )
+
+        # ==============================================
+        # Moved key filtering logic outside the loop
+        # ==============================================
+        def _should_merge_key(key: str, merge_keys: List[str]) -> bool:
+            """Checks if a key should be merged using regex for wildcard patterns."""
+            # Check exclusion first
+            for pattern in merge_keys:
+                if pattern.startswith("!"):
+                    exclusion_pattern = pattern[1:].strip()
+                    # Convert wildcard to regex
+                    regex_pattern = exclusion_pattern.replace(".", r"\.").replace("*", ".*")
+                    if re.fullmatch(regex_pattern, key):
+                        return False  # Skip merge
+
+            # Check inclusion
+            for pattern in merge_keys:
+                if not pattern.startswith("!"):
+                    # Convert wildcard to regex
+                    regex_pattern = pattern.replace(".", r"\.").replace("*", ".*")
+                    if re.fullmatch(regex_pattern, key):
+                        return True  # Merge
+
+            return False  # Default: skip merge
+
+        thread_local_data = threading.local()
+        progress = self._RecipeMerger__tqdm(total=len(model_config.keys()), desc="Merging recipe")
+        with sd_mecha.recipe_merger.ThreadPoolExecutor(max_workers=threads) as executor:
+            futures = []
+            for key in model_config.keys():
+                if not _should_merge_key(key, merge_keys):
+                    if default_behavior == "zero":
+                        print(f"Skipping merge for key: {key}, setting to zero")
+                        shape = model_config.get_shape(key)
+                        if shape is not None:
+                            output[key] = torch.zeros(shape, dtype=save_dtype, device=save_device)
+                        else:
+                            logger.warning(f"Shape not found for key: {key}. Skipping.")
+                        progress.update()
+                        continue
+                    elif default_behavior == "keep_a":
+                        print(f"Skipping merge for key: {key}, keeping original value from model")
+                        try:
+                            if fallback_model is not None:
+                                output[key] = fallback_model[key].to(device=save_device, dtype=save_dtype)
+                            else:
+                                output[key] = recipe.models[0].state_dict[key].to(device=save_device,
+                                                                                  dtype=save_dtype)
+                        except KeyError:
+                            logging.warning(f"Key {key} not found in any model. Skipping.")
+                        progress.update()
+                        continue
+
+                key_merger = model_config.get_key_merger(key, recipe, fallback_model, self._RecipeMerger__default_device, self._RecipeMerger__default_dtype)
+                key_merger = self._RecipeMerger__track_output(key_merger, output, key, save_dtype, save_device)
+                key_merger = self._RecipeMerger__track_progress(key_merger, key, model_config.get_shape(key), progress)
+                key_merger = self._RecipeMerger__wrap_thread_context(key_merger, thread_local_data)
+                futures.append(executor.submit(key_merger))
+
+            for future in sd_mecha.recipe_merger.as_completed(futures):
+                if future.exception() is not None:
+                    for future_to_cancel in futures:
+                        future_to_cancel.cancel()
+                    raise future.exception()
+                future.result()
+
+        progress.close()
+        if isinstance(output, sd_mecha.recipe_merger.OutSafetensorsDict):
+            output.close()
+        recipe.accept(sd_mecha.recipe_merger.CloseInputDictsVisitor())
+
+        gc.collect()
+        torch.cuda.empty_cache()
+
+    RecipeMerger.merge_and_save = patched_merge_and_save
+
+
+### Save merge method code ###
 @dataclass
 class ImportInfo:
     """Store information about imports."""

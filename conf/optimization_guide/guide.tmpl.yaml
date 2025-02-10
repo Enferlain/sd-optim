@@ -12,6 +12,18 @@ components:
     optimize: all
     selected_blocks:
     groups:
+  - name: layer_adjustments
+    optimize: none # "layer_adjustments" or "none"
+    groups:
+    parameters:
+      detail1: [-6, 6]
+      detail2: [-6, 6]
+      detail3: [-6, 6]
+      contrast: [-10, 10]
+      brightness: [-10, 10]
+      col1: [-10, 10]
+      col2: [-10, 10]
+      col3: [-10, 10]
 
 # ===================================================================
 # Optimization Guide: 'guide.yaml'
@@ -69,12 +81,26 @@ components:
 
 # set ranges
 custom_ranges:
-#  sdxl_unet_block_in0: [0.0, 0.5]
+#  sdxl_unet_block_in0: [0.0, 0.0]
+#  sdxl_unet_block_in1: [0.0, 0.0]
+#  sdxl_unet_block_out5: [0.0, 0.0]
+#  sdxl_unet_block_out7: [0.0, 0.0]
+#  sdxl_unet_block_out8: [0.0, 0.0]
+#  block_0_alpha: [0.1, 0.5]
+#  base_alpha: [0.4, 1.0]
 
 # customize bound
 custom_bounds:
+###### not implemented ######
+#  k:
+#    txt: None  # k parameter won't be optimized for txt component
+#    txt2: [ 0.8, 1.0 ]  # k parameter will be optimized for txt2 with these bounds
+
+###### implemented ######
+
+#  probability: None  # probability won't be optimized for any component
   # Example for della_eps with a range:
-#  della_eps: [-1.0, 1.0]
+#  della_eps: [-1, 1]
 
   # Example for apply_stock with binary values:
 #  apply_stock: [0, 1]
@@ -115,3 +141,75 @@ custom_bounds:
 #   - Example: 'maxiter: 150' fixes the 'maxiter' parameter to a constant value of 150.
 #
 # Refer to 'bounds.py' for implementation details of 'custom_ranges' and 'custom_bounds'.
+
+# ===================================================================
+# key filtering - which keys to include or exclude
+# buggy and unfinished and probably removed soon since mecha update has this now
+# ===================================================================
+merge_keys:
+  enabled: False
+  keys: # ! * for wildcards, ! for exclusion
+    - "*.transformer_blocks.*"
+    - "*.proj_in.*"
+    - "*.proj_out.*"
+    - "*.out_layers.*"
+    - "*.in_layers.*"
+    - "*.op.*"
+    - "conditioner.embedders.*"
+    - "!model.diffusion_model.output_blocks.8.0.in_layers.2.weight"
+    - "!model.diffusion_model.output_blocks.8.0.out_layers.3.weight"
+  default_behavior: "keep_a"  # or "keep_a"
+  fallback_model_index: 0
+# ===================================================================
+# layer_adjustments
+# ===================================================================
+    # --- Detail Adjustments ---
+    # Detail adjustments affect the input and output blocks of the diffusion model.
+    # They are applied by multiplying the weights and biases of the respective layers.
+#    detail1: [-6, 6] # IN (Detail/Noise)
+                     # Affects: model.diffusion_model.input_blocks.0.0.weight (multiplied by 1 - value * 0.01)
+                     #          model.diffusion_model.input_blocks.0.0.bias (multiplied by 1 + value * 0.02)
+                     # Recommended range: -6 to 6.
+                     # Positive values decrease the detail in earlier processing.
+                     # Negative values increase the detail in earlier processing.
+#    detail2: [-6, 6] # OUT (Detail/Noise)
+                     # Affects: model.diffusion_model.out.0.weight (multiplied by 1 - value * 0.01)
+                     #          model.diffusion_model.out.0.bias (multiplied by 1 + value * 0.02)
+                     # Recommended range: -6 to 6.
+                     # Positive values decrease the detail in the output.
+                     # Negative values increase the detail in the output.
+
+    # --- Combined Adjustments (Detail, Contrast, Brightness, and Color) ---
+    # These adjustments affect the 'out.2' layer of the diffusion model.
+    # They are applied by adding the calculated adjustment to the weights and biases.
+#    detail3: [-6, 6] # OUT2 (Detail/Noise)
+                     # Affects: model.diffusion_model.out.2.weight (added)
+                     #          model.diffusion_model.out.2.bias (added)
+                     # Recommended range: -6 to 6.
+                     # The adjustment is added to the existing weights and biases.
+                     # It is combined with contrast, brightness, and color adjustments.
+#    contrast: [-10, 10] # Contrast (Contrast/Detail)
+                       # Affects: model.diffusion_model.out.2.weight (added)
+                       #          model.diffusion_model.out.2.bias (added)
+                       # Recommended range: -10 to 10.
+                       # The adjustment is added, influencing contrast and detail.
+#    brightness: [-10, 10] # Brightness (Dark(Minus)-Bright(Plus))
+                         # Affects: model.diffusion_model.out.2.weight (added)
+                         #          model.diffusion_model.out.2.bias (added)
+                         # Recommended range: -10 to 10.
+                         # The adjustment is added, affecting overall brightness.
+#    col1: [-10, 10] # COL1 (Cyan(Minus)-Red(Plus))
+                    # Affects: model.diffusion_model.out.2.weight (added)
+                    #          model.diffusion_model.out.2.bias (added)
+                    # Recommended range: -10 to 10.
+                    # The adjustment is added, shifting the color balance.
+#    col2: [-10, 10] # COL2 (Magenta(Minus)-Green(Plus))
+                    # Affects: model.diffusion_model.out.2.weight (added)
+                    #          model.diffusion_model.out.2.bias (added)
+                    # Recommended range: -10 to 10.
+                    # The adjustment is added, shifting the color balance.
+#    col3: [-10, 10] # COL3 (Yellow(Minus)-Blue(Plus))
+                    # Affects: model.diffusion_model.out.2.weight (added)
+                    #          model.diffusion_model.out.2.bias (added)
+                    # Recommended range: -10 to 10.
+                    # The adjustment is added, shifting the color balance.

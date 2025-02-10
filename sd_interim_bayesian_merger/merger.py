@@ -47,7 +47,33 @@ class Merger:
         self.create_best_model_out_name()
 
     def validate_config(self):
-        required_fields = ['model_paths', 'merge_mode', 'model_arch']
+        if self.cfg.optimization_mode == "merge":
+            if not self.cfg.model_paths or len(self.cfg.model_paths) < 2:
+                raise ValueError(
+                    "For 'merge' mode, 'model_paths' must be a list containing at least two model paths."
+                )
+        elif self.cfg.optimization_mode == "recipe":
+            if not self.cfg.recipe_optimization.recipe_path:
+                raise ValueError(
+                    "For 'recipe' mode, 'recipe_optimization.recipe_path' must be specified."
+                )
+            if not self.cfg.recipe_optimization.target_nodes:
+                raise ValueError(
+                    "For 'recipe' mode, 'recipe_optimization.target_nodes' must be specified."
+                )
+        elif self.cfg.optimization_mode == "layer_adjust":
+            if not self.cfg.model_paths or len(self.cfg.model_paths) < 1:
+                raise ValueError(
+                    "For 'layer_adjust' mode, 'model_paths' must be a list containing at least one model path."
+                )
+        else:
+            raise ValueError(f"Invalid optimization mode: {self.cfg.optimization_mode}")
+
+        # merge_mode is only required for "merge" mode
+        required_fields = ['model_arch']
+        if self.cfg.optimization_mode == "merge":
+            required_fields.append('merge_mode')
+
         missing_fields = [field for field in required_fields if not getattr(self.cfg, field, None)]
         if missing_fields:
             raise ValueError(f"Configuration missing required fields: {', '.join(missing_fields)}")
@@ -110,7 +136,7 @@ class Merger:
             combined_name = f"{model_names[0]}-{model_names[1]}-{merge_mode}-it_{it}"
 
         if best:
-            combined_name += f"_best-{self.cfg.precision.lower()}"
+            combined_name += f"_best-{self.cfg.save_dtype.lower()}"
         return Path(Path(self.cfg.model_paths[0]).parent, f"bbwm-{combined_name}.safetensors")
 
     def create_model_out_name(self, it: int = 0) -> None:
@@ -228,14 +254,72 @@ class Merger:
 
     def _execute_sd_mecha_merge(self, merged_model, model_path):
         """Executes the merge using sd-mecha and saves the model."""
-        recipe_merger = sd_mecha.RecipeMerger(models_dir=Path(self.cfg.model_paths[0]).parent)
+        recipe_merger = sd_mecha.RecipeMerger(
+            models_dir=Path(self.cfg.model_paths[0]).parent,
+            default_dtype=precision_mapping[self.cfg.merge_dtype]
+        )
         recipe_merger.merge_and_save(
             merged_model,
             output=model_path,
             threads=self.cfg.threads,
-            save_dtype=precision_mapping[self.cfg.precision]
+            save_dtype=precision_mapping[self.cfg.save_dtype]
         )
         logging.info(f"Merged model using sd-mecha.")
+
+    def recipe_optimization(
+        self,
+        assembled_params: Dict,
+        model_path: Path,
+        device: Optional[str],
+        cache: Optional[Dict],
+    ) -> Path:
+        """Helper function to handle merging when recipe_optimization is enabled."""
+        recipe_path = self.cfg.recipe_optimization.recipe_path
+        target_nodes = self.cfg.recipe_optimization.target_nodes
+        recipe = recipe_serializer.deserialize(recipe_path)
+
+        # Inject cache into the recipe
+        visitor = utils.CacheInjectorVisitor(cache)
+        modified_recipe = recipe.accept(visitor)
+
+        # Update the target nodes in the modified recipe
+        modified_recipe = utils.update_recipe(
+            modified_recipe,
+            target_nodes,
+            assembled_params
+        )
+
+        # Get merge method from target node
+        target_node_key = self.cfg.recipe_optimization.target_nodes
+        if isinstance(target_node_key, list):
+            target_node_key = target_node_key[0]
+
+        merge_method_name = utils.get_merge_mode(recipe_path, target_node_key)
+        mecha_merge_method = sd_mecha.extensions.merge_method.resolve(merge_method_name)
+
+        # Configure RecipeMerger
+        merger = sd_mecha.RecipeMerger(
+            models_dir=Path(self.cfg.model_paths[0]).parent,
+            default_device=device or self.cfg.device,
+        )
+
+        # Check if the merge method has 'cache' in its signature
+        merge_method_signature = inspect.signature(mecha_merge_method)
+        kwargs = {}
+        if 'cache' in merge_method_signature.parameters:
+            kwargs['cache'] = cache
+
+        merger.merge_and_save(
+            modified_recipe,
+            output=model_path,
+            threads=self.cfg.threads,
+            save_dtype=precision_mapping[self.cfg.save_dtype]
+        )
+        logging.info(f"Merged model using sd-mecha recipe with {merge_method_name} method.")
+
+        self._serialize_and_save_recipe(modified_recipe, model_path)
+
+        return model_path
 
     def merge(
             self,
@@ -253,46 +337,9 @@ class Merger:
         model_path = self.best_output_file if save_best else self.output_file
         mecha_merge_method = sd_mecha.extensions.merge_method.resolve(self.cfg.merge_mode)
         input_merge_spaces, varargs_merge_space = mecha_merge_method.get_input_merge_spaces()
-#        default_hypers = mecha_merge_method.get_default_hypers()
 
         if self.cfg.optimization_mode == "recipe":
-            recipe_path = self.cfg.recipe_optimization.recipe_path
-            target_nodes = self.cfg.recipe_optimization.target_nodes
-            recipe = recipe_serializer.deserialize(recipe_path)
-            modified_recipe = utils.update_recipe(
-                recipe,
-                target_nodes,
-                assembled_params
-            )
-
-            # Configure RecipeMerger with device, threads, and models_dir
-            merger = sd_mecha.RecipeMerger(
-                models_dir=Path(self.cfg.model_paths[0]).parent,  # Use passed models_dir or default
-                default_device=device or self.cfg.device,  # Use passed device or default from config
-            )
-
-            # Check if the merge method has 'cache' in its signature
-            merge_method_signature = inspect.signature(mecha_merge_method)
-            if 'cache' in merge_method_signature.parameters:
-                merger.merge_and_save(
-                    modified_recipe,
-                    output=model_path,
-                    threads=self.cfg.threads,
-                    save_dtype=precision_mapping[self.cfg.precision],
-                    cache=cache
-                )
-            else:
-                merger.merge_and_save(
-                    modified_recipe,
-                    output=model_path,
-                    threads=self.cfg.threads,
-                    save_dtype=precision_mapping[self.cfg.precision]
-                )
-            logging.info(f"Merged model using sd-mecha recipe.")
-
-            self._serialize_and_save_recipe(modified_recipe, model_path)
-
-            return model_path  # Return early
+            return self.recipe_optimization(assembled_params, model_path, device, cache)
 
         requires_base = self._requires_base_model(mecha_merge_method, input_merge_spaces, varargs_merge_space)
         if requires_base:

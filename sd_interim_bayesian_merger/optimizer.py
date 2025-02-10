@@ -17,6 +17,7 @@ from sd_interim_bayesian_merger.generator import Generator
 from sd_interim_bayesian_merger.merger import Merger
 from sd_interim_bayesian_merger.prompter import Prompter
 from sd_interim_bayesian_merger.scorer import AestheticScorer
+from sd_interim_bayesian_merger import utils
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.DEBUG)
@@ -53,6 +54,13 @@ class Optimizer:
         if not self.cfg.optimization_guide.components:
             raise ValueError("No components specified for optimization in the configuration.")
 
+        # Apply the patch for selective merging if enabled in the configuration
+        if self.cfg.optimization_guide.merge_keys.get("enabled", False):
+            utils.patch_recipe_merger(self.cfg.optimization_guide.merge_keys, self.cfg)
+            logger.info("Selective merging enabled. RecipeMerger.merge_and_save patched.")
+        else:
+            logger.info("Selective merging disabled. Using default RecipeMerger.merge_and_save.")
+
         return self.bounds_initializer.get_bounds(
             self.cfg.optimization_guide.custom_ranges,
             self.cfg.optimization_guide.custom_bounds,
@@ -87,12 +95,10 @@ class Optimizer:
             model_path = self.merger.merge(assembled_params, cfg=self.cfg, device=self.cfg.device, cache=self.cache,
                                            models_dir=Path(self.cfg.model_paths[0]).parent)
         elif self.cfg.optimization_mode == "layer_adjust":
-            # Perform color adjustment
-            model_path = self.merger.layer_adjust(assembled_params, self.cfg)  # Assuming color_adjust returns the path
+            model_path = self.merger.layer_adjust(assembled_params, self.cfg)
         elif self.cfg.optimization_mode == "recipe":
-            # Perform recipe optimization
             model_path = self.merger.merge(assembled_params, cfg=self.cfg, device=self.cfg.device, cache=self.cache,
-                                           models_dir=Path(self.cfg.model_paths[0]).parent)  # Pass cache for recipe optimization
+                                           models_dir=Path(self.cfg.model_paths[0]).parent)
         else:
             raise ValueError(f"Invalid optimization mode: {self.cfg.optimization_mode}")
 

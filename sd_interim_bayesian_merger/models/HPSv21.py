@@ -5,7 +5,7 @@ import torch
 from PIL import Image
 from pathlib import Path
 
-class HPSv2Scorer:
+class HPSv21Scorer:
     def __init__(self, model_path: Path, device: str = "cuda"):
         self.device = device
         self.model_path = model_path

@@ -15,13 +15,14 @@ from sd_interim_bayesian_merger.models.Laion import Laion as AES
 from sd_interim_bayesian_merger.models.ImageReward import ImageReward as IMGR
 from sd_interim_bayesian_merger.models.CLIPScore import CLIPScore as CLP
 from sd_interim_bayesian_merger.models.BLIPScore import BLIPScore as BLP
-from sd_interim_bayesian_merger.models.HPSv2 import HPSv2 as HPS
+from sd_interim_bayesian_merger.models.HPSv21 import HPSv21Scorer as HPS
 from sd_interim_bayesian_merger.models.PickScore import PickScore as PICK
 from sd_interim_bayesian_merger.models.WDAes import WDAes as WDA
 from sd_interim_bayesian_merger.models.ShadowScore import ShadowScore as SS
 from sd_interim_bayesian_merger.models.CafeScore import CafeScore as CAFE
 from sd_interim_bayesian_merger.models.NoAIScore import NoAIScore as NOAI
 from sd_interim_bayesian_merger.models.CityAesthetics import CityAestheticsScorer as CITY
+from sd_interim_bayesian_merger.models.AestheticV25 import AestheticV25 as AES25
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO)
@@ -51,7 +52,7 @@ MODEL_DATA = {
         "url": "https://storage.googleapis.com/sfr-vision-language-research/BLIP/models/model_large.pth?raw=true",
         "file_name": "BLIP_Large.safetensors",
     },
-    "hpsv2": {
+    "hpsv21": {
         "url": "https://huggingface.co/xswu/HPSv2/resolve/main/HPS_v2.1_compressed.pt?download=true",
         "file_name": "HPS_v2.1.pt",
     },
@@ -82,6 +83,10 @@ MODEL_DATA = {
     "cityaes": {
         "url": "https://huggingface.co/city96/CityAesthetics/resolve/main/CityAesthetics-Anime-v1.8.safetensors?download=true",
         "file_name": "CityAesthetics-Anime-v1.8.safetensors",
+    },
+    "aestheticv25": {
+        "url": None,  # No direct download needed
+        "file_name": "aesthetic-predictor-v2-5",
     },
 }
 
@@ -156,6 +161,9 @@ class AestheticScorer:
         for evaluator in self.cfg.scorer_method:
             if evaluator in ['manual', 'noai']:
                 continue
+            # Skip download if URL is None
+            if MODEL_DATA[evaluator]["url"] is None:  # Add this check
+                continue  # Aestheticv25 doesn't need downloads
             if not self.model_path[evaluator].is_file():
                 print(f"Downloading {evaluator.upper()} model")
                 url = MODEL_DATA[evaluator]["url"]
@@ -182,13 +190,22 @@ class AestheticScorer:
     def load_models(self) -> None:
         """Initializes models for each evaluator."""
         med_config = Path(self.cfg.scorer_model_dir, "med_config.json")
-        model_loaders = self.get_model_loaders(med_config)  # Get model loader functions here!
+        model_loaders = self.get_model_loaders(med_config)
 
         for evaluator in self.cfg.scorer_method:
-            if evaluator != 'manual':
-                print(f"Loading {self.scorer_model_name[evaluator]}")
-                if evaluator in model_loaders:
-                    self.model[evaluator] = model_loaders[evaluator]()  # Load model using the corresponding function
+            if evaluator == 'manual':
+                continue
+
+            print(f"Loading {self.scorer_model_name[evaluator]}")
+            try:
+                self.model[evaluator] = model_loaders[evaluator]()
+                # Verify model initialization
+                if not hasattr(self.model[evaluator], 'score'):
+                    raise AttributeError(f"{evaluator} missing score method")
+                print(f"Successfully initialized {evaluator}")
+            except Exception as e:
+                logger.error(f"Failed to initialize {evaluator}: {str(e)}")
+                raise RuntimeError(f"Critical model init failure in {evaluator}") from e
 
     # Now place the get_model_loaders method outside load_models
     def get_model_loaders(self, med_config: Path):
@@ -200,12 +217,13 @@ class AestheticScorer:
             "imagereward": lambda: IMGR(self.model_path["imagereward"], med_config, self.cfg.scorer_device["imagereward"]),
             "laion": lambda: AES(self.model_path["laion"], self.model_path['clip'], self.cfg.scorer_device["laion"]),
             "chad": lambda: AES(self.model_path["chad"], self.model_path['clip'], self.cfg.scorer_device["chad"]),
-            "hpsv2": lambda: HPS(self.model_path["hpsv2"], self.cfg.scorer_device["hpsv2"]),
+            "hpsv21": lambda: HPS(self.model_path["hpsv21"], self.cfg.scorer_device["hpsv21"]),
             "pick": lambda: PICK(self.model_path["pick"], self.cfg.scorer_device["pick"]),
             "shadowv2": lambda: SS(self.model_path["shadowv2"], self.cfg.scorer_device["shadowv2"]),
             "cafe": lambda: CAFE(self.model_path["cafe"], self.cfg.scorer_device["cafe"]),
             "noai": lambda: NOAI(self.model_path["noai"]['class'], self.model_path["noai"]['real'], self.model_path["noai"]['anime'], device=self.cfg.scorer_device["noai"]),
             "cityaes": lambda: CITY(self.model_path["cityaes"], self.cfg.scorer_device["cityaes"]),
+            "aestheticv25": lambda: AES25(self.cfg.scorer_device["aestheticv25"]),
         }
 
     def score(self, image: Image.Image, prompt) -> float:

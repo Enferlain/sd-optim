@@ -40,14 +40,15 @@ OPTIMIZABLE_HYPERPARAMETERS = {
     "clyb_merge": ["alpha"],
     "ties_sum_extended": ["k"],
     "streaming_ties_sum_extended": ["min_agreement"],
-    "svd_ties_sum_extended": ["k"],
+    "svd_ties_sum_extended": ["energy_threshold"],
     "ties_sum_with_dropout": ["probability", "della_eps", "k", "rescale"],
     "slerp_norm_sign": ["alpha"],
     "polar_interpolate": ["alpha"],
     "wavelet_packet_merge": ["alpha"],
     "multi_domain_alignment": ["alpha", "beta"],
     "merge_layers": ["alpha"],
-    "model_aware_merge": ["alpha"],
+    "delta_dis": ["magnitude_ratio", "direction_ratio"],
+    "synthetic_fisher_merge": ["noise_scale"],
     # ... other methods and their optimizable hyperparameters
 }
 

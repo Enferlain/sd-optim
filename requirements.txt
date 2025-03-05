@@ -24,3 +24,5 @@ plotly
 omegaconf
 kaleido
 pynput
+aesthetic-predictor-v2-5
+hpsv2

@@ -11,6 +11,8 @@ import math
 import safetensors.torch
 import torch.nn.functional as F
 import numpy as np
+import fnmatch
+import geoopt
 
 from collections import defaultdict
 from dataclasses import dataclass
@@ -104,7 +106,7 @@ class MergeMethods:
 
     @staticmethod
     @convert_to_recipe
-    def weighted_sum_out(
+    def weighted_sum_0(
             a: Tensor | SameMergeSpace,
             b: Tensor | SameMergeSpace,
             *,
@@ -114,13 +116,20 @@ class MergeMethods:
         key = kwargs.get("key", "")  # Get the key from kwargs
 
         # Check if the key matches the last four layers
-        if key in {
-            "model.diffusion_model.out.0.bias",
-            "model.diffusion_model.out.0.weight",
-            "model.diffusion_model.out.2.bias",
-            "model.diffusion_model.out.2.weight",
-        }:
-            # Perform the weighted sum for these specific layers
+        patterns = [
+            "*.norm.*",
+            "*.norm1.*",
+            "*.norm2.*",
+            "*.norm3.*",
+            "*.emb_layers.*",
+            "model.diffusion_model.out.*",
+            "*.conv.*",
+            "*.skip_connection.*",
+            "model.diffusion_model.output_blocks.8.0.out_layers.3.*",
+            "model.diffusion_model.input_blocks.0.0.*",
+        ]
+        if any(fnmatch.fnmatch(key, pattern) for pattern in patterns):
+            print(f"Applying weighted sum with alpha={alpha} for key: {key}")
             return (1 - alpha) * a + alpha * b
         else:
             # Return 'a' for all other keys
@@ -128,7 +137,7 @@ class MergeMethods:
 
     @staticmethod
     @convert_to_recipe
-    def weighted_sum_0(
+    def weighted_sum_01(
             a: Tensor | SameMergeSpace,
             b: Tensor | SameMergeSpace,
             *,
@@ -655,6 +664,486 @@ class MergeMethods:
 
         # Normalize importance scores
         return F.softmax(importance, dim=-1).unsqueeze(-1)
+
+    @staticmethod
+    @convert_to_recipe
+    def opqr_merge(
+            a: Tensor | SameMergeSpace,
+            b: Tensor | SameMergeSpace,
+            *,
+            alpha: Hyper = 0.5,
+            rank_ratio: float = 0.25,
+            epsilon: float = 1e-6,
+            **kwargs
+    ) -> Tensor | SameMergeSpace:
+        """
+        Merges tensors 'a' and 'b' using pivoted QR, projection, and low-rank.
+
+        Version: 1.4 (Corrected projection, pivoted QR, handles CLIP, added tsqr,
+                        fixed return values/pivoting, fixed tsqr, correct conv reshape)
+
+        Args:
+            a: First input tensor.
+            b: Second input tensor.
+            alpha: Interpolation factor.
+            rank_ratio:  The ratio of the dimensions to keep.
+            epsilon: Small value for numerical stability.
+            **kwargs: Keyword arguments, including 'key' for layer identification.
+
+        Returns:
+            Merged tensor, reshaped to original shape of 'a'.
+        """
+        original_shape = a.shape
+        key = kwargs.get("key", "")
+
+        if len(original_shape) <= 1:
+            return (1 - alpha) * a + alpha * b
+
+        # Reshape based on layer type and key
+        if "token_embedding" in key:  # CLIP text embedding
+            a_2d = a
+            b_2d = b
+        elif len(original_shape) == 4:  # Convolutional layers
+            if original_shape[2] == 1 and original_shape[3] == 1:  # 1x1 conv
+                a_2d = a.reshape(original_shape[0], -1)
+                b_2d = b.reshape(original_shape[0], -1)
+            else:  # Assume 3x3 (or other) conv
+                a_2d = a.reshape(original_shape[0], -1)
+                b_2d = b.reshape(original_shape[0], -1)
+
+        elif len(original_shape) == 2:  # Linear layers
+            a_2d = a
+            b_2d = b
+        else:
+            # Fallback for unexpected shapes (shouldn't happen with correct keys)
+            a_2d = a.reshape(original_shape[0], -1)
+            b_2d = b.reshape(original_shape[0], -1)
+
+        def stable_qr(x):
+            col_norms = torch.norm(x, dim=0)
+            _, pivots = torch.sort(col_norms, descending=True)
+            x_pivoted = x[:, pivots]
+
+            if x_pivoted.shape[0] > 4 * x_pivoted.shape[1]:
+                Q, R = MergeMethods.tsqr(x_pivoted, device=x.device)  # Pass device to tsqr
+            else:
+                Q, R = torch.linalg.qr(x_pivoted, mode='reduced')
+
+            sign = torch.sign(torch.diag(R))
+            Q *= sign[None, :]
+            R *= sign[:, None]
+
+            # undo the pivoting
+            inverse_pivots = torch.argsort(pivots)
+
+            # only apply inverse pivots if Q is the correct size.
+            if Q.shape[1] == inverse_pivots.shape[0]:
+                Q = Q[:, inverse_pivots]
+                R = R[inverse_pivots, :]
+            else:
+                print(
+                    f"Warning, Not unpivoting. Input shape: {x.shape} Q shape: {Q.shape}, inverse pivots: {inverse_pivots.shape}")
+
+            return Q, R, pivots
+
+        Qa, Ra, pa = stable_qr(a_2d)
+        diff = b_2d - a_2d
+        projected_diff = Qa @ (Qa.T @ diff)
+
+        Q_diff, R_diff, _ = stable_qr(projected_diff)
+
+        rank = max(1, int(min(projected_diff.shape) * rank_ratio))
+        Q_diff_trunc = Q_diff[:, :rank]
+        R_diff_trunc = R_diff[:rank, :]
+
+        low_rank_diff = Q_diff_trunc @ R_diff_trunc
+
+        merged = a_2d + alpha * low_rank_diff
+
+        return merged.reshape(original_shape)
+
+    def tsqr(x, block_size=1024, device='cpu'):
+        """Tall-Skinny QR decomposition, optimized for tall, skinny matrices."""
+        m, n = x.shape
+        Rs = []
+        Qs = []
+        for i in range(0, m, block_size):
+            xi = x[i:i + block_size, :].to(device)  # Move block to the specified device
+            Qi, Ri = torch.linalg.qr(xi, 'reduced')
+            Rs.append(Ri)
+            Qs.append(Qi)  # collect Qs
+        stacked_R = torch.vstack(Rs).to(device)  # Ensure stacked_R is on the correct device
+        Q_final, R_final = torch.linalg.qr(stacked_R, 'reduced')
+
+        # now we reconstruct, multiplying each Q by the section of Q_final
+        # that corresponds to the *columns* in stacked_R
+        new_Q = []
+
+        # Q_final has dimensions min(m,n) x n
+        # stacked_R has dimensions min(m,n) x n
+        # each Qi has dimensions (block_size or less) x n
+        # each Ri has dimensions n x n
+
+        for Qi in Qs:
+            new_Q.append(Qi @ Q_final[:Qi.shape[1], :])
+        Q_final = torch.vstack(new_Q)  # same number of rows as x
+
+        return Q_final.to(x.device), R_final[:n, :n].to(x.device)  # Return results on the original device
+
+    @staticmethod
+    @convert_to_recipe
+    def delta_dis(
+            *models: Tensor | SameMergeSpace,
+            magnitude_ratio: Hyper = 0.6,
+            direction_ratio: Hyper = 0.75,
+            above_average_ratio: Hyper = 1.2,
+            calibration_value: Hyper = 1.0,
+            **kwargs,
+    ) -> Tensor | SameMergeSpace:
+        """Improved delta disentanglement merge based on WIDEN"""
+
+        def tensor_components(t: Tensor):
+            # Skip 1D tensors (biases, norms)
+            if t.dim() <= 1:
+                return torch.abs(t), torch.sign(t)
+
+            # For multi-dimensional tensors
+            if t.dim() == 4:  # Conv layers
+                mag = torch.norm(t.reshape(t.shape[0], -1), p=2, dim=1)
+            else:  # Linear/embedding
+                mag = torch.norm(t, p=2, dim=1)
+
+            # Safe division
+            mag_expanded = mag.unsqueeze(-1)
+            if t.dim() > 2:
+                for _ in range(t.dim() - 2):
+                    mag_expanded = mag_expanded.unsqueeze(-1)
+
+            dir = t / (mag_expanded + 1e-7)
+            return mag, dir
+
+        def rank_within_model(values: Tensor):
+            # Percentile-based ranking (0-1 range)
+            sorted_idx = torch.argsort(values, dim=0, stable=True)
+            ranks = torch.arange(values.shape[0], device=values.device, dtype=values.dtype) / values.shape[0]
+            result = torch.zeros_like(values)
+            result.scatter_(0, sorted_idx, ranks)
+            return result
+
+        # Process each model
+        components = [tensor_components(model) for model in models]
+        mags, dirs = zip(*components)
+
+        # Rank magnitudes within each model
+        mag_ranks = torch.stack([rank_within_model(torch.abs(m)) for m in mags])
+
+        # Rank directions within each model
+        dir_ranks = torch.stack([
+            rank_within_model(1 - torch.cosine_similarity(
+                d.reshape(d.shape[0], -1),
+                dirs[0].reshape(dirs[0].shape[0], -1),
+                dim=1
+            )) for d in dirs
+        ])
+
+        # Combined weighted ranks
+        combined_ranks = magnitude_ratio * mag_ranks + direction_ratio * dir_ranks
+
+        # Apply calibration (critical step from original WIDEN)
+        avg_ranks = combined_ranks.mean(dim=0, keepdim=True)
+        mask = combined_ranks > (avg_ranks * above_average_ratio)
+        combined_ranks[mask] = calibration_value
+
+        # Final merge with controlled scaling
+        merged = torch.zeros_like(models[0])
+        for i, model in enumerate(models):
+            # Apply weights with proper broadcasting
+            weight_expanded = combined_ranks[i]
+            for _ in range(model.dim() - 1):
+                weight_expanded = weight_expanded.unsqueeze(-1)
+            merged += model * weight_expanded
+
+        # Normalize by sum of weights
+        weight_sum = combined_ranks.sum(dim=0)
+        for _ in range(models[0].dim() - 1):
+            weight_sum = weight_sum.unsqueeze(-1)
+        merged = merged / (weight_sum + 1e-7)
+
+        return merged
+
+    @staticmethod
+    @convert_to_recipe
+    def synthetic_fisher_merge(
+            a: Tensor | SameMergeSpace,
+            b: Tensor | SameMergeSpace,
+            *,
+            num_samples: Hyper = 256,
+            noise_scale: Hyper = 1.5,
+            epsilon: Hyper = 1e-8,
+            use_diverse: float = 1.0,
+            **kwargs
+    ) -> Tensor | SameMergeSpace:
+        """
+        v1.51 Fisher merge using synthetic data with bias mitigation
+
+        Features:
+        - Adversarial noise generation
+        - Entropy maximization
+        - Gradient clipping
+        - Sign alignment
+        """
+        key = kwargs.get("key", "")
+
+        # Handle scalar parameters
+        if a.dim() == 0 or b.dim() == 0:
+            print("Scalar parameter detected, using simple average")
+            return 0.5 * a + 0.5 * b
+
+        # Ensure gradient tracking
+        a = a.detach().clone().requires_grad_(True)
+        b = b.detach().clone().requires_grad_(True)
+
+        if use_diverse == 1.0:
+            synthetic_input = MergeMethods.generate_diverse_input(a, num_samples, a.device).to(dtype=a.dtype)
+        else:
+            # Dimension-aware input generation
+            if a.dim() == 4:  # Conv2D
+                print(f"Conv2D tensor detected: {a.shape}")
+                # For conv layers: [batch, in_channels, kernel_h, kernel_w]
+                synthetic_input = torch.randn(num_samples, a.size(1),
+                                              max(8, a.size(2) * 2), max(8, a.size(3) * 2),
+                                              device=a.device, dtype=a.dtype) * noise_scale
+            elif a.dim() == 2:  # Linear
+                print(f"Linear tensor detected: {a.shape}")
+                # For linear layers: [batch, in_features] - IMPORTANT: Use size(1) not size(0)
+                synthetic_input = torch.randn(num_samples, a.size(1),
+                                              device=a.device, dtype=a.dtype) * noise_scale
+            elif a.dim() == 1:  # Bias
+                print(f"Bias tensor detected: {a.shape}")
+                # For bias terms: [batch, out_features]
+                synthetic_input = torch.randn(num_samples, a.size(0),
+                                              device=a.device, dtype=a.dtype) * noise_scale
+            else:
+                raise ValueError(f"Unsupported dimension {a.dim()}")
+
+        print(f"Generated synthetic input: {synthetic_input.shape}")
+
+        # Safe feature extraction with dimension checking
+        try:
+            if a.dim() == 4:
+                # For conv layers, use proper padding
+                feats_a = F.conv2d(synthetic_input, a, padding=a.size(2) // 2)
+                feats_b = F.conv2d(synthetic_input, b, padding=b.size(2) // 2)
+            elif a.dim() == 2:
+                # Check matrix dimensions
+                if a.size(0) != synthetic_input.size(1):
+                    print(f"Matrix dimension mismatch: {synthetic_input.shape} @ {a.shape}")
+                    # For SDXL transformer weights, we need to handle [out_features, in_features] format
+                    if a.size(1) == synthetic_input.size(1):
+                        # This is correct - we want to multiply with the transpose
+                        feats_a = synthetic_input @ a.t()
+                        feats_b = synthetic_input @ b.t()
+                    else:
+                        # If dimensions still don't match, regenerate with correct size
+                        synthetic_input = MergeMethods.generate_statistical_input(a, num_samples,
+                                                                     a.device) if use_statistical else torch.randn(
+                            num_samples, a.size(1), device=a.device, dtype=a.dtype) * noise_scale
+                        print(f"Regenerated input: {synthetic_input.shape}")
+                        feats_a = synthetic_input @ a.t()
+                        feats_b = synthetic_input @ b.t()
+                else:
+                    feats_a = synthetic_input @ a
+                    feats_b = synthetic_input @ b
+            else:  # Bias terms
+                # For bias, we add the bias to pre-activations
+                feats_a = synthetic_input + a.unsqueeze(0)
+                feats_b = synthetic_input + b.unsqueeze(0)
+        except RuntimeError as e:
+            print(f"Error in feature extraction: {e}")
+            print(f"Falling back to simple average for this tensor")
+            return 0.5 * a.detach() + 0.5 * b.detach()
+
+        print(f"Feature shapes: A={feats_a.shape}, B={feats_b.shape}")
+
+        def compute_fisher_improved(param, feats_a, feats_b, key=""):  # Pass feats_a and feats_b
+            """Enhanced Fisher computation with layer-aware adaptation, dynamic scaling and normalization."""
+            param.grad = None
+
+            with torch.enable_grad():
+
+                # Use feats_a and feats_b to compute pseudo_labels
+                comparison_noise = torch.randn_like(feats_a) * 0.3  # noise must have the same shape as feats_a
+                pseudo_labels = (feats_a > feats_b + comparison_noise).float()  # must have same shape as feats_a and b
+                print(f"Generated {pseudo_labels.sum().item()}/{feats_a.numel()} positive pseudo-labels")
+
+                focal_loss = F.binary_cross_entropy_with_logits(
+                    feats_a,  # [B, ...] Use original features, remove reduction. Same for feats_b
+                    pseudo_labels,  # [B, ...] Use per-element labels
+                    reduction='none'  # Keep per-sample loss, and per-element
+                )
+                loss = focal_loss.mean()  # Average over the batch
+                print(f"Loss: {loss.item():.4f}")
+
+            loss.backward(retain_graph=True)
+            grad = param.grad
+
+            avg_grad_magnitude = torch.mean(torch.abs(grad.detach())).item()
+            if avg_grad_magnitude < 1e-10:  # Increased threshold slightly
+                scale_factor = 1.0
+            else:
+                scale_factor = 1.0 / avg_grad_magnitude
+
+            # Layer-type specific adaptation (Keep as is)
+            layer_scale = 1.0
+            if param.dim() == 4:  # Convolutional layers
+                if 'op' in key or 'skip_connection' in key:
+                    layer_scale = 0.7  # Down-weight skip connections
+                elif 'out.2' in key:  # Final output conv
+                    layer_scale = 1.2
+                else:
+                    layer_scale = 1.2  # Other conv layers
+
+            elif param.dim() == 2:  # Linear layers
+                if 'ff.net' in key:
+                    layer_scale = 1.4 if 'proj' in key else 1.2
+                elif 'attn1' or 'attn2' in key:
+                    layer_scale = 1.6 if 'to_out' in key else 1.5
+                elif 'emb_layers' in key:  # Added emb layers
+                    layer_scale = 0.9
+                elif 'time_embed' in key:  # time embed, linear
+                    layer_scale = 1.0
+                elif 'out.0' in key:
+                    layer_scale = 1.0  # final output block linear
+                else:
+                    layer_scale = 1.0
+
+            elif param.dim() == 1:  # Bias terms
+                if 'norm' in key:
+                    layer_scale = 0.6
+                elif 'time_embed' in key:
+                    layer_scale = 0.8  # time_embed bias
+                else:
+                    layer_scale = 0.8  # Slightly down-weight biases
+
+            # --- Fisher Calculation and Normalization ---
+            fisher = grad.pow(2) * scale_factor * layer_scale
+
+            # Numerical stability (Adjust clamping, potentially making it less aggressive)
+            clamp_min = 0.0  # Fisher should be non-negative
+            clamp_max = 5e2  # Allow higher values for differentiation, though maybe don't need it
+            fisher = torch.clamp(fisher, min=clamp_min, max=clamp_max)  # Keep clamp
+
+            print(
+                f"Layer: {param.shape} | Type: {layer_scale}x | Avg Grad Mag: {avg_grad_magnitude:.4e} | Scale Factor: {scale_factor:.4e} | Fisher Mean: {fisher.mean().item():.4f} ±{fisher.std().item():.4f}")
+
+            return fisher
+
+        def diagonal_rescaling(fisher_diag, param, scaling_factor=1.0):  # CHANGED scaling_factor
+            param_scale = torch.var(param.detach(), dim=0, keepdim=True) + 1e-6
+            rescaled_fisher = fisher_diag / (param_scale * scaling_factor + 1e-6)
+            return rescaled_fisher  # REMOVED max normalization
+
+        print("Computing Fisher information...")
+        fisher_a = compute_fisher_improved(a, feats_a, feats_b, key=key)
+        fisher_b = compute_fisher_improved(b, feats_b, feats_a, key=key)  # FIXED
+
+        # After computing fisher_a and fisher_b
+        fisher_a = diagonal_rescaling(fisher_a, a)
+        fisher_b = diagonal_rescaling(fisher_b, b)
+
+        # Cleanup gradients
+        # Clear gradients more thoroughly
+        def clear_grads(*tensors):
+            for t in tensors:
+                if t.grad is not None:
+                    t.grad.detach_()
+                    t.grad = None
+
+        clear_grads(a, b, synthetic_input)
+
+        sign_mask = (a * b) > 0
+        sign_agreement = sign_mask.float().mean().item() * 100
+        print(f"Sign agreement: {sign_agreement:.1f}%")
+
+        # Adaptive merging with improved weighting
+        raw_weights = fisher_b / (fisher_a + fisher_b + epsilon)
+        clamped_weights = MergeMethods.adaptive_clamp(raw_weights, sign_agreement)
+        weights = torch.where(sign_mask, clamped_weights, 0.5)
+
+        if raw_weights.numel() == 1:
+            print(f"[{key}] Scalar weight: {raw_weights.item():.4f}")
+        else:
+            # Calculate statistics with sampling
+            mean_val = raw_weights.mean().item()
+            std_val = raw_weights.std().item() if raw_weights.numel() > 1 else 0.0
+
+            # Quantile calculation with sampling
+            if raw_weights.numel() > 10000:
+                flat = raw_weights.view(-1)
+                sample = flat[torch.randperm(flat.size(0), device=flat.device)[:10000]]
+                q25, q75 = torch.quantile(sample,
+                                          torch.tensor([0.25, 0.75], device=sample.device, dtype=raw_weights.dtype))
+            else:
+                q25, q75 = torch.quantile(raw_weights, torch.tensor([0.25, 0.75], device=raw_weights.device,
+                                                                    dtype=raw_weights.dtype))
+
+            # Formatting (keep existing)
+            print(f"""
+            Weight Analysis:
+              - Distribution: μ={mean_val:.4f} ±{std_val:.4f}
+              - Quartiles: 25%={q25:.4f} | 75%={q75:.4f}
+              - Range: [{raw_weights.min().item():.4f}, {raw_weights.max().item():.4f}]
+              - Fisher Ratio: {fisher_b.mean().item() / (fisher_a.mean().item() + 1e-8):.2f}
+            """)
+
+        merged = torch.where(sign_mask, (1 - weights) * a + weights * b, 0.5 * (a + b))
+        print("Weights:", weights)
+
+        return merged
+
+    def adaptive_clamp(weights, sign_agreement):
+        agreement = sign_agreement / 100
+        # Allow mild extrapolation for high agreement cases
+        extrapolation_scale = 0.2  # 20% beyond 0-1 at 100% agreement
+
+        lower_bound = 0.0 - extrapolation_scale * agreement ** 3
+        upper_bound = 1.0 + extrapolation_scale * agreement ** 3
+
+        return torch.clamp(weights, lower_bound, upper_bound)
+
+    def generate_diverse_input(param, num_samples=256, device='cuda'):
+        """Generate highly diverse synthetic inputs with multiple modes"""
+        if param.dim() == 4:  # Conv layers
+            n_channels = param.size(1)
+
+            # Create multi-modal distribution (4 distinct clusters)
+            clusters = []
+            for i in range(4):
+                # Each cluster has different mean and variance
+                mean_shift = torch.randn(1, n_channels, 1, 1, device=device) * (i + 1) / 2
+                var_scale = 0.5 + i * 0.5  # Different variance per cluster
+                cluster = torch.randn(num_samples // 4, n_channels,
+                                      max(8, param.size(2) * 2), max(8, param.size(3) * 2),
+                                      device=device) * var_scale + mean_shift
+                clusters.append(cluster)
+
+            return torch.cat(clusters, dim=0)
+
+        elif param.dim() <= 2:  # Linear/bias layers
+            n_features = param.size(-1) if param.dim() == 2 else param.size(0)
+
+            # Create adversarial inputs that maximize differences
+            base = torch.randn(num_samples // 4, n_features, device=device)
+
+            # Create 4 distinct input distributions
+            diverse_inputs = [
+                base,  # Standard normal
+                base * 2.0,  # Scaled inputs
+                torch.sign(base) * torch.abs(base).sqrt(),  # Non-linear transformation
+                torch.sin(base * 3.14159)  # Periodic transformation
+            ]
+
+            return torch.cat(diverse_inputs, dim=0)
 
     @staticmethod
     @convert_to_recipe
@@ -1292,7 +1781,7 @@ class MergeMethods:
             *,
             alpha: Hyper = 0.0,
             corr_threshold: Hyper = 0.5,
-            early_exit: float = 1.0,  # New flag
+            early_exit: float = 0.0,  # New flag
             cache: Optional[Dict[str, Dict[str, Tensor]]] = None,
             **kwargs,
     ) -> Tensor | SameMergeSpace:
@@ -1301,13 +1790,6 @@ class MergeMethods:
         # Early exit if alpha is 0.0 and flag is above 0.0
         if early_exit > 0.0 and alpha == 0.0:
             return a
-
-        if cache is not None:
-            if key not in cache:
-                cache[key] = {}
-            layer_cache = cache[key]
-        else:
-            layer_cache = None
 
         layer_type = MergeMethods.get_layer_type(a.shape, kwargs)
 
@@ -1318,23 +1800,66 @@ class MergeMethods:
         elif layer_type == MergeMethods.LayerType.EMBEDD:
             return MergeMethods.clip_embedding_merge_v3(a, b, alpha=alpha)
         elif layer_type == MergeMethods.LayerType.CROSS_ATTENTION_QKV:
-            return MergeMethods.merge_cross_attention_qkv(a, b, alpha=alpha, key=key, cache=layer_cache)
+            return MergeMethods.merge_cross_attention_qkv(a, b, alpha=alpha, key=key, cache=cache)
         elif layer_type == MergeMethods.LayerType.ATTENTION_QKV:
-            return MergeMethods.merge_self_attention_qkv(a, b, alpha, key=key, cache=layer_cache)
+            return MergeMethods.merge_self_attention_qkv(a, b, alpha, key=key, cache=cache)
         elif layer_type == MergeMethods.LayerType.ATTENTION_PROJ:
-            return MergeMethods.merge_attention_output(a, b, alpha, key=key, cache=layer_cache)
+            return MergeMethods.merge_attention_output(a, b, alpha, key=key, cache=cache)
         elif layer_type == MergeMethods.LayerType.FFN_PROJ:
             return MergeMethods.merge_ffn_proj(a, b, alpha=alpha, key=key)
         elif layer_type == MergeMethods.LayerType.FFN_OUT:
-            return MergeMethods.merge_ffn_out(a, b, alpha=alpha, corr_threshold=corr_threshold, cache=layer_cache)
+            return MergeMethods.merge_ffn_out(a, b, alpha=alpha, corr_threshold=corr_threshold, key=key, cache=cache)
         elif layer_type == MergeMethods.LayerType.MATMUL:
-            return MergeMethods.polar_decomposition(a, b, alpha=alpha, cache=layer_cache)
+            return MergeMethods.polar_decomposition(a, b, alpha=alpha, key=key, cache=cache)
         elif layer_type == MergeMethods.LayerType.CONV2D:
             return MergeMethods.merge_wavelets(a, b, alpha=alpha)
         else:
             return sd_mecha.weighted_sum.__wrapped__(a, b, alpha=alpha)
 
-    def polar_decomposition(a: Tensor, b: Tensor, alpha: float,
+    def cache_svd(key: str, tensor: Tensor, suffix: str, cache: dict) -> tuple[Tensor, Tensor, Tensor]:
+        """Single source of truth for SVD caching using key + suffix"""
+        cache_key = f"{key}_{suffix}"
+
+        if cache is not None and cache_key in cache:
+            cached = cache[cache_key]
+            return cached['u'].to(tensor.device), cached['s'].to(tensor.device), cached['vh'].to(tensor.device)
+
+        # Compute fresh SVD only if not cached
+        svd_driver = "gesvdj" if tensor.is_cuda else "gesvd"
+        u, s, vh = torch.linalg.svd(tensor, full_matrices=False, driver=svd_driver)
+
+        if cache is not None:
+            cache[cache_key] = {
+                'u': u.cpu(),
+                's': s.cpu(),
+                'vh': vh.cpu()
+            }
+
+        return u, s, vh
+
+    def cache_procrustes(
+            key: str,
+            mat_a: Tensor,
+            mat_b: Tensor,
+            cache: Optional[dict],
+            suffix: str = "",
+    ) -> Tensor:
+        """Universal Procrustes alignment cache handler"""
+        device = mat_a.device
+        dtype = mat_a.dtype
+        cache_key = f"{key}_proc{suffix}"
+
+        if cache and cache_key in cache:
+            return cache[cache_key].to(device, dtype)
+
+        R = MergeMethods.orthogonal_procrustes_ml(mat_a, mat_b)
+
+        if cache is not None:
+            cache[cache_key] = R.cpu()
+
+        return R
+
+    def polar_decomposition(a: Tensor, b: Tensor, alpha: float, key: str,
                             regularization_eps: float = 1e-6,
                             cache: Optional[Dict] = None) -> Tensor:
         device = a.device
@@ -1350,106 +1875,29 @@ class MergeMethods:
         a = a.reshape(*shape_2d)
         b = b.reshape(*shape_2d)
 
-        def get_cached_svd(matrix: Tensor, prefix: str) -> Tuple[Tensor, Tensor, Tensor]:
-            """Helper to handle SVD caching for either matrix."""
-            if cache is not None and f"{prefix}_polar" in cache:
-                # Cached polar decomposition available
-                u_polar = cache[f"{prefix}_polar"].to(device, dtype)
-                s = cache[f"{prefix}_s"].to(device, dtype)
-                vt = cache[f"{prefix}_vt"].to(device, dtype)
-            else:
-                # Calculate and cache SVD components
-                svd_driver = "gesvdj" if matrix.is_cuda else "none"
-                u, s, vt = torch.linalg.svd(matrix, full_matrices=False, driver=svd_driver)
-                u_polar = u @ vt  # Pre-compute polar component
+        # Get cached SVDs using GLOBAL CACHE KEYS
+        u_a, s_a, vh_a = MergeMethods.cache_svd(key, a, "a", cache)
+        u_b, s_b, vh_b = MergeMethods.cache_svd(key, b, "b", cache)
 
-                if cache is not None:
-                    cache[f"{prefix}_polar"] = u_polar.to("cpu")
-                    cache[f"{prefix}_s"] = s.to("cpu")
-                    cache[f"{prefix}_vt"] = vt.to("cpu")
-
-            return u_polar, s, vt
-
-        # Get decompositions (from cache or compute)
-        u_a_polar, s_a, vt_a = get_cached_svd(a, "a")
-        u_b_polar, s_b, vt_b = get_cached_svd(b, "b")
+        # Compute polar components (non-cached but derivative of SVD)
+        u_a_polar = u_a @ vh_a
+        u_b_polar = u_b @ vh_b
 
         # Get or compute alignment transform
-        if cache is not None and "transform" in cache:
-            transform = cache["transform"].to(device, dtype)
-        else:
-            transform = MergeMethods.orthogonal_procrustes_ml(u_a_polar, u_b_polar)
-            if cache is not None:
-                cache["transform"] = transform.to("cpu")
+        transform = MergeMethods.cache_procrustes(key, u_a_polar, u_b_polar, cache, suffix="_polar")
 
         # Align polar decompositions
         u_b_polar_aligned = u_b_polar @ transform
 
         # Compute positive semidefinite parts
-        p_a = vt_a.t() @ torch.diag(s_a + regularization_eps) @ vt_a
-        p_b = vt_b.t() @ torch.diag(s_b + regularization_eps) @ vt_b
+        p_a = vh_a.t() @ torch.diag(s_a + regularization_eps) @ vh_a
+        p_b = vh_b.t() @ torch.diag(s_b + regularization_eps) @ vh_b
 
         # Merge components
         merged_u = MergeMethods.slerp_unitary_taylor(u_a_polar, u_b_polar_aligned, alpha)
         merged_p = torch.lerp(p_a, p_b, alpha)
 
         return (merged_u @ merged_p).reshape(original_shape)
-
-    # def polar_decomposition(a: Tensor, b: Tensor, alpha: float,
-    # regularization_eps: float = 1e-6,
-    # cache: Optional[Dict] = None) -> Tensor:
-    # device = a.device
-    # dtype = a.dtype
-    # original_shape = a.shape
-
-    # if not original_shape:
-    # shape_2d = (1, 1)
-    # elif len(a.shape) == 4:
-    # shape_2d = (-1, functools.reduce(operator.mul, a.shape[1:]))
-    # else:
-    # shape_2d = (-1, a.shape[-1])
-    # a = a.reshape(*shape_2d)
-    # b = b.reshape(*shape_2d)
-
-    # def get_cached_svd(matrix: Tensor, prefix: str) -> Tuple[Tensor, Tensor, Tensor]:
-    # """Helper to handle SVD caching for either matrix."""
-    # if cache is not None and f"{prefix}_polar" in cache:
-    # # Cached polar decomposition available
-    # u_polar = cache[f"{prefix}_polar"].to(device, dtype)
-    # s = cache[f"{prefix}_s"].to(device, dtype)
-    # vt = cache[f"{prefix}_vt"].to(device, dtype)
-    # else:
-    # # Calculate and cache SVD components
-    # svd_driver = "gesvdj" if matrix.is_cuda else "gesvd"
-    # u, s, vt = torch.linalg.svd(matrix, full_matrices=False, driver=driver)
-    # u_polar = u @ vt  # Pre-compute polar component
-
-    # if cache is not None:
-    # cache[f"{prefix}_polar"] = u_polar.to("cpu")
-    # cache[f"{prefix}_s"] = s.to("cpu")
-    # cache[f"{prefix}_vt"] = vt.to("cpu")
-
-    # return u_polar, s, vt
-
-    # # Get decompositions (from cache or compute)
-    # u_a_polar, s_a, vt_a = get_cached_svd(a, "a")
-    # u_b_polar, s_b, vt_b = get_cached_svd(b, "b")
-
-    # # Compute transformation directly
-    # transform = u_a_polar.T @ u_b_polar
-
-    # # Align polar decompositions
-    # u_b_polar_aligned = u_b_polar @ transform
-
-    # # Compute positive semidefinite parts
-    # p_a = vt_a.t() @ torch.diag(s_a + regularization_eps) @ vt_a
-    # p_b = vt_b.t() @ torch.diag(s_b + regularization_eps) @ vt_b
-
-    # # Merge components
-    # merged_u = slerp_unitary_taylor(u_a_polar, u_b_polar_aligned, alpha)
-    # merged_p = torch.lerp(p_a, p_b, alpha)
-
-    # return (merged_u @ merged_p).reshape(original_shape)
 
     def slerp_unitary_taylor(A: Tensor, B: Tensor, alpha: float, num_terms: int = 5) -> Tensor:
         """
@@ -1523,7 +1971,7 @@ class MergeMethods:
         device = a.device
         dtype = a.dtype
 
-        # Handle CLIP-G style concatenated QKV
+        # Handle CLIP-G style concatenated QKV (unchanged)
         if "in_proj" in key:
             head_dim = a.shape[0] // 3
             merged_parts = []
@@ -1534,59 +1982,41 @@ class MergeMethods:
                 part_a = a[start:end]
                 part_b = b[start:end]
 
-                # Use polar decomposition for each part with separate cache entries
+                # MODIFIED: Use global cache directly with derived key
                 part_key = f"{key}_part_{i}"
-                part_cache = cache.get(part_key, {}) if cache is not None else None
-                merged = MergeMethods.polar_decomposition(part_a, part_b, alpha, cache=part_cache)
-                if cache is not None:
-                    cache[part_key] = part_cache
-
+                merged = MergeMethods.polar_decomposition(
+                    part_a, part_b, alpha,
+                    cache=cache,  # Pass global cache directly
+                    key=part_key  # Derived key for this QKV part
+                )
                 merged_parts.append(merged)
 
             return torch.cat(merged_parts, dim=0)
 
-        # Handle regular CLIP text encoder layers
+        # Handle regular CLIP text encoder layers (unchanged)
         elif any(x in key for x in ["k_proj", "v_proj", "q_proj"]):
             return MergeMethods.merge_self_attention_qkv(a, b, alpha, key)
 
         # Handle UNet cross-attention
         else:
-            # For query projections, calculate `adjusted_alpha` without caching
+            # For query projections (unchanged)
             if ".to_q." in key:
                 with torch.no_grad():
-                    # Generate some sample data for cosine similarity computation
                     x = torch.randn(min(100, a.shape[-1]), a.shape[-1], device=device, dtype=dtype)
                     q_a = x @ a.T
                     q_b = x @ b.T
                     sim = F.cosine_similarity(q_a.flatten(), q_b.flatten(), dim=0)
                     adjusted_alpha = alpha * torch.sigmoid(sim * 0.5)
 
-                # Use polar decomposition with adjusted weight
-                return MergeMethods.polar_decomposition(a, b, alpha=adjusted_alpha, cache=cache)
+                # MODIFIED: Use global cache directly
+                return MergeMethods.polar_decomposition(a, b, alpha=adjusted_alpha, cache=cache, key=key)
 
-            # For key/value projections (different dimensions), focus caching on SVD and transform
-            def get_cached_svd(matrix: Tensor, prefix: str) -> Tuple[Tensor, Tensor, Tensor]:
-                """Helper to handle SVD caching."""
-                cache_key = f"{key}_{prefix}"
-                if cache is not None and f"{cache_key}_u" in cache:
-                    u = cache[f"{cache_key}_u"].to(device, dtype)
-                    s = cache[f"{cache_key}_s"].to(device, dtype)
-                    vh = cache[f"{cache_key}_vh"].to(device, dtype)
-                else:
-                    svd_driver = "gesvdj" if matrix.is_cuda else "none"
-                    u, s, vh = torch.linalg.svd(matrix, full_matrices=False, driver=svd_driver)
+            # MODIFIED SVD HANDLING - REPLACED get_cached_svd WITH GLOBAL CACHE
+            # Get cached SVD components using unified system
+            u_a, s_a, vh_a = MergeMethods.cache_svd(key, a, "a", cache)
+            u_b, s_b, vh_b = MergeMethods.cache_svd(key, b, "b", cache)
 
-                    if cache is not None:
-                        cache[f"{cache_key}_u"] = u.to('cpu')
-                        cache[f"{cache_key}_s"] = s.to('cpu')
-                        cache[f"{cache_key}_vh"] = vh.to('cpu')
-
-                return u, s, vh
-
-            # Get cached SVD components for matrices `a` and `b`
-            u_a, s_a, vh_a = get_cached_svd(a, "a")
-            u_b, s_b, vh_b = get_cached_svd(b, "b")
-
+            # Rest of original code remains EXACTLY THE SAME
             # Interpolate singular values
             s_merged = torch.lerp(s_a, s_b, alpha)
 
@@ -1594,13 +2024,7 @@ class MergeMethods:
             k = min(vh_a.shape[0], vh_b.shape[0])
 
             # Get or compute alignment transform
-            transform_key = f"{key}_transform"
-            if cache is not None and transform_key in cache:
-                R = cache[transform_key].to(device, dtype)
-            else:
-                R = MergeMethods.orthogonal_procrustes_ml(vh_a[:k], vh_b[:k])
-                if cache is not None:
-                    cache[transform_key] = R.to('cpu')
+            R = MergeMethods.cache_procrustes(key, vh_a[:k], vh_b[:k], cache)
 
             vh_merged = torch.lerp(vh_a[:k], vh_b[:k] @ R.T, alpha)
 
@@ -1618,47 +2042,49 @@ class MergeMethods:
     def merge_self_attention_qkv(a: Tensor, b: Tensor, alpha: float, key: str,
                                  cache: Optional[Dict] = None) -> Tensor:
         """
-        Merge self-attention QKV layers with caching for polar decomposition.
-        Handles separate Q/K/V and concatenated formats for CLIP-G style models.
+        Merge self-attention QKV layers with global SVD caching.
+        Handles separate Q/K/V and concatenated formats using unified cache.
         """
         # Handle CLIP-G style concatenated QKV
         if "in_proj" in key:
             head_dim = a.shape[0] // 3
             merged_parts = []
 
-            # Pre-fetch all cache entries to minimize repeated calls to cache.get
-            part_caches = [cache.get(f"{key}_part_{i}", {}) if cache else None for i in range(3)]
-
             for i in range(3):
+                # Generate unique key for each QKV part
+                part_key = f"{key}_part_{i}"
                 start = head_dim * i
                 end = head_dim * (i + 1)
-                part_a = a[start:end]
-                part_b = b[start:end]
 
-                # Use polar decomposition with separate cache namespace for each part
-                merged = MergeMethods.polar_decomposition(part_a, part_b, alpha, cache=part_caches[i])
-
-                # Update the main cache after polar decomposition call, if caching is enabled
-                if cache is not None:
-                    cache[f"{key}_part_{i}"] = part_caches[i]
-
-                merged_parts.append(merged)
+                # MODIFIED: Use global cache directly with part-specific key
+                merged_part = MergeMethods.polar_decomposition(
+                    a[start:end],
+                    b[start:end],
+                    alpha=alpha,
+                    cache=cache,  # Pass global cache directly
+                    key=part_key  # Unique key for this QKV component
+                )
+                merged_parts.append(merged_part)
 
             return torch.cat(merged_parts, dim=0)
 
         # Handle separate Q/K/V projections
         else:
-            # Calculate attention similarity and adjusted alpha (not cached)
             with torch.no_grad():
                 x = torch.randn(min(100, a.shape[-1]), a.shape[-1], device=a.device, dtype=a.dtype)
-                attn_a = torch.softmax(x @ a.mT / math.sqrt(a.shape[-1]), dim=-1)  # Fix: Use .mT
-                attn_b = torch.softmax(x @ b.mT / math.sqrt(b.shape[-1]), dim=-1)  # Fix: Use .mT
+                attn_a = torch.softmax(x @ a.mT / math.sqrt(a.shape[-1]), dim=-1)
+                attn_b = torch.softmax(x @ b.mT / math.sqrt(b.shape[-1]), dim=-1)
 
                 kl_div = F.kl_div(attn_a.log(), attn_b, reduction='batchmean')
                 adjusted_alpha = alpha * torch.sigmoid(1.0 - kl_div)
 
-            # Call polar_decomposition without caching, due to dynamic adjusted_alpha
-            return MergeMethods.polar_decomposition(a, b, alpha=adjusted_alpha, cache=cache)
+            # MODIFIED: Pass layer key explicitly to polar_decomposition
+            return MergeMethods.polar_decomposition(
+                a, b,
+                alpha=adjusted_alpha,
+                cache=cache,
+                key=key  # Crucial for correct cache keying
+            )
 
     def merge_attention_output(a: Tensor, b: Tensor, alpha: float, key: str,
                                cache: Optional[Dict] = None) -> Tensor:
@@ -1691,7 +2117,7 @@ class MergeMethods:
             adjusted_alpha = alpha * torch.sigmoid(1.0 - stats_diff)
 
         # Call polar_decomposition without caching, due to dynamic adjusted_alpha
-        merged = MergeMethods.polar_decomposition(a, b, alpha=adjusted_alpha, cache=cache)
+        merged = MergeMethods.polar_decomposition(a, b, alpha=adjusted_alpha, key=key, cache=cache)
 
         # Scale to preserve activation magnitude
         scale_a = torch.norm(out_a) / torch.norm(x)
@@ -1766,8 +2192,7 @@ class MergeMethods:
         # Recombine groups
         return torch.cat(merged_groups, dim=0)
 
-    def merge_ffn_proj_standard(a: torch.Tensor, b: torch.Tensor, alpha: float,
-                                expansion_factor: float) -> torch.Tensor:
+    def merge_ffn_proj_standard(a: torch.Tensor, b: torch.Tensor, alpha: float, expansion_factor: float) -> torch.Tensor:
         """
         Standard merging for smaller FFN projections
         """
@@ -1808,7 +2233,7 @@ class MergeMethods:
 
         return merged * (target_scale / (current_scale + 1e-6))
 
-    def merge_ffn_out(a: torch.Tensor, b: torch.Tensor, alpha: float, corr_threshold: float,
+    def merge_ffn_out(a: torch.Tensor, b: torch.Tensor, alpha: float, corr_threshold: float, key: str,
                       cache: Optional[Dict[str, Dict[str, torch.Tensor]]] = None) -> torch.Tensor:
         """
         Enhanced FFN output merge that preserves feature relationships and activation patterns,
@@ -1856,23 +2281,8 @@ class MergeMethods:
         # Initialize merged tensor
         merged = torch.zeros_like(a)
 
-        # Helper function for caching SVD components
-        def get_cached_svd(matrix: torch.Tensor, prefix: str) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-            cache_key = f"{prefix}_svd"
-            if cache is not None and f"{cache_key}_u" in cache:
-                u = cache[f"{cache_key}_u"].to(device, dtype)
-                s = cache[f"{cache_key}_s"].to(device, dtype)
-                vh = cache[f"{cache_key}_vh"].to(device, dtype)
-            else:
-                u, s, vh = torch.linalg.svd(matrix, full_matrices=False)
-                if cache is not None:
-                    cache[f"{cache_key}_u"] = u.cpu()
-                    cache[f"{cache_key}_s"] = s.cpu()
-                    cache[f"{cache_key}_vh"] = vh.cpu()
-            return u, s, vh
-
         # Process each feature group
-        for group_a, group_b in zip(groups_a, groups_b):
+        for group_idx, (group_a, group_b) in enumerate(zip(groups_a, groups_b)):
             # Extract relevant slices
             slice_a = a[group_a]
             slice_b = b[group_b]
@@ -1883,23 +2293,16 @@ class MergeMethods:
             slice_a_norm = slice_a / (norm_a + 1e-8)
             slice_b_norm = slice_b / (norm_b + 1e-8)
 
-            # Get SVD components with caching
-            u_a, s_a, v_a = get_cached_svd(slice_a_norm, f"{group_a}_a")
-            u_b, s_b, v_b = get_cached_svd(slice_b_norm, f"{group_b}_b")
+            # MODIFIED: Unified SVD caching
+            u_a, s_a, v_a = MergeMethods.cache_svd(key, slice_a_norm, f"g{group_idx}_a", cache)
+            u_b, s_b, v_b = MergeMethods.cache_svd(key, slice_b_norm, f"g{group_idx}_b", cache)
 
             # Use minimum number of components for alignment
             k = min(v_a.shape[1], v_b.shape[1])
 
             # Use orthogonal Procrustes for alignment with caching
             if k > 0:
-                procrustes_key = f"procrustes_{len(group_a)}_{len(group_b)}"
-                if cache is not None and procrustes_key in cache:
-                    R = cache[procrustes_key].to(device, dtype)
-                else:
-                    R = MergeMethods.orthogonal_procrustes_ml(v_a[:, :k], v_b[:, :k])
-                    if cache is not None:
-                        cache[procrustes_key] = R.cpu()
-
+                R = MergeMethods.cache_procrustes(key, v_a[:, :k], v_b[:, :k], cache, suffix=f"_g{group_idx}")
                 v_b_aligned = v_b[:, :k] @ R.T
             else:
                 v_b_aligned = v_b[:, :k]
@@ -2082,14 +2485,14 @@ class MergeMethods:
             return MergeMethods.LayerType.FFN_OUT
 
         # Feed Forward Network (FFN) in CLIP-G and CLIP-L
-        # elif "mlp.c_fc" in key and ".weight" in key:
-        #     return MergeMethods.LayerType.FFN_PROJ
-        # elif "mlp.c_proj" in key and ".weight" in key:
-        #     return MergeMethods.LayerType.FFN_OUT
-        # elif "mlp.fc1" in key and ".weight" in key:
-        #     return MergeMethods.LayerType.FFN_PROJ
-        # elif "mlp.fc2" in key and ".weight" in key:
-        #     return MergeMethods.LayerType.FFN_OUT
+        elif "mlp.c_fc" in key and ".weight" in key:
+            return MergeMethods.LayerType.FFN_PROJ
+        elif "mlp.c_proj" in key and ".weight" in key:
+            return MergeMethods.LayerType.FFN_OUT
+        elif "mlp.fc1" in key and ".weight" in key:
+            return MergeMethods.LayerType.FFN_PROJ
+        elif "mlp.fc2" in key and ".weight" in key:
+            return MergeMethods.LayerType.FFN_OUT
 
         # Matrix Transformation for Embedding-Like Layers (positional embeddings, projections)
         elif any(x in key for x in ["positional_embedding", "text_projection", "label_emb"]):
@@ -2193,7 +2596,7 @@ class MergeMethods:
 
     # @staticmethod
     # @convert_to_recipe
-    # def streaming_ties_sum_extended(
+    # def s_ties_sum_extended(
     #         *models: Tensor | LiftFlag[MergeSpace.DELTA],
     #         k: Hyper = 0.218,
     #         vote_sgn: Hyper = 1.0,
@@ -2506,17 +2909,17 @@ class MergeMethods:
     def svd_ties_sum_extended(
             *models: Tensor | LiftFlag[MergeSpace.DELTA],
             k: Hyper = 1.0,
-            max_singular_values: Hyper = 32,
+            max_singular_values: Hyper = 64,
             energy_threshold: Hyper = 0.9,
             power_iterations: Hyper = 1,
-            vote_sgn: Hyper = 0.0,
+            vote_sgn: Hyper = 1.0,
             apply_stock: Hyper = 0.0,
             cos_eps: Hyper = 1e-6,
             apply_median: Hyper = 1.0,
             eps: Hyper = 1e-6,
             maxiter: Hyper = 150,
             ftol: Hyper = 1e-22,
-            weight_decay: Hyper = 0.01, # .0218,
+            weight_decay: Hyper = 0.0218, # .0218,
             min_agreement: Hyper = 0.3,
             chunk_size: int = 4,
             memory_safety_margin: float = 0.9,  # Default to 90% usage
@@ -2579,13 +2982,25 @@ class MergeMethods:
         model_chunk_size, tensor_chunk_size = get_optimized_chunks()
 
         def batched_svd(matrices: Tensor) -> Tensor:
-            """LoRA-style SVD with dynamic rank selection and power iterations."""
+            """Handle various parameter types safely"""
+            # Add dimensionality check
+            if matrices.ndim not in [2, 3]:
+                # Return original tensor for non-matrix params
+                return matrices.mean(dim=0) if matrices.ndim > 3 else matrices
+
+            # Ensure 3D shape even for single matrices
+            if matrices.ndim == 2:
+                matrices = matrices.unsqueeze(0)
+
             batch_size, m, n = matrices.shape
             max_rank = min(m, n, max_singular_values)
 
             # Power iteration initialized orthogonal basis
             A = torch.empty((batch_size, m, max_rank), device=device, dtype=dtype)
             torch.nn.init.orthogonal_(A)
+
+            # Initial B computation (guaranteed to happen)
+            B = torch.linalg.lstsq(A, matrices).solution
 
             # Power iteration refinement loop
             for _ in range(power_iterations):
@@ -2599,7 +3014,7 @@ class MergeMethods:
 
             # Find first index meeting energy threshold per batch
             effective_rank = torch.argmax(
-                sv_sq_cumsum >= energy_threshold * total_energy,
+                (sv_sq_cumsum >= energy_threshold * total_energy).float(),  # Convert bool to float
                 dim=-1
             ).clamp_min(1)
 
@@ -2653,6 +3068,8 @@ class MergeMethods:
                 #     svd_signs = torch.sign(svd_batch)
 
                 svd_batch = batched_svd(filtered)
+                if svd_batch.ndim > 3:  # For non-matrix params
+                    svd_batch = svd_batch.mean(dim=0)
                 svd_signs = torch.sign(svd_batch)
 
                 chunk_filtered.append(svd_batch)

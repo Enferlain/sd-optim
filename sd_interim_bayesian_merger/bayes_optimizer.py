@@ -18,8 +18,6 @@ logging.basicConfig(level=logging.DEBUG)
 
 
 class BayesOptimizer(Optimizer):
-    bounds_transformer = SequentialDomainReductionTransformer()
-
     def __post_init__(self) -> None:
         super().__post_init__()
         self.setup_logging()
@@ -84,11 +82,19 @@ class BayesOptimizer(Optimizer):
             kappa_decay_delay=acq_config.get("kappa_decay_delay", self.cfg.optimizer.init_points)
         )
 
+        bt_cfg = self.cfg.optimizer.get("bounds_transformer", {})
+        bounds_transformer = SequentialDomainReductionTransformer(
+            gamma_osc=bt_cfg.get("gamma_osc", 0.65),
+            gamma_pan=bt_cfg.get("gamma_pan", 0.9),
+            eta=bt_cfg.get("eta", 0.83),
+            minimum_window=bt_cfg.get("minimum_window", 0.15),
+        )
+
         self.optimizer = BayesianOptimization(
             f=self.sd_target_function,
             pbounds=pbounds,
             random_state=self.cfg.optimizer.random_state,
-            bounds_transformer=self.bounds_transformer if self.cfg.optimizer.bounds_transformer else None,
+            bounds_transformer=bounds_transformer if self.cfg.optimizer.bounds_transformer else None,
         )
 
         # Load previous points into the optimizer if they exist

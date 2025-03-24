@@ -226,11 +226,24 @@ class AestheticScorer:
             "aestheticv25": lambda: AES25(self.cfg.scorer_device["aestheticv25"]),
         }
 
-    def score(self, image: Image.Image, prompt) -> float:
+    def score(self, image: Image.Image, prompt, name=None) -> float:
         values = []
         scorer_weights = []
         logger.info("Entering score method.")
 
+        # Check if this image should undergo background color check
+        # Replace with your specific model identifiers
+        models_to_check = ["negeuler2",]
+
+        should_check_background = name in models_to_check if name else False
+        background_check_passed = True
+
+        if should_check_background:
+            background_check_passed = self.check_background_color(image)
+            if not background_check_passed:
+                logger.info(f"Image from {name} failed background color check")
+
+        # Rest of your existing score method...
         def show_image():
             try:
                 image.show()
@@ -242,15 +255,19 @@ class AestheticScorer:
                 # Display the image in a separate thread
                 threading.Thread(target=show_image, daemon=True).start()
                 values.append(self.get_user_score())
-                scorer_weights.append(1)  # Append default weight for manual scoring
-            else:  # Only access scorer_weight for automatic scorers
-                try:
-                    values.append(self.model[evaluator].score(prompt, image))
-                    scorer_weights.append(int(self.cfg.scorer_weight[evaluator]))  # Access weight here
-                except Exception as e:
-                    logger.error(f"Error scoring image with {evaluator}: {e}")
+                scorer_weights.append(1)
+            else:
+                # For automatic scoring, check background for specific models
+                if should_check_background and not background_check_passed:
+                    logger.info(f"Assigning 0 score for {evaluator} due to background check failure")
                     values.append(0.0)
-                    scorer_weights.append(0)  # Append 0 for errors
+                else:
+                    try:
+                        values.append(self.model[evaluator].score(prompt, image))
+                    except Exception as e:
+                        logger.error(f"Error scoring image with {evaluator}: {e}")
+                        values.append(0.0)
+                scorer_weights.append(int(self.cfg.scorer_weight[evaluator]))
 
             if self.cfg.scorer_print_individual:
                 print(f"{evaluator}:{values[-1]}")
@@ -271,7 +288,7 @@ class AestheticScorer:
         fake_score = 0.0
 
         for i, (img, name, payload) in enumerate(zip(images, payload_names, payloads)):
-            score = self.score(img, payload["prompt"])
+            score = self.score(img, payload["prompt"], name=name)
             if self.cfg.save_imgs:
                 img_path = self.save_img(img, name, score, it, i, payload)
                 if img_path is None:
@@ -407,3 +424,45 @@ class AestheticScorer:
                     print("\tInvalid input. Please enter a number between 0 and 10.")
             except ValueError:
                 print("\tInvalid input. Please enter a number between 0 and 10.")
+
+    def check_background_color(self, image: Image.Image) -> bool:
+        """
+        Check if the image has a black (#000000) or white (#ffffff) background.
+        Returns True if background is acceptable, False otherwise.
+        """
+        # Convert image to RGB if it's not already
+        if image.mode != 'RGB':
+            image = image.convert('RGB')
+
+        width, height = image.size
+
+        # Define sample points (corners and edges)
+        sample_points = [
+            # Corners
+            (0, 0),  # Top-left
+            (width - 1, 0),  # Top-right
+            (0, height - 1),  # Bottom-left
+            (width - 1, height - 1),  # Bottom-right
+
+            # Extra edge samples
+            (width // 2, 0),  # Top middle
+            (width // 2, height - 1),  # Bottom middle
+            (0, height // 2),  # Left middle
+            (width - 1, height // 2),  # Right middle
+        ]
+
+        # Check sample points
+        acceptable_colors = [(0, 0, 0), (255, 255, 255)]  # Black and white
+        acceptable_count = 0
+
+        for x, y in sample_points:
+            color = image.getpixel((x, y))
+            # Allow small tolerance for compression artifacts
+            is_black = all(c <= 10 for c in color)
+            is_white = all(c >= 245 for c in color)
+
+            if is_black or is_white:
+                acceptable_count += 1
+
+        # Consider background acceptable if majority of sample points are black or white
+        return acceptable_count >= len(sample_points) * 0.75

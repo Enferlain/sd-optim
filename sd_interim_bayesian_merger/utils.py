@@ -47,8 +47,10 @@ OPTIMIZABLE_HYPERPARAMETERS = {
     "wavelet_packet_merge": ["alpha"],
     "multi_domain_alignment": ["alpha", "beta"],
     "merge_layers": ["alpha"],
-    "delta_dis": ["magnitude_ratio", "direction_ratio"],
+    "delta_dist": ["above_average_ratio", "calibration_value", "direction_ratio", "magnitude_ratio"],
     "synthetic_fisher_merge": ["noise_scale"],
+    "butterfly_merge": ["alpha", "rank_ratio", "constraint"],
+    "pqr_projected_merge": ["alpha", "rank_ratio"],
     # ... other methods and their optimizable hyperparameters
 }
 

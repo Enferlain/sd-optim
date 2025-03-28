@@ -269,8 +269,8 @@ def get_model_names_from_recipe(recipe: RecipeNode) -> List[str]:
             model_names.append(model_name)
     return model_names
 
-def get_merge_mode(recipe_path: Union[str, Path], target_node: str) -> str:
-    """Extract the merge_mode from the target node in a recipe."""
+def get_merge_method(recipe_path: Union[str, Path], target_node: str) -> str:
+    """Extract the merge_method from the target node in a recipe."""
     target_nodes = [target_node]
     extracted_hypers = get_target_nodes(recipe_path, target_nodes)  # Use existing get_target_nodes
     return extracted_hypers[target_node]['merge_method']
@@ -708,15 +708,15 @@ class MergeMethodCodeSaver:
             return f"# Error getting source code for {method_name}: {str(e)}"
 
     @classmethod
-    def save_merge_method_code(cls, merge_mode: str, model_path: Path, class_obj: Any) -> None:
+    def save_merge_method_code(cls, merge_method: str, model_path: Path, class_obj: Any) -> None:
         """Save the merge method code and its dependencies to a file if not already saved."""
-        if merge_mode in cls._saved_methods:
-            logger.debug(f"Merge method {merge_mode} already saved in this run, skipping...")
+        if merge_method in cls._saved_methods:
+            logger.debug(f"Merge method {merge_method} already saved in this run, skipping...")
             return
 
         try:
-            if not hasattr(class_obj, merge_mode):
-                raise AttributeError(f"Method '{merge_mode}' not found in class {class_obj.__name__}")
+            if not hasattr(class_obj, merge_method):
+                raise AttributeError(f"Method '{merge_method}' not found in class {class_obj.__name__}")
 
             # Determine log directory
             log_dir = Path(os.getcwd()) if "HydraConfig" not in globals() else Path(
@@ -725,9 +725,9 @@ class MergeMethodCodeSaver:
             os.makedirs(merge_code_dir, exist_ok=True)
 
             # Get the complete source code including dependencies
-            full_source = cls.get_full_method_source(merge_mode, class_obj)
+            full_source = cls.get_full_method_source(merge_method, class_obj)
             if not full_source.strip():
-                logger.warning(f"Source code for merge method '{merge_mode}' is empty.")
+                logger.warning(f"Source code for merge method '{merge_method}' is empty.")
                 return
 
             # Dedent and clean the source code to ensure consistent formatting
@@ -738,13 +738,13 @@ class MergeMethodCodeSaver:
             code_file_path = merge_code_dir / f"{iteration_file_name}_merge_method.py"
 
             with open(code_file_path, "w", encoding="utf-8") as f:
-                f.write(f"# Merge method: {merge_mode}\n")
+                f.write(f"# Merge method: {merge_method}\n")
                 f.write(f"# Used in merge: {iteration_file_name}\n")
                 f.write("# This file includes the main merge method and all its dependencies\n\n")
                 f.write(full_source_cleaned)
 
             logger.info(f"Saved merge method code to {code_file_path}")
-            cls._saved_methods.add(merge_mode)
+            cls._saved_methods.add(merge_method)
 
         except Exception as e:
             logger.error(f"Failed to save merge method code: {e}")

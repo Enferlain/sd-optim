@@ -1,9 +1,14 @@
+# bayes_optimizer.py - Version 1.2
+# bayes_optimizer.py - Version 1.0 (Async Compatible)
 import os
 import random
 import logging
 import json
+import asyncio
+import time # Import time
+import pickle # Import pickle
 
-from typing import Dict, List
+from typing import Dict, List, Any, Optional  # Import Any
 from pathlib import Path
 from bayes_opt import BayesianOptimization, Events, UtilityFunction
 from bayes_opt.logger import JSONLogger
@@ -21,10 +26,17 @@ class BayesOptimizer(Optimizer):
     def __post_init__(self) -> None:
         super().__post_init__()
         self.setup_logging()
+        self.optimizer: Optional[BayesianOptimization] = None # Initialize optimizer attribute
+        self.optimization_start_time: Optional[float] = None # Track start time
+
+        # Checkpoint directory
+        self.checkpoint_dir = Path(self.cfg.optimizer.get("checkpoint_dir", os.getcwd())) / "checkpoints"
+        self.checkpoint_dir.mkdir(parents=True, exist_ok=True)
+        self.checkpoint_interval = self.cfg.optimizer.get("checkpoint_interval", 10)
 
     def setup_logging(self) -> None:
         """Initialize Bayesian optimization specific logging"""
-        run_name = "-".join(self.merger.output_file.stem.split("-")[:-1])
+        run_name = self.cfg.get("log_name", "default_bayes_run") # Use cfg for log_name
         self.log_name = run_name
         self.log_file_path = Path(HydraConfig.get().runtime.output_dir, f"{self.log_name}.json")
 
@@ -32,47 +44,38 @@ class BayesOptimizer(Optimizer):
         self.previous_iterations = []
 
         # First create a fresh logger
-        self.logger = JSONLogger(path=str(self.log_file_path), reset=self.cfg.optimizer.reset_log_file)
+        self.json_logger = JSONLogger(path=str(self.log_file_path), reset=self.cfg.optimizer.reset_log_file) # Renamed to json_logger
 
-        # Then load previous data if specified
-        if self.cfg.optimizer.get("load_log_file"):
-            try:
-                if os.path.isfile(self.cfg.optimizer.load_log_file):
-                    # Read previous log data
-                    with open(self.cfg.optimizer.load_log_file, "r") as f:
+        # Load previous data if specified
+        load_log_path = self.cfg.optimizer.get("load_log_file")
+        if load_log_path:
+            load_log_file = Path(load_log_path)
+            if load_log_file.is_file():
+                try:
+                    with open(load_log_file, "r") as f:
                         self.previous_iterations = [json.loads(line) for line in f]
 
-                    # Write previous data to new log file
-                    with open(self.log_file_path, "w") as f:
-                        for iteration_data in self.previous_iterations:
-                            f.write(json.dumps(iteration_data) + "\n")
+                    # Write previous data to new log file if resetting is false
+                    if not self.cfg.optimizer.reset_log_file:
+                         with open(self.log_file_path, "w") as f:
+                            for iteration_data in self.previous_iterations:
+                                f.write(json.dumps(iteration_data) + "\n")
+                         logger.info(
+                            f"Loaded and transferred {len(self.previous_iterations)} iterations from {load_log_file}")
+                    else:
+                        logger.info(f"Loaded {len(self.previous_iterations)} iterations from {load_log_file} but resetting log file.")
 
-                    logger.info(
-                        f"Loaded and transferred {len(self.previous_iterations)} iterations from {self.cfg.optimizer.load_log_file}")
-                else:
-                    logger.info(f"No previous log file found at {self.cfg.optimizer.load_log_file}")
-            except Exception as e:
-                logger.warning(f"Failed to load previous optimization data: {e}")
+                except Exception as e:
+                    logger.warning(f"Failed to load previous optimization data from {load_log_file}: {e}")
+            else:
+                logger.info(f"No previous log file found at {load_log_file}")
 
-    def optimize(self) -> None:
+    async def optimize(self) -> None: # Changed to async
+        self.optimization_start_time = time.time()
         pbounds = self.init_params()
         logger.debug(f"Initial Parameter Bounds: {pbounds}")
 
-        # Separate categorical and continuous bounds
-        categorical_bounds = {}
-        continuous_bounds = {}
-
-        for param_name, bound in pbounds.items():
-            if isinstance(bound, (list, tuple)) and len(bound) == 2:
-                if all(isinstance(v, int) and v in [0, 1] for v in bound):
-                    # Binary parameters become categorical
-                    categorical_bounds[param_name] = ('0', '1')
-                    pbounds[param_name] = ('0', '1')
-                else:
-                    # Other numeric bounds are continuous
-                    continuous_bounds[param_name] = bound
-
-        # Acquisition Function Configuration with Defaults
+        # --- Acquisition Function Configuration ---
         acq_config = self.cfg.optimizer.get("acquisition_function", {})
         acquisition_function = UtilityFunction(
             kind=acq_config.get("kind", "ucb"),
@@ -82,48 +85,81 @@ class BayesOptimizer(Optimizer):
             kappa_decay_delay=acq_config.get("kappa_decay_delay", self.cfg.optimizer.init_points)
         )
 
-        bt_cfg = self.cfg.optimizer.get("bounds_transformer", {})
-        bounds_transformer = SequentialDomainReductionTransformer(
-            gamma_osc=bt_cfg.get("gamma_osc", 0.65),
-            gamma_pan=bt_cfg.get("gamma_pan", 0.9),
-            eta=bt_cfg.get("eta", 0.83),
-            minimum_window=bt_cfg.get("minimum_window", 0.15),
+        # --- Bounds Transformer Configuration ---
+        bt_config = self.cfg.optimizer.get("bounds_transformer", {})
+        bounds_transformer_instance = SequentialDomainReductionTransformer(
+            gamma_osc=bt_config.get("gamma_osc", 0.65),
+            gamma_pan=bt_config.get("gamma_pan", 0.9),
+            eta=bt_config.get("eta", 0.83),
+            minimum_window=bt_config.get("minimum_window", 0.15),
         )
+        bounds_transformer_enabled = self.cfg.optimizer.get("bounds_transformer_enabled", False) # Use explicit enable flag
 
+        # --- Synchronous Wrapper for Async Target Function ---
+        def sync_target_function_wrapper(**params_dict):
+            # bayes_opt passes params as keyword arguments, convert to dict
+            # Run the async target function in a synchronous context
+            try:
+                result = asyncio.run(self.sd_target_function(params_dict))
+                return result
+            except Exception as e:
+                logger.error(f"Error in target function execution: {e}", exc_info=True)
+                return -float('inf') # Return very negative score on error
+
+        # --- Initialize BayesianOptimization ---
         self.optimizer = BayesianOptimization(
-            f=self.sd_target_function,
+            f=sync_target_function_wrapper, # Use the synchronous wrapper
             pbounds=pbounds,
             random_state=self.cfg.optimizer.random_state,
-            bounds_transformer=bounds_transformer if self.cfg.optimizer.bounds_transformer else None,
+            bounds_transformer=bounds_transformer_instance if bounds_transformer_enabled else None,
+            # verbose=2 # Optional: set verbosity level
         )
 
-        # Load previous points into the optimizer if they exist
+        # --- Load Previous Points ---
         if self.previous_iterations:
             try:
+                loaded_count = 0
                 for point in self.previous_iterations:
                     # Register points with the optimizer
-                    self.optimizer.register(
-                        params=point["params"],
-                        target=point["target"]
-                    )
-                logger.info(f"Registered {len(self.previous_iterations)} previous points with the optimizer")
+                    # Check if the parameters are already registered to avoid duplicates
+                    # Note: bayes_opt doesn't have a direct way to check, so we rely on its internal handling or skip if reset=True
+                    if not self.cfg.optimizer.reset_log_file or not self.optimizer.space.params_registered(point["params"]):
+                        self.optimizer.register(
+                            params=point["params"],
+                            target=point["target"]
+                        )
+                        loaded_count +=1
+                logger.info(f"Registered {loaded_count} unique previous points with the optimizer")
             except Exception as e:
                 logger.warning(f"Failed to register previous points with optimizer: {e}")
 
-        # Subscribe logger to capture new points
-        self.optimizer.subscribe(Events.OPTIMIZATION_STEP, self.logger)
-        init_points = self.cfg.optimizer.init_points
+        # --- Subscribe Logger ---
+        # Subscribe json_logger to capture new points
+        self.optimizer.subscribe(Events.OPTIMIZATION_STEP, self.json_logger)
 
-        # Skip sampling if init_points is 0
-        if init_points > 0:
+        # Subscribe checkpoint callback
+        def checkpoint_subscriber(event, instance):
+            iteration = len(instance.res)
+            if iteration % self.checkpoint_interval == 0 and iteration > 0:
+                logger.info(f"Creating periodic checkpoint at iteration {iteration}")
+                self._save_checkpoint(instance)
+        self.optimizer.subscribe(Events.OPTIMIZATION_STEP, checkpoint_subscriber)
+
+        # --- Initial Sampling (Quasi-Random) ---
+        init_points = self.cfg.optimizer.init_points
+        completed_trials = len(self.optimizer.res) # Get count of already registered/completed trials
+        remaining_init_points = max(0, init_points - completed_trials)
+
+        if remaining_init_points > 0:
             sampler_type = self.cfg.optimizer.get("sampler", "random").lower()
+            # Separate continuous and categorical/binary for sampling
+            continuous_bounds = {k: v for k, v in pbounds.items() if not (isinstance(v, tuple) and v in [(0.0, 1.0), (1.0, 0.0)])}
+            categorical_params = {k: v for k, v in pbounds.items() if (isinstance(v, tuple) and v in [(0.0, 1.0), (1.0, 0.0)])}
 
             if sampler_type != "random" and continuous_bounds:
-                n_samples = init_points
-
-                # Select the appropriate sampler
-                if continuous_bounds:
-                    d = len(continuous_bounds)
+                n_samples = remaining_init_points
+                d = len(continuous_bounds)
+                try:
                     if sampler_type == "latin_hypercube":
                         sampler = qmc.LatinHypercube(d=d, seed=self.cfg.optimizer.random_state)
                     elif sampler_type == "sobol":
@@ -131,7 +167,7 @@ class BayesOptimizer(Optimizer):
                     elif sampler_type == "halton":
                         sampler = qmc.Halton(d=d, seed=self.cfg.optimizer.random_state)
                     else:
-                        logger.warning(f"Unknown sampler type '{sampler_type}', falling back to random")
+                        logger.warning(f"Unknown sampler type '{sampler_type}', falling back to random sampling for init points")
                         sampler_type = "random"
 
                     if sampler_type != "random":
@@ -141,39 +177,130 @@ class BayesOptimizer(Optimizer):
                         scaled_continuous = qmc.scale(continuous_samples, l_bounds, u_bounds)
                         continuous_param_names = list(continuous_bounds.keys())
 
-                        # Generate random samples for categorical parameters
-                        categorical_param_names = list(categorical_bounds.keys())
-
-                        # Combine the samples
+                        logger.info(f"Probing {n_samples} initial points using {sampler_type} sampler...")
                         for i in range(n_samples):
                             params = {}
-
-                            # Add continuous parameters from quasi-random sampler
-                            if continuous_bounds:
-                                continuous_values = scaled_continuous[i]
-                                for name, value in zip(continuous_param_names, continuous_values):
-                                    params[name] = value
-
-                            # Add categorical parameters randomly
-                            for name in categorical_param_names:
-                                params[name] = float(random.choice(categorical_bounds[name]))
+                            # Add continuous parameters
+                            continuous_values = scaled_continuous[i]
+                            for name, value in zip(continuous_param_names, continuous_values):
+                                params[name] = value
+                            # Add categorical/binary parameters randomly
+                            for name, bound in categorical_params.items():
+                                params[name] = random.choice([bound[0], bound[1]]) # Choose 0 or 1
 
                             self.optimizer.probe(params=params, lazy=True)
+                        remaining_init_points = 0 # All init points are probed
 
-                        init_points = 0
+                except Exception as e:
+                    logger.error(f"Error during initial sampling: {e}. Falling back to random.", exc_info=True)
+                    remaining_init_points = n_samples # Revert if sampling failed
 
-        self.optimizer.maximize(
-            init_points=init_points,
-            n_iter=self.cfg.optimizer.n_iters,
-        )
 
-    def postprocess(self) -> None:
+        # --- Run Optimization ---
+        total_iterations = self.cfg.optimizer.n_iters
+        remaining_iterations = max(0, total_iterations - max(0, completed_trials - init_points))
+
+        if remaining_iterations > 0 or remaining_init_points > 0:
+            logger.info(f"Starting optimization: {remaining_init_points} random init points, {remaining_iterations} optimization iterations.")
+            try:
+                # Run the synchronous maximize method in a separate thread
+                await asyncio.to_thread(
+                    self.optimizer.maximize,
+                    init_points=remaining_init_points, # Use remaining random points
+                    n_iter=remaining_iterations,
+                    acquisition_function=acquisition_function,
+                    # Other maximize parameters if needed
+                ) # acq is deprecated
+            except KeyboardInterrupt:
+                logger.info("Optimization interrupted by user. Saving current state...")
+                self._save_checkpoint(self.optimizer) # Pass optimizer instance
+            except Exception as e:
+                logger.error(f"Optimization failed: {e}", exc_info=True)
+                self._save_checkpoint(self.optimizer) # Pass optimizer instance
+                raise
+        else:
+            logger.info("All optimization iterations already completed. Skipping maximize.")
+
+        # Save final checkpoint
+        self._save_checkpoint(self.optimizer)
+
+
+    def _save_checkpoint(self, optimizer_instance: BayesianOptimization):
+        """Save current optimization state using pickle."""
+        if not optimizer_instance:
+            logger.warning("No optimizer instance to checkpoint")
+            return
+
+        checkpoint_file = self.checkpoint_dir / f"bayesopt_checkpoint_{self.log_name}.pkl"
+        try:
+            # Save the optimizer's state (includes space, results)
+            with open(checkpoint_file, "wb") as f:
+                pickle.dump(optimizer_instance, f)
+            logger.info(f"Saved Bayesian Optimization checkpoint to {checkpoint_file}")
+        except Exception as e:
+            logger.error(f"Failed to save Bayesian Optimization checkpoint: {e}", exc_info=True)
+
+
+    async def postprocess(self) -> None: # Changed to async
         logger.info("\nRecap!")
-        for i, res in enumerate(self.optimizer.res):
-            logger.info(f"Iteration {i + 1}: \n\t{res}")
+        if not self.optimizer or not self.optimizer.res:
+            logger.warning("No optimization results to display.")
+            return
 
-        self.artist.visualize_optimization()
+        # Log optimization statistics
+        total_trials = len(self.optimizer.res)
+        logger.info(f"Total Trials: {total_trials}")
+        if self.optimization_start_time:
+             total_runtime = time.time() - self.optimization_start_time
+             hours, remainder = divmod(total_runtime, 3600)
+             minutes, seconds = divmod(remainder, 60)
+             logger.info(f"Total runtime: {int(hours):02}:{int(minutes):02}:{int(seconds):02}")
+             logger.info(f"Average time per trial: {total_runtime/max(1, total_trials):.2f} seconds")
+
+        # Log top trials
+        logger.info("\nTop 5 Trials:")
+        sorted_results = sorted(self.optimizer.res, key=lambda x: x["target"], reverse=True)
+        for i, res in enumerate(sorted_results[:5]):
+            logger.info(f"Rank {i + 1}:")
+            logger.info(f"\tTarget: {res['target']:.4f}")
+            logger.info(f"\tParams: {res['params']}")
+
+        # Log best trial
+        logger.info("\nBest Trial:")
+        best_trial = self.optimizer.max
+        logger.info(f"\tTarget: {best_trial['target']:.4f}")
+        logger.info(f"\tParams: {best_trial['params']}")
+
+        # Visualization (assuming self.artist handles async if needed)
+        try:
+            # If artist.visualize_optimization needs await:
+            # await self.artist.visualize_optimization()
+            # If it's synchronous but potentially blocking:
+            await asyncio.to_thread(self.artist.visualize_optimization)
+        except Exception as e:
+             logger.error(f"Failed to create visualization: {e}", exc_info=True)
 
 
-def parse_scores(iterations: List[Dict]) -> List[float]:
-    return [r["target"] for r in iterations]
+    def get_best_parameters(self) -> Dict:
+        """Return best parameters found during optimization."""
+        return self.optimizer.max["params"] if self.optimizer and self.optimizer.max else {}
+
+    def get_optimization_history(self) -> List[Dict]:
+        """Return history of optimization attempts."""
+        return self.optimizer.res if self.optimizer else []
+
+    def validate_optimizer_config(self) -> bool:
+        """Validate optimizer-specific configuration"""
+        required_fields = ['n_iters', 'init_points', 'random_state']
+        valid = all(hasattr(self.cfg.optimizer, field) for field in required_fields)
+
+        if not valid:
+            missing = [field for field in required_fields if not hasattr(self.cfg.optimizer, field)]
+            logger.error(f"Missing required configuration fields for BayesOpt: {missing}")
+
+        # Add any BayesOpt specific validation here
+        # e.g., check acquisition function kind
+
+        return valid
+
+# Removed parse_scores function as it's not used directly in this class

@@ -1,406 +1,172 @@
+# bounds.py - Version 1.0
 import logging
 import sd_mecha
+import fnmatch  # Import for wildcard matching
+import torch
 
 from typing import Dict, List, Tuple, Union
 from omegaconf import DictConfig, ListConfig
 
-from sd_interim_bayesian_merger import utils
-
 logger = logging.getLogger(__name__)
 
 
-class Bounds:
-    @staticmethod
-    def set_block_bounds(lb: float = 0.0, ub: float = 1.0) -> Tuple[float, float]:
-        return lb, ub
+class ParameterHandler:
+    """Handles parameter bounds creation and assembly, unifying the logic."""
 
-    @staticmethod
-    def create_default_bounds(cfg: DictConfig) -> Dict[str, Tuple[float, float]]:
-        model_arch = sd_mecha.extensions.model_arch.resolve(cfg.model_arch)
-        mecha_merge_method = sd_mecha.extensions.merge_method.resolve(cfg.merge_mode)
-        volatile_hypers = mecha_merge_method.get_volatile_hyper_names()
+    def __init__(self, cfg: DictConfig):
+        self.cfg = cfg
+        self.model_config = sd_mecha.infer_model_configs(
+            [sd_mecha.model(model) for model in cfg.model_paths] # type: ignore
+        )[0] # Get the model config
+        self.merge_method = sd_mecha.extensions.merge_methods.resolve(cfg.merge_mode)
+        self.param_names = self._get_optimizable_parameters()
 
-        if cfg.optimization_mode == "recipe":
-            # Extract hyperparameters from target nodes
-            extracted_hypers = utils.get_target_nodes(
-                cfg.recipe_optimization.recipe_path,
-                cfg.recipe_optimization.target_nodes
-            )
 
-            # Get merge method from first target node
-            first_target = cfg.recipe_optimization.target_nodes
-            if isinstance(first_target, list):
-                first_target = first_target[0]
-            merge_mode = extracted_hypers[first_target]['merge_method']
+    def _get_optimizable_parameters(self) -> List[str]:
+        """Gets the names of optimizable parameters from the merge method."""
+        # Access the merge method's parameter information.  This replaces
+        # utils.OPTIMIZABLE_HYPERPARAMETERS and the volatile_hypers logic.
+        param_names = []
+        input_types = self.merge_method.get_input_types().as_dict()
+        for name, param_type in input_types.items():
+            # We optimize parameters that are Tensors or StateDicts, and don't have default values
+            if isinstance(param_type, type) and issubclass(param_type, (sd_mecha.extensions.merge_methods.StateDict, torch.Tensor)):
+                param_names.append(name)
+        return param_names
 
-            # Filter through optimizable parameters
-            optimizable_params = utils.OPTIMIZABLE_HYPERPARAMETERS.get(
-                merge_mode,
-                extracted_hypers[first_target]['hypers'].keys()
-            )
-        else:
-            optimizable_params = utils.OPTIMIZABLE_HYPERPARAMETERS.get(cfg.merge_mode, mecha_merge_method.get_hyper_names())
+    def get_bounds(
+        self,
+        custom_bounds: Dict[str, Union[List[float], List[int], ListConfig, int, float]],
+    ) -> Dict[str, Union[Tuple[float, float], float]]:
+        """Gets the final bounds after applying custom bounds."""
 
-        bounds = {}
-        for component_config in cfg.optimization_guide.components:
-            component_name = component_config.name
-            optimization_strategy = component_config.optimize
+        bounds = self.create_parameter_bounds()
+        logger.debug(f"Initial Parameter Bounds: {bounds}")
 
-            if optimization_strategy == "all":
-                bounds.update(
-                    Bounds._create_bounds_for_all(model_arch, component_name, optimizable_params, volatile_hypers))
-            elif optimization_strategy == "selected":
-                bounds.update(Bounds._create_bounds_for_selected(component_config, optimizable_params, volatile_hypers))
-            elif optimization_strategy == "grouped":
-                bounds.update(Bounds._create_bounds_for_grouped(component_config, optimizable_params, volatile_hypers, model_arch))
-            elif optimization_strategy == "group-all":
-                bounds.update(
-                    Bounds._create_bounds_for_group_all(cfg, component_name, optimizable_params, volatile_hypers))
-            elif optimization_strategy == "none":
-                logger.info(f"Optimization disabled for component '{component_name}'.")
-            elif optimization_strategy == "layer_adjustments":
-                bounds.update(
-                    Bounds._create_bounds_for_layer_adjustments(component_config))
+        # Validate and apply custom_bounds
+        validated_custom_bounds = self.validate_custom_bounds(custom_bounds)
+        for param_name, custom_bound in validated_custom_bounds.items():
+            if param_name in bounds:
+                bounds[param_name] = tuple(custom_bound)  # Directly use the custom bound
+                logger.info(f"Applied custom bound {custom_bound} to parameter '{param_name}'")
             else:
-                raise ValueError(f"Invalid optimization strategy: {optimization_strategy}")
+                logger.warning(
+                    f"Custom bound provided for unknown parameter '{param_name}'. Skipping."
+                )
+
+        # Log bounds for each hyperparameter
+        for param_name in self.param_names:
+            if param_name in bounds:
+                logger.info(f"Bounds for {param_name}: {bounds[param_name]}")
 
         return bounds
 
-    @staticmethod
-    def _create_bounds_for_all(model_arch, component_name, optimizable_params, volatile_hypers):
-        component_bounds = {}
-        for block_id in model_arch.user_keys():
-            if f"_{component_name}_block_" in block_id:
-                for param_name in optimizable_params:
-                    if param_name not in volatile_hypers:
-                        key = f"{block_id}_{param_name}"
-                        component_bounds[key] = (0.0, 1.0)
-        return component_bounds
 
-    @staticmethod
-    def _create_bounds_for_selected(component_config, optimizable_params, volatile_hypers):
-        component_bounds = {}
-        for block_id in component_config.selected_blocks:
-            for param_name in optimizable_params:
-                if param_name not in volatile_hypers:
-                    key = f"{block_id}_{param_name}"
-                    component_bounds[key] = (0.0, 1.0)
-        return component_bounds
+    def create_parameter_bounds(self) -> Dict[str, Tuple[float, float]]:
+        """Creates parameter bounds based on the optimization guide."""
+        bounds = {}
+        for component_config in self.cfg.optimization_guide.components:
+            component_name = component_config.name
+            optimization_strategy = component_config.strategy
 
-    @staticmethod
-    def _create_bounds_for_grouped(component_config, optimizable_params, volatile_hypers, model_arch):
-        component_bounds = {}
-        is_integer_group = isinstance(component_config.groups, int)
-
-        if is_integer_group:
-            # Get all blocks for automatic grouping
-            block_ids = [block_id for block_id in model_arch.user_keys() if
-                         f"_{component_config.name}_block_" in block_id]
-            num_groups = component_config.groups
-            group_size = max(1, len(block_ids) // num_groups)
-            grouped_blocks = [block_ids[i:i + group_size] for i in range(0, len(block_ids), group_size)]
-        else:
-            # Use only the explicitly specified blocks
-            grouped_blocks = component_config.groups
-
-        for param_name in optimizable_params:
-            if param_name not in volatile_hypers:
-                for i, group in enumerate(grouped_blocks):
-                    group_name = "-".join([f"{block}_{param_name}" for block in group])
-                    component_bounds[group_name] = (0.0, 1.0)
-
-        return component_bounds
-    @staticmethod
-    def _create_bounds_for_group_all(cfg, component_name, optimizable_params, volatile_hypers):
-        component_bounds = {}
-        for param_name in optimizable_params:
-            if param_name not in volatile_hypers:
-                key = f"{cfg.model_arch}_{component_name}_default_{param_name}"
-                component_bounds[key] = (0.0, 1.0)
-        return component_bounds
-
-    @staticmethod
-    def _create_bounds_for_layer_adjustments(component_config):
-        component_bounds = {}
-        # Check if 'groups' exists and is iterable
-        if "groups" in component_config and isinstance(component_config.groups, (list, ListConfig)):
-            for group in component_config.groups:
-                if all(param_name in component_config.parameters for param_name in group):
-                    group_name = "-".join(group)
-                    component_bounds[group_name] = tuple(component_config.parameters[group[0]])
-                else:
-                    missing_params = [param for param in group if param not in component_config.parameters]
-                    logger.warning(
-                        f"For component '{component_config.name}', the following parameters in group '{group}' are not defined in 'parameters': {missing_params}. This group will be ignored."
+            if optimization_strategy == "all":
+                bounds.update(
+                    self._handle_params(component_name, bounds=(0.0, 1.0))
+                )
+            elif optimization_strategy == "selected":
+                if not component_config.keys: # Changed from selected_blocks
+                    raise ValueError(f"No 'keys' specified for component '{component_name}'")
+                for key in component_config.keys: # Changed from selected_blocks
+                    bounds.update(
+                        self._handle_params(component_name, block_id=key, bounds=(0.0, 1.0))
                     )
-        # Handle cases where 'groups' is not defined or is not iterable
-        elif "parameters" in component_config:
-            for param_name, bounds in component_config.parameters.items():
-                component_bounds[param_name] = tuple(bounds)
-        else:
-            logger.warning(
-                f"Neither 'groups' nor 'parameters' are defined properly for component '{component_config.name}'. Skipping.")
+            elif optimization_strategy == "grouped":
+                bounds.update(
+                    self._handle_params_for_grouped(component_config, bounds=(0.0,1.0))
+                )
+            elif optimization_strategy == "single":
+                bounds[f"{component_name}_single_param"] = (0.0, 1.0)
+            elif optimization_strategy == "none":
+                logger.info(f"Optimization disabled for component '{component_name}'.")
+            # TODO: Handle layer adjustments
+            # elif optimization_strategy == "layer_adjustments":
+            #     bounds.update(
+            #         self._handle_params_for_layer_adjustments(component_config)
+            #     )
+            else:
+                raise ValueError(f"Invalid optimization strategy: {optimization_strategy}")
+        return bounds
 
+    def _handle_params(self, component_name: str, block_id: str = None, group_name: str = None, bounds: Tuple[float, float] = None) -> Dict[str, Tuple[float, float]]:
+        """Handles parameter processing for 'all', 'selected', and 'group-all' strategies."""
+        import fnmatch  # Import for wildcard matching
+
+        component_bounds = {}
+
+        for param_name in self.param_names:
+            if bounds is not None:  # Creating bounds
+                if block_id:  # 'selected' strategy
+                    # Check if block_id is a wildcard pattern
+                    if "*" in block_id:
+                        # Get all keys in the component
+                        for key in self.model_config.components[component_name].keys:
+                            # Match the key against the pattern
+                            if fnmatch.fnmatch(key, block_id):
+                                component_bounds[f"{key}_{param_name}"] = bounds
+                    else:
+                        # Not a wildcard, use the block_id directly
+                        key = f"{block_id}_{param_name}"
+                        component_bounds[key] = bounds
+                elif group_name:
+                    component_bounds[group_name] = bounds
+                else: # all
+                    for key in self.model_config.components[component_name].keys:
+                        component_bounds[f"{key}_{param_name}"] = bounds
+        return component_bounds
+
+    def _handle_params_for_grouped(self, component_config, bounds: Tuple[float, float] = None) -> Dict[str, Tuple[float, float]]:
+        """Handles parameter processing for the 'grouped' strategy."""
+        component_bounds = {}
+
+        # Get all blocks for automatic grouping
+        block_ids = [block_id for block_id in self.model_config.components[component_config.name].keys]
+        grouped_blocks = component_config.groups
+
+        for param_name in self.param_names:
+            for i, group in enumerate(grouped_blocks):
+                group_name = "-".join([f"{block['keys']}_{param_name}" for block in group])
+                component_bounds[group_name] = bounds
         return component_bounds
 
     @staticmethod
-    def validate_custom_bounds(custom_bounds: Dict[str, Union[List[float], List[int], ListConfig, int, float]]) -> Dict:
+    def validate_custom_bounds(custom_bounds: Dict[str, Union[List[float], List[int], int, float]]) -> Dict[
+        str, Union[Tuple[float, float], float, int]]:
         """Validates the custom_bounds dictionary."""
-        if custom_bounds is None:  # Add a check for None
+        if custom_bounds is None:
             return {}
 
+        validated_bounds: Dict[str, Union[Tuple[float, float], float, int]] = {}  # <- Type hint
+
         for param_name, bound in custom_bounds.items():
-            if isinstance(bound, (list, ListConfig)):
-                if len(bound) == 2:  # Range or binary bound
+            if isinstance(bound, list):
+                if len(bound) == 2:
                     if all(isinstance(v, (int, float)) for v in bound):
                         if bound[0] > bound[1]:
                             raise ValueError(
                                 f"Invalid range bound for '{param_name}': {bound}. Lower bound cannot be greater than upper bound.")
+                        validated_bounds[param_name] = (
+                        float(bound[0]), float(bound[1]))  # Explicitly create a Tuple[float, float]
                     elif all(v in [0, 1] for v in bound):
-                        pass  # Valid binary bound
+                        validated_bounds[param_name] = (float(bound[0]), float(bound[1]))  # Also here
                     else:
-                        raise ValueError(
-                            f"Invalid bound for '{param_name}': {bound}. Range bounds must contain floats or binary bounds must be integers 0 and 1.")
+                        raise ValueError(...)
+                elif all(isinstance(v, (int, float)) for v in bound):
+                    # categorical, we don't need to do anything
+                    validated_bounds[param_name] = bound  # type: ignore
                 else:
-                    raise ValueError(
-                        f"Invalid bound for '{param_name}': {bound}. Must contain two elements for range or binary bounds.")
+                    raise ValueError(...)
             elif isinstance(bound, (int, float)):
-                pass  # Valid single value
+                validated_bounds[param_name] = bound  # Keep single values as-is
             else:
-                raise ValueError(
-                    f"Invalid bound for '{param_name}': {bound}. Bounds must be lists, tuples, integers, or floats.")
-        return custom_bounds
-
-    @staticmethod
-    def get_bounds(
-            custom_ranges: Dict[str, Union[Tuple[float, float], float]],
-            custom_bounds: Dict[str, Union[List[float], List[int], ListConfig, int, float]],
-            cfg=None,
-    ) -> Dict[str, Union[Tuple[float, float], float]]:
-        """Gets the final bounds after applying custom bounds, freezing and grouping."""
-
-        bounds = Bounds.create_default_bounds(cfg)
-        logger.debug("Input Parameters:")
-        logger.debug(f"Custom Ranges: {custom_ranges}")
-        logger.debug(f"Custom Bounds: {custom_bounds}")
-
-        # Validate custom_bounds
-        validated_custom_bounds = Bounds.validate_custom_bounds(custom_bounds)
-
-        # Apply custom_bounds
-        for custom_param, custom_bound in validated_custom_bounds.items():
-            matching_keys = [key for key in bounds.keys() if custom_param in key]
-
-            if matching_keys:
-                for key in matching_keys:
-                    bounds[key] = tuple(custom_bound)
-                logger.info(
-                    f"Applied custom bound {custom_bound} to {len(matching_keys)} keys containing '{custom_param}'")
-            else:
-                logger.warning(f"No matching keys found for custom bound '{custom_param}'. Skipping.")
-
-        # Log bounds for each hyperparameter on a single line
-        if cfg.optimization_mode != "layer_adjust":  # Check optimization mode
-            mecha_merge_method = sd_mecha.extensions.merge_method.resolve(cfg.merge_mode)
-            volatile_hypers = mecha_merge_method.get_volatile_hyper_names()
-            component_order = [c.name for c in cfg.optimization_guide.components]
-
-            if cfg.optimization_mode == "recipe":
-                # Extract hyperparameters from target nodes
-                extracted_hypers = utils.get_target_nodes(
-                    cfg.recipe_optimization.recipe_path,
-                    cfg.recipe_optimization.target_nodes
-                )
-
-                # Get merge method from first target node
-                first_target = cfg.recipe_optimization.target_nodes
-                if isinstance(first_target, list):
-                    first_target = first_target[0]
-                merge_mode = extracted_hypers[first_target]['merge_method']
-
-                # Filter through optimizable parameters
-                optimizable_params = utils.OPTIMIZABLE_HYPERPARAMETERS.get(
-                    merge_mode,
-                    extracted_hypers[first_target]['hypers'].keys()
-                )
-            else:
-                optimizable_params = utils.OPTIMIZABLE_HYPERPARAMETERS.get(cfg.merge_mode,
-                                                                           mecha_merge_method.get_hyper_names())
-
-            for param_name in optimizable_params:
-                if param_name not in volatile_hypers:
-                    param_bounds = [
-                        f"{key}: {value}"
-                        for key, value in
-                        sorted(bounds.items(), key=lambda item: utils.custom_sort_key(item[0], component_order))
-                        if param_name in key and not key.startswith("layer_adjustments")
-                        # make sure we skip layer_adjustments params
-                    ]
-                    logger.info(f"Bounds for {param_name}: {', '.join(param_bounds)}")
-
-        return bounds  # Return the final bounds
-
-    @staticmethod
-    def assemble_params(
-            params: Dict,
-            cfg: DictConfig
-    ) -> Dict[str, float]:
-        """Assembles hyperparameters for each component based on the optimization strategy."""
-
-        model_arch = sd_mecha.extensions.model_arch.resolve(cfg.model_arch)
-        mecha_merge_method = sd_mecha.extensions.merge_method.resolve(cfg.merge_mode)
-        volatile_hypers = mecha_merge_method.get_volatile_hyper_names()
-
-        if cfg.optimization_mode == "recipe":
-            # Extract hyperparameters from target nodes
-            extracted_hypers = utils.get_target_nodes(
-                cfg.recipe_optimization.recipe_path,
-                cfg.recipe_optimization.target_nodes
-            )
-
-            # Get merge method from first target node
-            first_target = cfg.recipe_optimization.target_nodes
-            if isinstance(first_target, list):
-                first_target = first_target[0]
-            merge_mode = extracted_hypers[first_target]['merge_method']
-
-            # Filter through optimizable parameters
-            optimizable_params = utils.OPTIMIZABLE_HYPERPARAMETERS.get(
-                merge_mode,
-                extracted_hypers[first_target]['hypers'].keys()
-            )
-        else:
-            optimizable_params = utils.OPTIMIZABLE_HYPERPARAMETERS.get(cfg.merge_mode, mecha_merge_method.get_hyper_names())
-
-        assembled_params = {}
-        for component_config in cfg.optimization_guide.components:
-            component_name = component_config.name
-            optimization_strategy = component_config.optimize
-            groups = component_config.get("groups", [])
-            selected_blocks = component_config.get("selected_blocks", [])
-
-            if optimization_strategy == "all":
-                for param_name, param_values in Bounds._assemble_params_for_all(
-                        model_arch, component_name, optimizable_params, volatile_hypers, params
-                ).items():
-                    assembled_params[param_name] = assembled_params.get(param_name, {})
-                    assembled_params[param_name].update(param_values)
-            elif optimization_strategy == "selected":
-                if not selected_blocks:
-                    raise ValueError(f"No 'selected_blocks' specified for component '{component_name}'")
-                for param_name, param_values in Bounds._assemble_params_for_selected(
-                        component_config, optimizable_params, volatile_hypers, params
-                ).items():
-                    assembled_params[param_name] = assembled_params.get(param_name, {})
-                    assembled_params[param_name].update(param_values)
-            elif optimization_strategy == "grouped":
-                for param_name, param_values in Bounds._assemble_params_for_grouped(
-                        component_config, optimizable_params, volatile_hypers, params, cfg
-                ).items():
-                    assembled_params[param_name] = assembled_params.get(param_name, {})
-                    assembled_params[param_name].update(param_values)
-            elif optimization_strategy == "group-all":
-                for param_name, param_values in Bounds._assemble_params_for_group_all(
-                        cfg, component_name, optimizable_params, volatile_hypers, params
-                ).items():
-                    assembled_params[param_name] = assembled_params.get(param_name, {})
-                    assembled_params[param_name].update(param_values)
-            elif optimization_strategy == "layer_adjustments":
-                # Directly update assembled_params with the result from _assemble_params_for_layer_adjustments
-                param_values = Bounds._assemble_params_for_layer_adjustments(component_config, params)
-                assembled_params.update(param_values)
-            elif optimization_strategy == "none":
-                logger.info(f"Optimization disabled for component '{component_name}' in assemble_params.")
-            else:
-                raise ValueError(f"Invalid optimization strategy: {optimization_strategy}")
-
-        # Sort the assembled parameters within each component
-        component_order = [c.name for c in cfg.optimization_guide.components]
-
-        for component_name, component_params in assembled_params.items():
-            if isinstance(component_params, dict):
-                sorted_component_params = dict(
-                    sorted(component_params.items(), key=lambda item: utils.custom_sort_key(item[0], component_order)))
-                assembled_params[component_name] = sorted_component_params
-
-        return assembled_params
-    @staticmethod
-    def _assemble_params_for_all(model_arch, component_name, optimizable_params, volatile_hypers, params):
-        component_params = {}
-        for param_name in optimizable_params:
-            if param_name not in volatile_hypers:
-                component_params[param_name] = {}
-                for block_id in model_arch.user_keys():
-                    if f"_{component_name}_block_" in block_id:
-                        key = f"{block_id}_{param_name}"
-                        component_params[param_name][block_id] = params.get(key, 0.0)
-        return component_params
-
-    @staticmethod
-    def _assemble_params_for_selected(component_config, optimizable_params, volatile_hypers, params):
-        component_params = {}
-        for param_name in optimizable_params:
-            if param_name not in volatile_hypers:
-                component_params[param_name] = {}
-                # Iterate through selected blocks correctly
-                for block_id in component_config["selected_blocks"]:
-                    key = f"{block_id}_{param_name}"
-                    component_params[param_name][block_id] = params.get(key, 0.0)
-        return component_params
-
-    @staticmethod
-    def _assemble_params_for_grouped(component_config, optimizable_params, volatile_hypers, params, model_arch):
-        component_params = {}
-        is_integer_group = isinstance(component_config.groups, int)
-
-        if is_integer_group:
-            # Get all blocks for automatic grouping
-            block_ids = [block_id for block_id in model_arch.user_keys() if
-                         f"_{component_config.name}_block_" in block_id]
-            num_groups = component_config.groups
-            group_size = max(1, len(block_ids) // num_groups)
-            grouped_blocks = [block_ids[i:i + group_size] for i in range(0, len(block_ids), group_size)]
-        else:
-            # Use only the explicitly specified blocks
-            grouped_blocks = component_config.groups
-
-        for param_name in optimizable_params:
-            if param_name not in volatile_hypers:
-                component_params[param_name] = {}
-                for group in grouped_blocks:
-                    group_name = "-".join([f"{block}_{param_name}" for block in group])
-                    group_value = params.get(group_name, 0.0)
-                    for block_id in group:
-                        component_params[param_name][block_id] = group_value
-
-        return component_params
-
-    @staticmethod
-    def _assemble_params_for_group_all(cfg, component_name, optimizable_params, volatile_hypers, params):
-        component_params = {}
-        for param_name in optimizable_params:
-            if param_name not in volatile_hypers:
-                key = f"{cfg.model_arch}_{component_name}_default_{param_name}"
-                component_params[param_name] = {
-                    f"{cfg.model_arch}_{component_name}_default": params.get(key, 0.0)
-                }
-        return component_params
-
-    @staticmethod
-    def _assemble_params_for_layer_adjustments(component_config, params):
-        component_params = {}
-        if "groups" in component_config and isinstance(component_config.groups, (list, ListConfig)):
-            for group in component_config.groups:
-                group_name = "-".join(group)
-                if group_name in params:
-                    # Assign the group value to each parameter in the group
-                    group_value = params[group_name]
-                    for p_name in group:
-                        component_params[p_name] = group_value
-                else:
-                    logger.warning(
-                        f"Group '{group_name}' not found in optimization parameters. Skipping this group.")
-        elif "parameters" in component_config:
-            for param_name in component_config.parameters:
-                component_params[param_name] = params.get(param_name, 0.0)
-        return component_params
+                raise ValueError(...)
+        return validated_bounds

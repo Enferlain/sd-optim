@@ -1,3 +1,5 @@
+# generator.py - Version 1.0
+
 import base64
 import io
 import asyncio
@@ -5,9 +7,10 @@ import aiohttp
 import requests
 
 from dataclasses import dataclass
-from typing import Dict, List
+from typing import Dict, List, AsyncGenerator  # Import AsyncGenerator
 from PIL import Image, PngImagePlugin
 from aiohttp import ClientSession
+from omegaconf import DictConfig
 
 @dataclass
 class Generator:
@@ -15,33 +18,29 @@ class Generator:
     batch_size: int
     webui: str
 
-    def generate(self, payload: Dict) -> List[Image.Image]:
+    async def generate(self, payload: Dict, cfg: DictConfig) -> AsyncGenerator[Image.Image, None]: # Changed
         if self.webui.lower() in ["a1111", "forge", "reforge"]:
-            return self.generate_a1111_forge(payload)
+            async for image in self.generate_a1111_forge(payload): # Changed
+                yield image
         elif self.webui.lower() == "swarm":
-            return asyncio.run(self.generate_swarm(payload))
+            async for image in self.generate_swarm(payload): # Changed
+                yield image
         elif self.webui.lower() == "comfy":
-            return self.generate_comfy(payload)
+            #  Implement
+            raise NotImplementedError
         else:
-            raise ValueError(f"Unsupported webui: {self.cfg.webui}")
+            raise ValueError(f"Unsupported webui: {cfg.webui}")
 
-    def generate_a1111_forge(self, payload: Dict) -> List[Image.Image]:
-        # Assuming A1111 and Forge use the same txt2img endpoint
-        r = requests.post(
-            url=f"{self.url}/sdapi/v1/txt2img",
-            json=payload,
-        )
-        r.raise_for_status()
+    async def generate_a1111_forge(self, payload: Dict) -> AsyncGenerator[Image.Image, None]: # Changed
+        async with aiohttp.ClientSession() as session: # Use aiohttp
+            async with session.post(url=f"{self.url}/sdapi/v1/txt2img", json=payload) as resp: # Changed
+                resp.raise_for_status()
+                r_json = await resp.json() # Changed
+                for img_str in r_json["images"]:
+                    image = Image.open(io.BytesIO(base64.b64decode(img_str.split(",", 1)[0])))
+                    yield image
 
-        r_json = r.json()
-        images = r_json["images"]
-
-        return [
-            Image.open(io.BytesIO(base64.b64decode(img.split(",", 1)[0])))
-            for img in images
-        ]
-
-    async def generate_swarm(self, payload: Dict) -> List[Image.Image]:
+    async def generate_swarm(self, payload: Dict) -> AsyncGenerator[Image.Image, None]: # Changed
         async with aiohttp.ClientSession() as session:
             if "session_id" not in payload:
                 session_id = await self.get_swarm_session(session)
@@ -55,7 +54,6 @@ class Generator:
                     raise ValueError("Invalid response from SwarmUI: 'images' key not found.")
 
                 images_data = response_json["images"]
-                images = []
                 for img_data in images_data:
                     image_url = img_data["image"]
                     image_path = image_url.split("View/")[1]
@@ -63,9 +61,7 @@ class Generator:
                         img_response.raise_for_status()
                         image_bytes = await img_response.read()
                         image = Image.open(io.BytesIO(image_bytes))
-                        images.append(image)
-
-                return images
+                        yield image # Changed
 
     async def get_swarm_session(self, session):
         async with session.post(url=f"{self.url}/API/GetNewSession", json={}) as response:

@@ -1,137 +1,144 @@
 defaults:
   - _self_
-  - payloads: cargo
-  - optimisation_guide: guide
+  # Select payload configuration based on the chosen webui
+  - payloads: cargo_${webui}  # Dynamically loads cargo_a1111, cargo_forge, etc.
+  - optimization_guide: guide
 
-run_name: ${merge_mode}_${scorer_method}
+run_name: ${merge_method}_${scorer_method} # Uses cfg.merge_method even for recipe opt
 hydra:
   run:
     dir: logs/${now:%Y-%m-%d_%H-%M-%S}_${run_name}
 
-url: http://127.0.0.1:7860
-webui: a1111  # or "forge"
+# --- WebUI Connection ---
+webui_urls: # Maps UI identifiers to base URLs
+  a1111: http://localhost:7860
+  forge: http://localhost:7860
+  reforge: http://localhost:7860
+  comfy: http://localhost:8188
+  swarm: http://localhost:7801
+webui: forge # Choose your target WebUI: a1111, forge, reforge, comfy, swarm
+url: "${webui_urls[${webui}]}" # Automatically selects the URL based on 'webui' setting
 
-wildcards_dir: path/to/wildcards/folder
-scorer_model_dir: path/to/scorer/models/folder
+# --- File Paths ---
+wildcards_dir: path/to/wildcards/folder      # Directory containing wildcard files
+scorer_model_dir: path/to/scorer/models/folder # Directory to store/find scorer models
 
-model_paths:  # Use a list to specify model or lora paths 
+# --- Model Inputs ---
+model_paths:  # List of paths to input models (.safetensors, .ckpt, etc.)
   - path/to/model_a.safetensors
   - path/to/model_b.safetensors
-  - path/to/model_c.safetensors
-  - path/to/model_n.safetensors
-base_model_index:  # For methods that require subtract/add_difference (0, 1, 2, ...)
+  # - path/to/lora.safetensors # Loras are automatically converted
+base_model_index: 0 # Index (starting from 0) of the model in model_paths to use as base for delta methods
 
-device: cpu # specify device to merge on (cpu, cuda)
-threads: 4
+# --- Merge Settings (sd-mecha) ---
+merge_method: weighted_sum # Name of the sd-mecha merge method (built-in or custom)
+device: cuda              # Device for merging: 'cuda' or 'cpu'
+threads: 2                # Number of threads for sd-mecha merge execution
+merge_dtype: fp64         # Precision for merge calculation: fp16, bf16, fp32, fp64
+save_dtype: bf16          # Precision for saving the final model: fp16, bf16, fp32, fp64
+add_extra_keys: False     # Add v_pred and ztsnr keys for v-prediction models (True/False)
 
-merge_mode: weighted_sum # specify merge method https://github.com/ljleb/sd-mecha/blob/main/sd_mecha/merge_methods/__init__.py
-model_arch: sdxl  # specify model architecture (sd1, sdxl, sd3, flux)
-save_merge_method_code: False # Utility for easier tracking of method changes (True to enable)
+# --- General Workflow ---
+save_merge_method_code: False # Save the source code of the merge method used (True/False)
+save_best: True           # Save the best-scoring model separately (True/False)
 
+# --- Optimization Mode ---
+optimization_mode: merge  # "merge", "layer_adjust", or "recipe"
+
+# Settings for "recipe" optimization mode
 recipe_optimization:
-  enabled: False # Enable/disable the feature
-  recipe_path: path/to/recipe.mecha
-  target_nodes: '&1' # Optimize the hypers at selected nodes. Example: '&2' or ['&3', '&4']
+  enabled: False          # Enable/disable recipe optimization mode
+  recipe_path: path/to/recipe.mecha # Path to the .mecha recipe file
+  target_nodes: '&1'      # Node reference(s) within the recipe to optimize (e.g., '&3', ['&3', '&4'])
 
+# --- Optimizer Configuration ---
 optimizer:
-  bayes: True               # Enable Bayesian optimization
-  tpe: False                # Enable Tree-structured Parzen Estimator optimization (not implemented)
-  atpe: False               # Enable Adaptive TPE optimization (not implemented)
+  # Choose ONE optimizer type
+  bayes: True  # Use bayesian-optimization library
+  optuna: False # Use Optuna library (TODO: Implement OptunaOptimizer class selection in sd_optim.py)
+  # tpe: False     # (Deprecated/Not Implemented)
+  # atpe: False    # (Deprecated/Not Implemented)
 
-  # Bayesian Optimization Settings:
-  random_state: -1          # Seed for optimization run
-  bounds_transformer: False # Reduce the search space during optimization, potentially finding better solutions faster, but might miss the global optimum (bayes only)
-  sampler: sobol            # random, latin_hypercube, sobol, halton
-  init_points: 10           # Exploration iterations
-  n_iters: 10               # Exploitation iterations
-  load_log_file: None       # Path to the run JSON log file to resume a run (optional)
-  reset_log_file: True      # Whether to reset (overwrite) the log file (default: True)
+  random_state: -1      # Seed for reproducibility (-1 for random)
 
-  # Acquisition Function Settings (bayes only):
+  # --- Common Optimizer Settings ---
+  init_points: 10       # Number of initial exploration points/trials
+  n_iters: 10           # Number of subsequent exploitation iterations/trials
+  load_log_file: None   # Path to previous run's log file to resume (optional)
+  reset_log_file: True  # Overwrite log file if resuming (True/False)
+
+  # --- Settings for 'bayes' optimizer ---
+  sampler: sobol        # Initial sampling strategy: random, latin_hypercube, sobol, halton
   acquisition_function:
-    kind: ucb              # Type of acquisition function (ucb, ei, poi)
-    kappa: 3               # Exploration-exploitation parameter (for ucb)
-    xi: 0.05               # Exploration-exploitation parameter (for ei and poi)
-    kappa_decay: 0.98      # Kappa decay factor (for ucb)
-    kappa_decay_delay: ${optimizer.init_points}
+    kind: ucb             # ucb, ei, poi
+    kappa: 3              # Parameter for ucb
+    xi: 0.05              # Parameter for ei, poi
+    kappa_decay: 0.98     # Decay for ucb kappa
+    kappa_decay_delay: ${optimizer.init_points} # Delay before decay starts
+  bounds_transformer:   # Domain reduction settings
+    enabled: True         # Enable/disable domain reduction
+    gamma_osc: 0.65
+    gamma_pan: 0.9
+    eta: 0.83
+    minimum_window: 0.0
 
-# Recommendations:
-# - Short runs (1-10 iterations):
-#   - kind: poi
-#   - bounds_transformer: True
-#   - lhs or random sampling for quick results
-#
-# - Low mid (20 iterations):
-#   - bounds_transformer: True
-#   - lhs or Sobol sampling for balanced initial coverage
-#
-# - Medium runs (10-50 iterations):
-#   - kind: ei, xi: 0.05
-#   - bounds_transformer: False/True
-#   - sobol for even distribution in moderate to high dimensions
-#   - halton slightly more randomized, low-discrepancy initial points
-#
-# - Long runs (50+ iterations):
-#   - kind: ucb, kappa: 3.0
-#   - bounds_transformer: True/False based on exploration goal
-#   - sobol for high-dimensional runs where stable, comprehensive coverage is needed
-#
-# Sampling Methods:
-# - Latin Hypercube Sampling (LHS): Generates randomized, well-distributed points within each dimension.
-#   Best for balanced coverage in lower to moderate dimensions (up to ~15 parameters).
-# - Sobol Sampling: Ensures evenly distributed, quasi-random samples for high-dimensional spaces.
-#   Best for 20+ parameters, preventing clustering and under-sampling regions in complex searches.
-# - Halton Sampling: Provides a low-discrepancy, randomized sequence that works well in moderate dimensions.
-#   Ideal for runs that benefit from a bit more stochasticity in exploration.
-#
-# Acquisition Functions:
-# - Probability of Improvement (PI): Favors exploitation, focusing on areas where the model predicts high scores with high confidence.
-# - Expected Improvement (EI): Provides a balance between exploration and exploitation, considering both predicted scores and uncertainty.
-# - Upper Confidence Bound (UCB): Encourages more exploration, focusing on areas with high uncertainty, even if the predicted scores are not the highest.
+  # --- Settings for 'optuna' optimizer ---
+  # (Refer to Optuna documentation for detailed sampler/pruner options)
+  use_pruning: False         # Enable Optuna trial pruning (True/False)
+  pruner_type: median      # Pruner type: median, successive_halving
+  checkpoint_dir: ${hydra:run.dir}/checkpoints # Directory for Optuna checkpoints
+  checkpoint_interval: 5  # Save Optuna state every N trials
+  early_stopping: False    # Enable early stopping (True/False)
+  patience: 10             # Trials without improvement before stopping
+  min_improvement: 0.001   # Minimum score increase to reset patience
+  n_jobs: 1                # Number of parallel jobs for Optuna (use with caution)
+  sampler: # Optuna sampler configuration
+    type: tpe              # Sampler type: tpe, random, cmaes, gp, qmc, grid, nsgaii, botorch (requires integration)
+    # --- TPE specific ---
+    multivariate: True
+    # group: False
+    # warn_independent_sampling: True
+    # constant_liar: False
+    # --- CMA-ES specific ---
+    # restart_strategy: None # 'ipop', 'bipop'
+    # sigma0: None
+    # --- QMC specific ---
+    # qmc_type: sobol # 'sobol', 'halton', 'lhs'
+    # scramble: True
+    # --- Grid specific ---
+    # search_space: # Define exact search points for grid sampler
+    #   param1: [0.1, 0.5, 0.9]
+    #   param2: [10, 20, 30]
+    # --- NSGAII specific (Multi-objective) ---
+    # population_size: 50
+    # mutation_prob: None
+    # crossover_prob: 0.9
+    # swapping_prob: 0.5
 
-batch_size: 1     # amount of images per payload
-save_imgs: True
-img_average_type: arithmetic     # geometric, arithmetic, quadratic
+# --- Image Generation ---
+batch_size: 1             # Number of images generated per payload per iteration
+save_imgs: True           # Save generated images (True/False)
+img_average_type: arithmetic # Method for averaging scores within a batch: geometric, arithmetic, quadratic
 
-# scorer by type:
-# Prompt-Image Alignment:               blip, clip
-# Aesthetic:                            chad, laion
-# Hybrid(PIA + AES):                    ir, hpsv2, pick
-# Anime/Illustration:                   cityaes, shadowv2, cafe, wdaes
-# Misc:                                 manual, noai, iqa
-#
-# !!!! IQA ARE NOT IMPLEMENTED YET !!!!
-#
-# Notes:
-# 1) recommended tested safe setup is [laion, chad, clip, blip, ir] with weights 0.5, 0.5, 1, 1, 1 <- whitewipe's setup
-# 2) personal (imi) recommendation is cityaes for anime, also good to filter out broken images and is very fast and small
+# --- Scoring ---
+# For detailed scorer descriptions, see wiki/documentation.
+scorer_method: [cityaes] # List of scorer identifiers (e.g., laion, chad, clip, blip, imagereward, hpsv21, pick, cityaes, manual)
+scorer_average_type: arithmetic # Method for averaging scores across different scorers: geometric, arithmetic, quadratic
+scorer_weight:            # Optional weights for each scorer (default is 1)
+  # cityaes: 1.2
+  # laion: 0.5
+scorer_default_device: cpu # Default device for scorers: 'cpu' or 'cuda'
+scorer_device:            # Optional device override per scorer
+  # imagereward: cuda
+scorer_alt_location:      # Optional alternative paths for scorer models
+  # imagereward:
+  #   model_name: ImageReward.pt
+  #   model_dir: path/to/your/imagereward/folder
+scorer_print_individual: True # Print score from each individual scorer (True/False)
 
-scorer_method: [cityaes]
-scorer_average_type: arithmetic # geometric, arithmetic, quadratic
-scorer_weight:
-  #blip: 0.5
-  #chad: 2
-  # example above, default is 1
-scorer_default_device: cpu # cuda
-scorer_device:
-  #blip: cpu
-  #chad: cuda
-  # example above, default is scorer default device
-scorer_alt_location:
-  #blip:
-    #model_name: scorer.pth
-    #model_dir: path/to/scorer/scorer.pth
-  #chad:
-    #model_name: scorer.pt
-    #model_dir: path/to/scorer/scorer.pt
-  # example above, default downloads them in the scorer_model_dir(this option is here if you already have them downloaded somewhere else)
-scorer_print_individual: True
-
-save_best: True
-precision: fp16  # "fp16", "bf16", "fp32", or "fp64"
-
+# --- Visualization ---
 visualizations:
-  scatter_plot: False # not implemented
-  unet_diagram: True
-  convergence_plot: True
-  heatmap: False # not implemented
+  convergence_plot: True  # Generate plot showing score over iterations
+  # scatter_plot: False     # Not implemented
+  # unet_diagram: False     # Deprecated or needs update for sd-mecha
+  # heatmap: False          # Not implemented

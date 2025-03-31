@@ -1,63 +1,69 @@
-# sd-interim-bayesian-merger
+# sd-optim: State Dictionary Optimization Framework
 
-Even more opinionated fork of the original repo by s1dlx currently undergoing a transformation hence the name
+An opinionated framework for optimizing operations on state dictionaries, particularly focused on Stable Diffusion model merging, leveraging Bayesian Optimization or Optuna and the [`sd-mecha`](https://github.com/ljleb/sd-mecha) library.
 
-Since he became absent, I started updating the project with things that were missing at the time, which eventually built into getting my own ideas, which I'll be gradually introducing into this fork. 
+**(Formerly sd-interim-bayesian-merger)**
 
-Don't expect it to always be in a working state, but I generally try to only push when it is. Might still miss stuff tho
+This project aims to provide a flexible and powerful tool for finding optimal parameters for `sd-mecha` merge methods or other state dictionary manipulations based on image generation and scoring feedback.
 
-###### everything was done with Gemini and some advice/ideas from ljleb
+---
 
-### Stuff that's new:
-- entirely different merge backend [mecha](https://github.com/ljleb/sd-mecha) (everyone say thank you to ljleb for boosting the merge game)
-- optimize merge nodes and existing/new dicts of their parameters inside existing **mecha recipes**
-- pick what components to optimize
-- group/select components/blocks in various ways, customize their bounds
-- new juicer scorer [cityaesthetics](https://github.com/city96/CityClassifiers)
-- both a1111 and forge support (reforge, comfy and swarm soon ish)
-- ability to skip during manual scoring via the **OVERRIDE_SCORE** command
+**Note:** This project is under active development and might undergo significant changes. While usability is a goal, stability is not always guaranteed on the main branch.
 
-### Planned:
-- more (and better) visualizations
-- ~~ability to define custom bounds/behavior to a hyper of choice (optimizing false/true behaving hypers)~~
-- switching between manual and automatic scoring with hotkeys
-- more hotkeys for more behavior like early stopping and other qol
-- adjusting batch size and payload selection during optimization
-- scoring rethinking, categories, character objective, perceptual similarity metrics(lpips)
-- probably trying optuna first, then hyperactive sometime later
-- more that I can't remember or will randomly come up with
+---
 
-To use, install a working commit as an extension for a1111 on forge, and launch bayesian_merger.py while the webui is running. 
-For now you can configure what hypers to optimize in utils.py, the rest is in config.yaml, and custom bounds in guide.yaml.
+## Key Features
 
-wip text
+*   **Powerful Merging Backend:** Uses [`sd-mecha`](https://github.com/ljleb/sd-mecha) for efficient, low-memory state dictionary operations.
+*   **Flexible Optimization:**
+    *   Supports both **Bayesian Optimization** (via `bayesian-optimization`) and **Optuna** for hyperparameter search.
+    *   Optimize parameters for built-in or custom `sd-mecha` merge methods.
+    *   Optimize hyperparameters within existing `.mecha` recipes (`optimization_mode: recipe`).
+    *   Optimize layer adjustments (`optimization_mode: layer_adjust`). *(Experimental)*
+*   **Granular Control:** Use `conf/optimization_guide.yaml` to define *which* parameters to optimize using flexible strategies:
+    *   `all`: Optimize parameters for every key in a component.
+    *   `select`: Optimize parameters for specific keys or wildcard patterns.
+    *   `group`: Optimize shared parameters for defined groups of keys/blocks.
+    *   `single`: Optimize a single shared parameter for an entire component.
+    *   `none`: Exclude a component from optimization.
+*   **Custom Block Definitions:** Define custom block groupings via configuration and utility scripts for targeted optimization (see Wiki).
+*   **Multiple Scorers:** Utilizes various image scoring models (Aesthetic, CLIP, BLIP, HPSv2, ImageReward, PickScore, CityAesthetics, etc.) to guide optimization. See [[Scoring]] wiki page.
+*   **WebUI Integration:** Designed to run alongside a running instance of A1111, SD Forge, SwarmUI (more planned) via their APIs for image generation.
+*   **Asynchronous Workflow:** Generates and scores images concurrently for better efficiency.
 
------------
+## Getting Started
 
-## What is this?
+1.  **Prerequisites:** Python 3.10+, Git, a running instance of a supported WebUI (e.g., A1111, Forge) with its API enabled.
+2.  **Installation:** Clone this repository into your WebUI's `extensions` folder:
+    ```bash
+    git clone https://github.com/enferlain/sd-optim.git sd-optim
+    ```
+    *(Replace URL)*
+    Then install dependencies:
+    ```bash
+    cd sd-optim
+    pip install -r requirements.txt
+    ```
+3.  **Configuration:** Copy `.tmpl.yaml` files in `conf/` to `.yaml` and edit them (especially `config.yaml` and `optimization_guide.yaml`) to match your paths and desired settings.
+4.  **Run:** Launch your WebUI with the API enabled. Then, from the `sd-optim` directory, run:
+    ```bash
+    python sd_optim.py
+    ```
 
-An opinionated take on stable-diffusion models-merging automatic-optimisation.
+**For detailed setup, configuration options, and usage guides, please see the [[Project Wiki]](https://github.com/your-username/sd-optim/wiki).** *(Replace URL)*
 
-The main idea is to treat models-merging procedure as a black-box model with 26 parameters: one for each block plus `base_alpha`.
-We can then try to apply black-box optimisation techniques, in particular we focus on [Bayesian optimisation](https://en.wikipedia.org/wiki/Bayesian_optimization) with a [Gaussian Process](https://en.wikipedia.org/wiki/Gaussian_process) emulator.
-Read more [here](https://github.com/fmfn/BayesianOptimization), [here](http://gaussianprocess.org) and [here](https://optimization.cbe.cornell.edu/index.php?title=Bayesian_optimization).
+## Planned Features
 
-The optimisation process is split in two phases:
-1. __exploration__: here we sample (at random for now, with some heuristic in the future) the 26-parameter hyperspace, our block-weights. The number of samples is set by the
-`--init_points` argument. We use each set of weights to merge the two models we use the merged model to generate `batch_size * number of payloads` images which are then scored.
-2. __exploitation__: based on the exploratory phase, the optimiser makes an idea of where (i.e. which set of weights) the optimal merge is.
-This information is used to sample more set of weights `--n_iters` number of times. This time we don't sample all of them in one go. Instead, we sample once, merge the models,
-generate and score the images and update the optimiser knowledge about the merging space. This way the optimiser can adapt the strategy step-by-step.
+*   Integration with more WebUIs (ComfyUI, Reforge).
+*   More advanced visualization options.
+*   Hotkey support for interaction (scoring mode switching, early stopping).
+*   Dynamic adjustment of runtime parameters (batch size, payloads).
+*   Expanded scoring options (perceptual similarity, character consistency).
+*   Potential integration of other optimization libraries (e.g., Hyperactive).
 
-At the end of the exploitation phase, the set of weights scoring the highest score are deemed to be the optimal ones.
+## Acknowledgements
 
-## OK, How Do I Use It In Practice?
-
-Head to the [wiki](https://github.com/s1dlx/sd-webui-bayesian-merger/wiki/Home) for all the instructions to get you started.
-
-## With the help of
-
-- [sdweb-merge-block-weighted-gui](https://github.com/bbc-mc/sdweb-merge-block-weighted-gui)
-- [sd-webui-supermerger](https://github.com/hako-mikan/sd-webui-supermerger)
-- [sdweb-auto-MBW](https://github.com/Xerxemi/sdweb-auto-MBW)
-- [SD-Chad](https://github.com/grexzen/SD-Chad.git)
+*   Based on the original concept by [s1dlx](https://github.com/s1dlx).
+*   Relies heavily on the fantastic [`sd-mecha`](https://github.com/ljleb/sd-mecha) library by [ljleb](https://github.com/ljleb).
+*   Inspired by and utilizes concepts/code from various community projects (SuperMerger, sd-meh, etc.).
+*   Scoring models from multiple creators (LAION, OpenAI, Salesforce, THUDM, yuvalkirstain, etc.).

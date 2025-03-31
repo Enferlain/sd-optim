@@ -18,7 +18,7 @@ from optuna.samplers import (
     TPESampler, RandomSampler, CmaEsSampler, QMCSampler, GridSampler, NSGAIISampler, GPSampler
 )
 from optuna.pruners import MedianPruner, SuccessiveHalvingPruner
-from sd_interim_bayesian_merger.optimizer import Optimizer
+from sd_optim.optimizer import Optimizer
 
 
 logger = logging.getLogger(__name__)

@@ -21,9 +21,9 @@ from sd_mecha.extensions.merge_methods import MergeMethod, RecipeNodeOrValue
 from sd_mecha.recipe_nodes import ModelRecipeNode
 
 # Assuming utils contains MergeMethodCodeSaver and add_extra_keys
-from sd_interim_bayesian_merger import utils
+from sd_optim import utils
 # Assuming your custom methods are in MergeMethods and decorated correctly
-from sd_interim_bayesian_merger.merge_methods import MergeMethods
+from sd_optim.merge_methods import MergeMethods
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO)
@@ -86,7 +86,6 @@ class Merger:
         if not hasattr(self.cfg, 'save_dtype') or self.cfg.save_dtype not in precision_mapping:
              raise ValueError(f"Invalid or missing 'save_dtype': {self.cfg.get('save_dtype')}. Must be one of {list(precision_mapping.keys())}")
 
-
     def _create_model_nodes(self) -> List[ModelRecipeNode]:
         """Creates basic sd_mecha.model() nodes for all models in model_paths."""
         model_nodes = []
@@ -143,7 +142,6 @@ class Merger:
         output_dir = self.models_dir
         output_dir.mkdir(parents=True, exist_ok=True)
         return output_dir / f"{combined_name}.safetensors"
-
 
     def create_model_out_name(self, it: int = 0) -> None:
         self.output_file = self._create_model_output_name(it=it)
@@ -256,32 +254,6 @@ class Merger:
         except Exception as e:
             logger.error(f"Failed to serialize or save recipe: {e}")
 
-    def _resolve_merge_method(self, merge_method_name: str) -> MergeMethod:
-        """Resolves merge method from sd-mecha built-ins or local MergeMethods class."""
-        try:
-            # Try resolving built-in method
-            merge_func = sd_mecha.extensions.merge_methods.resolve(merge_method_name)
-            logger.info(f"Resolved merge method '{merge_method_name}' from sd-mecha built-ins.")
-            return merge_func
-        except ValueError:
-            # If not found, try getting from our custom class
-            if hasattr(MergeMethods, merge_method_name):
-                merge_func = getattr(MergeMethods, merge_method_name)
-                # IMPORTANT: Assumes methods in MergeMethods are decorated with @merge_method
-                if isinstance(merge_func, MergeMethod):
-                    logger.info(f"Resolved merge method '{merge_method_name}' from local MergeMethods.")
-                    return merge_func
-                else:
-                     # Attempt to manually wrap if not decorated (less ideal)
-                    try:
-                        wrapped_func = sd_mecha.merge_method(merge_func, identifier=merge_method_name, register=False)
-                        logger.warning(f"Manually wrapping local method '{merge_method_name}'. Decorate with @sd_mecha.merge_method for proper registration.")
-                        return wrapped_func
-                    except Exception as wrap_e:
-                         raise ValueError(f"Local method '{merge_method_name}' exists but is not a valid sd-mecha MergeMethod and couldn't be wrapped: {wrap_e}")
-            else:
-                raise ValueError(f"Merge method '{merge_method_name}' not found in sd-mecha built-ins or local MergeMethods.")
-
     def _prepare_model_recipe_args(
         self,
         initial_model_nodes: List[ModelRecipeNode],
@@ -323,7 +295,6 @@ class Merger:
                      # Handle error: skip this model, raise, or use original node?
                      raise ValueError(f"LoRA conversion failed for {current_node.path}") from e
 
-
             # --- Delta Subtraction ---
             # Check if the corresponding positional parameter expects a delta
             if i < len(input_spaces_args):
@@ -347,7 +318,6 @@ class Merger:
                               current_node = sd_mecha.literal(0.0) # Represent zero delta as literal 0
                      else:
                          raise ValueError(f"Merge method '{merge_method.identifier}' requires a delta for positional argument {i}, but no base model was selected.")
-
 
             prepared_nodes.append(current_node)
 
@@ -412,6 +382,7 @@ class Merger:
          except Exception as e:
               logger.error(f"Error during post-merge saving operations: {e}")
 
+
     def merge(
             self,
             params: Dict,  # Input from the optimizer - ESSENTIAL
@@ -431,7 +402,7 @@ class Merger:
         logger.info(f"Building merge recipe for mode: {cfg.merge_method}")
 
         # 2. Resolve merge method
-        merge_func = self._resolve_merge_method(cfg.merge_method)
+        merge_func = utils.resolve_merge_method(cfg.merge_method)
 
         # 3. Select base model
         base_model_node = self._select_base_model()
@@ -468,6 +439,7 @@ class Merger:
 
         logger.info(f"Merge process completed for iteration. Output: {model_path}")
         return model_path
+
 
     def layer_adjust(self, params: Dict, cfg: DictConfig) -> Path:  # Takes params
         """Loads a model, applies layer adjustments, and saves the modified model."""

@@ -1,12 +1,10 @@
-# Byte-compiled / optimized / DLL files
+# --- Standard Python ---
 __pycache__/
 *.py[cod]
 *$py.class
-
-# C extensions
 *.so
 
-# Distribution / packaging
+# --- Distribution / Packaging ---
 .Python
 build/
 develop-eggs/
@@ -27,17 +25,14 @@ share/python-wheels/
 *.egg
 MANIFEST
 
-# PyInstaller
-#  Usually these files are written by a python script from a template
-#  before PyInstaller builds the exe, so as to inject date/other infos into it.
-*.manifest
-*.spec
-
-# Installer logs
+# --- Installers / Logs ---
 pip-log.txt
 pip-delete-this-directory.txt
+logs/**/*.json
+logs/**/*.jsonl
+*.jsonl # Optuna logs if created outside logs/
 
-# Unit test / coverage reports
+# --- Test / Coverage ---
 htmlcov/
 .tox/
 .nox/
@@ -51,57 +46,18 @@ coverage.xml
 .hypothesis/
 .pytest_cache/
 
-# Translations
+# --- Translations ---
 *.mo
 *.pot
 
-# Django stuff:
-*.log
-local_settings.py
-db.sqlite3
-db.sqlite3-journal
-
-# Flask stuff:
-instance/
-.webassets-cache
-
-# Scrapy stuff:
-.scrapy
-
-# Sphinx documentation
+# --- Documentation ---
 docs/_build/
+/site # mkdocs
 
-# PyBuilder
-target/
-
-# Jupyter Notebook
+# --- IDE / Editor ---
 .ipynb_checkpoints
-
-# IPython
 profile_default/
 ipython_config.py
-
-# pyenv
-.python-version
-
-# pipenv
-#   According to pypa/pipenv#598, it is recommended to include Pipfile.lock in version control.
-#   However, in case of collaboration, if having platform-specific dependencies or dependencies
-#   having no cross-platform support, pipenv may install dependencies that don't work, or not
-#   install all needed dependencies.
-#Pipfile.lock
-
-# PEP 582; used by e.g. github.com/David-OConnor/pyflow
-__pypackages__/
-
-# Celery stuff
-celerybeat-schedule
-celerybeat.pid
-
-# SageMath parsed files
-*.sage.py
-
-# Environments
 .env
 .venv
 env/
@@ -109,70 +65,76 @@ venv/
 ENV/
 env.bak/
 venv.bak/
-
-# Spyder project settings
 .spyderproject
 .spyproject
-
-# Rope project settings
 .ropeproject
+.vscode/
+*.swp
+*.swo
 
-# mkdocs documentation
-/site
-
-# mypy
+# --- Type Checkers ---
 .mypy_cache/
 .dmypy.json
 dmypy.json
-
-# Pyre type checker
 .pyre/
 
-# checkpoints
+# --- Large Model/Data Files ---
 **/*.safetensors
+!tests/fixtures/*.safetensors # Example: Allow small test models if needed
 **/*.ckpt
 **/*.pth
-
-# macos
-**/.DS_Store
-
-# images
-**/*.png
-**/*.jpg
-
-# wildcards and payloads
-**/*.yaml
-!**/payload.tmpl.yaml
-**/*.txt
-
-# logs
-**/*.json
-
-# vim
-**/*.swp
-**/*.swo
-
-# configs
-!conf/config.tmpl.yaml
-!conf/payloads/cargo.tmpl.yaml
-!conf/optimisation_guide/guide.tmpl.yaml
-
-# notebooks
-**/*.ipynb
-
-# make
-Makefile
-
-# debugging files
-scorer_demo.py
-models/ViT-L-14.pt
+# Ignore downloaded scorer models explicitly by name/path
+models/Laion.pth
+models/Chad.pth
+models/WD_Aes.pth
 models/ImageReward.pt
-models/med_config.json
-models/HPS_v2_compressed.pt
-models/pytorch_model.bin
-TEST.py
+models/CLIP-ViT-L-14.pt
+models/BLIP_Large.safetensors
+models/HPS_v2.1.pt
+models/Pick-A-Pic.safetensors
+models/ShadowV2.safetensors
+models/Cafe.safetensors
+models/CLASS.safetensors
+models/REAL.pt
+models.ANIME.safetensors
+models/CityAesthetics-Anime-v1.8.safetensors
+# Add any other large downloaded files here...
 /mscoco/
 /mscoco.parquet
-models/CLIP-ViT-L-14.pt
-models/HPS_v2.1.pt
-models/Real.pt
+
+# --- OS Specific ---
+**/.DS_Store
+
+# --- Generated Images & Plots ---
+logs/**/*.png
+logs/**/*.jpg
+# output_images/ # If you have another output dir
+
+# --- Configs ---
+# Ignore user-generated configs, keep templates
+*.yaml
+!conf/config.tmpl.yaml
+!conf/payloads/*.tmpl.yaml # Match any cargo_*.tmpl.yaml
+!conf/payloads/cargo/payload.tmpl.yaml
+!conf/optimization_guide/guide.tmpl.yaml
+!conf/model_configs/*.yaml # Allow custom block configs IF stored here
+
+# --- Other Project Files ---
+*.txt
+# !wildcards/**/*.txt # Only if wildcards are stored in a tracked dir
+
+*.ipynb # Jupyter notebooks
+# Makefile # Keep if used
+
+# --- Local Test/Demo Scripts ---
+scorer_demo.py
+TEST.py
+
+# --- Explicitly Tracked ---
+# Ensure core files aren't accidentally ignored by broad rules above
+!requirements.txt
+!sd_optim.py # Or main.py
+!install.py
+!README.md
+!LICENSE
+# Add other essential scripts or files if necessary

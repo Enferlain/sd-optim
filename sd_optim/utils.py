@@ -1,3 +1,5 @@
+# bounds.py - Version 1.1 - Added custom_block_config_id support
+
 import functools
 import gc
 import inspect
@@ -18,6 +20,7 @@ import threading
 from pathlib import Path
 from typing import List, Tuple, Dict, Set, Union, Any, ClassVar, Optional, MutableMapping, Mapping
 from dataclasses import field, dataclass
+from torch import Tensor
 
 from hydra.core.hydra_config import HydraConfig
 from omegaconf import DictConfig
@@ -28,7 +31,11 @@ from sd_mecha import recipe_nodes, recipe_serializer, model_detection
 from sd_mecha.recipe_nodes import RecipeNode, MergeRecipeNode, RecipeVisitor, ModelRecipeNode, ParameterRecipeNode
 from sd_mecha.recipe_merger import RecipeMerger
 from sd_mecha.hypers import Hyper
-from torch import Tensor
+
+from sd_mecha.extensions.merge_methods import MergeMethod
+from sd_optim.merge_methods import MergeMethods
+from sd_mecha.extensions.merge_methods import merge_method, Parameter, Return, StateDict, T # Ensure T is imported or defined
+from sd_mecha.streaming import StateDictKeyError
 
 logger = logging.getLogger(__name__)
 
@@ -53,6 +60,168 @@ OPTIMIZABLE_HYPERPARAMETERS = {
     "pqr_projected_merge": ["alpha", "rank_ratio"],
     # ... other methods and their optimizable hyperparameters
 }
+
+### Custom model config code
+# --- Re-use or define the regexes needed for mapping ---
+# (Copied from sd-mecha's internal block converters for consistency)
+re_inp = re.compile(r"\.input_blocks\.(\d+)\.")  # Matches .input_blocks.0. to .input_blocks.8.
+re_mid = re.compile(r"\.middle_block\.(\d+)\.")  # Matches .middle_block.0.
+re_out = re.compile(r"\.output_blocks\.(\d+)\.") # Matches .output_blocks.0. to .output_blocks.8.
+
+# Define T if not already imported from merge_methods
+# T = TypeVar("T")
+
+@merge_method(
+    identifier="convert_sdxl_optim_blocks_to_sdxl_sgm", # Unique ID for this conversion
+    is_conversion=True # Mark this as a conversion function for sd_mecha.convert
+)
+def convert_sdxl_optim_blocks_to_sdxl_sgm(
+    # Input: A StateDict containing block names and their values (e.g., alpha values)
+    # The model_config MUST match the identifier of our registered custom block config
+    blocks_dict: Parameter(StateDict[T], model_config="sdxl-optim_blocks"),
+    # kwargs will contain 'key', the name of the TARGET key (from sdxl-sgm)
+    **kwargs,
+) -> Return(T, model_config="sdxl-sgm"): # Output: The value for the target key, config is sdxl-sgm
+    """
+    Maps an sdxl-sgm key back to a block name defined in sdxl-optim_blocks
+    and returns the corresponding value from the blocks_dict.
+    """
+    target_key = kwargs["key"]
+    block_name = None # Initialize block name
+
+    # --- Mapping Logic ---
+    # This needs to correctly categorize every possible key from sdxl-sgm
+    # back into one of the block names defined in sdxl-optim_blocks.yaml
+
+    # 1. UNET Component Keys (prefix: model.diffusion_model.)
+    if target_key.startswith("model.diffusion_model."):
+        if ".time_embed" in target_key:
+            block_name = "UNET_TIME_EMBED"
+        elif ".out." in target_key: # Final output convs
+            block_name = "UNET_OUT"
+        elif m := re_inp.search(target_key):
+            block_num = int(m.group(1))
+            if 0 <= block_num <= 8:
+                block_name = f"UNET_IN{block_num:02d}"
+        elif re_mid.search(target_key):
+            block_name = "UNET_M00"
+        elif m := re_out.search(target_key):
+            block_num = int(m.group(1))
+            if 0 <= block_num <= 8:
+                block_name = f"UNET_OUT{block_num:02d}"
+
+        # Fallback for UNET keys not caught above
+        if block_name is None:
+            block_name = "UNET_ELSE"
+
+    # 2. CLIP-L (Text Encoder 1) Keys (prefix: conditioner.embedders.0.transformer.text_model.)
+    elif target_key.startswith("conditioner.embedders.0.transformer.text_model."):
+        if ".embeddings." in target_key:
+            block_name = "CLIP_L_EMBEDDING"
+        elif ".final_layer_norm." in target_key:
+            block_name = "CLIP_L_FINAL_NORM"
+        elif ".encoder.layers." in target_key:
+            try:
+                # Extract layer number
+                layer_num_match = re.search(r"\.layers\.(\d+)\.", target_key)
+                if layer_num_match:
+                    layer_num = int(layer_num_match.group(1))
+                    if 0 <= layer_num <= 11:
+                         block_name = f"CLIP_L_IN{layer_num:02d}"
+            except (ValueError, IndexError):
+                 pass # Fallback below handles errors
+
+        # Fallback for CLIP-L keys
+        if block_name is None:
+            block_name = "CLIP_L_ELSE"
+
+    # 3. CLIP-G (Text Encoder 2) Keys (prefix: conditioner.embedders.1.model.)
+    elif target_key.startswith("conditioner.embedders.1.model."):
+        if ".token_embedding." in target_key or ".positional_embedding" in target_key:
+             block_name = "CLIP_G_EMBEDDING"
+        elif ".text_projection" in target_key:
+             block_name = "CLIP_G_TEXT_PROJECTION"
+        elif ".ln_final." in target_key:
+             block_name = "CLIP_G_LN_FINAL"
+        elif ".transformer.resblocks." in target_key or ".encoder.layers." in target_key: # Handle different naming conventions
+            try:
+                # Extract layer number (might be resblocks.X or layers.X)
+                layer_num_match = re.search(r"\.(?:resblocks|layers)\.(\d+)\.", target_key)
+                if layer_num_match:
+                    layer_num = int(layer_num_match.group(1))
+                    if 0 <= layer_num <= 31: # Assuming 0-31 blocks for CLIP-G
+                         block_name = f"CLIP_G_IN{layer_num:02d}"
+            except (ValueError, IndexError):
+                 pass # Fallback below
+
+        # Fallback for CLIP-G keys
+        if block_name is None:
+            block_name = "CLIP_G_ELSE"
+
+    # 4. VAE Keys (prefix: first_stage_model.)
+    elif target_key.startswith("first_stage_model."):
+        # For simplicity, map all VAE keys to one block.
+        # Could be refined with more complex regex if needed.
+        block_name = "VAE_ALL"
+
+    # --- Error Handling & Return ---
+    if block_name is None:
+        # This should ideally not happen if the logic above is exhaustive
+        logger.error(f"Could not map target key '{target_key}' to any block in 'sdxl-optim_blocks'. Check conversion logic.")
+        # Decide what to return: raise error, return a default (e.g., from *_ELSE?), etc.
+        # Returning value from UNET_ELSE as a safe default, but this indicates a logic gap.
+        block_name = "UNET_ELSE" # Or another appropriate fallback
+        # raise ValueError(f"Unhandled key in conversion: {target_key}")
+
+    try:
+        # Retrieve the value (e.g., alpha) associated with the determined block name
+        value = blocks_dict[block_name]
+        # logger.debug(f"Key '{target_key}' mapped to block '{block_name}', returning value {value}")
+        return value
+    except KeyError:
+        # This means the block_name determined above doesn't exist as a key in the input blocks_dict
+        # This indicates an inconsistency between the block config YAML and this conversion function.
+        logger.error(f"Block name '{block_name}' (determined for key '{target_key}') not found in input blocks_dict. Check block config YAML and conversion function.")
+        # Raise error or return a sensible default
+        raise StateDictKeyError(f"Block '{block_name}' not found in the input dictionary for conversion.")
+    except Exception as e:
+         logger.error(f"Unexpected error during conversion for key '{target_key}' mapped to block '{block_name}': {e}", exc_info=True)
+         raise
+
+# --- Need to ensure this function gets registered ---
+# If utils.py is imported early (e.g., in sd_optim.py), the decorator handles it.
+# If generating dynamically, you'd use exec() and then manually register or ensure import.
+
+
+### Method resolve
+def resolve_merge_method(merge_mode_name: str) -> MergeMethod:
+    """Resolves merge method from sd-mecha built-ins or local MergeMethods class."""
+    try:
+        # Try resolving built-in method
+        merge_func = sd_mecha.extensions.merge_methods.resolve(merge_mode_name)
+        logger.debug(f"Resolved merge method '{merge_mode_name}' from sd-mecha built-ins.")
+        return merge_func
+    except ValueError:
+        # If not found, try getting from our custom class
+        logger.debug(f"'{merge_mode_name}' not found in sd-mecha built-ins, checking local MergeMethods...")
+        if hasattr(MergeMethods, merge_mode_name):
+            merge_func = getattr(MergeMethods, merge_mode_name)
+            # IMPORTANT: Assumes methods in MergeMethods are decorated with @merge_method
+            if isinstance(merge_func, MergeMethod):
+                logger.debug(f"Resolved merge method '{merge_mode_name}' from local MergeMethods.")
+                return merge_func
+            else:
+                # Attempt to manually wrap if not decorated (less ideal)
+                try:
+                    wrapped_func = sd_mecha.merge_method(merge_func, identifier=merge_mode_name, register=False)
+                    logger.warning(f"Manually wrapping local method '{merge_mode_name}'. Decorate with @sd_mecha.merge_method for proper registration.")
+                    return wrapped_func
+                except Exception as wrap_e:
+                    raise ValueError(f"Local method '{merge_mode_name}' exists but is not a valid sd-mecha MergeMethod and couldn't be wrapped: {wrap_e}")
+        else:
+            raise ValueError(f"Merge method '{merge_mode_name}' not found in sd-mecha built-ins or local MergeMethods.")
+
+
 
 
 ### Recipe optimization

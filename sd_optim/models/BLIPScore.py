@@ -13,8 +13,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from PIL import Image
-from sd_interim_bayesian_merger.models.BLIP.blip import load_checkpoint
-from sd_interim_bayesian_merger.models.BLIP.blip_pretrain import BLIP_Pretrain
+from sd_optim.models.BLIP.blip import load_checkpoint
+from sd_optim.models.BLIP.blip_pretrain import BLIP_Pretrain
 from torchvision.transforms import Compose, Resize, CenterCrop, ToTensor, Normalize
 
 try:

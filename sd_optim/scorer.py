@@ -11,18 +11,18 @@ from typing import Dict, List, Optional, Tuple
 from hydra.core.hydra_config import HydraConfig
 from omegaconf import DictConfig, open_dict
 from PIL import Image, PngImagePlugin
-from sd_interim_bayesian_merger.models.Laion import Laion as AES
-from sd_interim_bayesian_merger.models.ImageReward import ImageReward as IMGR
-from sd_interim_bayesian_merger.models.CLIPScore import CLIPScore as CLP
-from sd_interim_bayesian_merger.models.BLIPScore import BLIPScore as BLP
-from sd_interim_bayesian_merger.models.HPSv21 import HPSv21Scorer as HPS
-from sd_interim_bayesian_merger.models.PickScore import PickScore as PICK
-from sd_interim_bayesian_merger.models.WDAes import WDAes as WDA
-from sd_interim_bayesian_merger.models.ShadowScore import ShadowScore as SS
-from sd_interim_bayesian_merger.models.CafeScore import CafeScore as CAFE
-from sd_interim_bayesian_merger.models.NoAIScore import NoAIScore as NOAI
-from sd_interim_bayesian_merger.models.CityAesthetics import CityAestheticsScorer as CITY
-from sd_interim_bayesian_merger.models.AestheticV25 import AestheticV25 as AES25
+from sd_optim.models.Laion import Laion as AES
+from sd_optim.models.ImageReward import ImageReward as IMGR
+from sd_optim.models.CLIPScore import CLIPScore as CLP
+from sd_optim.models.BLIPScore import BLIPScore as BLP
+from sd_optim.models.HPSv21 import HPSv21Scorer as HPS
+from sd_optim.models.PickScore import PickScore as PICK
+from sd_optim.models.WDAes import WDAes as WDA
+from sd_optim.models.ShadowScore import ShadowScore as SS
+from sd_optim.models.CafeScore import CafeScore as CAFE
+from sd_optim.models.NoAIScore import NoAIScore as NOAI
+from sd_optim.models.CityAesthetics import CityAestheticsScorer as CITY
+from sd_optim.models.AestheticV25 import AestheticV25 as AES25
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO)

@@ -1,5 +1,5 @@
 # bayes_optimizer.py - Version 1.2
-# bayes_optimizer.py - Version 1.0 (Async Compatible)
+
 import os
 import random
 import logging
@@ -16,7 +16,7 @@ from bayes_opt.domain_reduction import SequentialDomainReductionTransformer
 from hydra.core.hydra_config import HydraConfig
 from scipy.stats import qmc
 
-from sd_interim_bayesian_merger.optimizer import Optimizer
+from sd_optim.optimizer import Optimizer
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.DEBUG)

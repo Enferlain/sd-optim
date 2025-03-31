@@ -16,12 +16,12 @@ from hydra.core.hydra_config import HydraConfig
 from omegaconf import DictConfig, open_dict
 from PIL import Image, PngImagePlugin
 
-from sd_interim_bayesian_merger.bounds import ParameterHandler  # Use new class
-from sd_interim_bayesian_merger.generator import Generator
-from sd_interim_bayesian_merger.merger import Merger
-from sd_interim_bayesian_merger.prompter import Prompter
-from sd_interim_bayesian_merger.scorer import AestheticScorer
-# from sd_interim_bayesian_merger import utils  # Removed: No longer needed
+from sd_optim.bounds import ParameterHandler  # Use new class
+from sd_optim.generator import Generator
+from sd_optim.merger import Merger
+from sd_optim.prompter import Prompter
+from sd_optim.scorer import AestheticScorer
+# from sd_optim import utils  # Removed: No longer needed
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.DEBUG)
@@ -45,7 +45,7 @@ class Optimizer:
         self.cache = {} # FIXED: Added cache initialization
 
         # import artist inside
-        from sd_interim_bayesian_merger.artist import Artist
+        from sd_optim.artist import Artist
         self.artist = Artist(self)
 
     def init_params(self) -> Dict:

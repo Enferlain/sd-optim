@@ -2,7 +2,16 @@
 # It works in conjunction with bounds.py to define the search space.
 # For detailed explanations, see the [[Configuration]] wiki page.
 
+# Optional: Specify a custom block config ID to use for block-level parameters.
+# If set, bounds.py will use this config when processing parameters like 'alpha', 'k',
+# etc., applying the strategies below to the blocks defined in that custom config.
+# Requires the config ID to be registered (e.g., by the setup_custom_blocks utility).
+custom_block_config_id: "sdxl-optim_blocks" # or null if not using a custom block config
+
 components:
+  # Strategies now apply to the components/keys of the relevant config:
+  # - The 'custom_block_config_id' config for block-level merge parameters.
+  # - The base model config (e.g., 'sdxl-sgm') for other parameters.
   # Example 1: Optimize all 'unet' parameters individually
   - name: unet
     strategy: all # Optimize every parameter for each key in this component

@@ -55,7 +55,7 @@ recipe_optimization:
 optimizer:
   # Choose ONE optimizer type
   bayes: True  # Use bayesian-optimization library
-  optuna: False # Use Optuna library (TODO: Implement OptunaOptimizer class selection in sd_optim.py)
+  optuna: False # Use Optuna library
   # tpe: False     # (Deprecated/Not Implemented)
   # atpe: False    # (Deprecated/Not Implemented)
 

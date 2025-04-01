@@ -1,13 +1,18 @@
-# bounds.py - Version 1.1 - Added custom_block_config_id support
+# bounds.py - Version 1.1 - Added custom_block_config_id support and custom_blocks support
 
 import functools
 import gc
+import importlib
+import importlib.util
 import inspect
 import json
 import os
 import pathlib
 import re
+import sys
 import textwrap
+from fnmatch import fnmatch
+
 import torch
 import safetensors.torch
 import sd_mecha
@@ -18,50 +23,28 @@ import yaml
 import threading
 
 from pathlib import Path
-from typing import List, Tuple, Dict, Set, Union, Any, ClassVar, Optional, MutableMapping, Mapping
+from typing import List, Tuple, TypeVar, Dict, Set, Union, Any, ClassVar, Optional, MutableMapping, Mapping
 from dataclasses import field, dataclass
 from torch import Tensor
 
 from hydra.core.hydra_config import HydraConfig
-from omegaconf import DictConfig
+from omegaconf import DictConfig, ListConfig
 from pynput import keyboard
 from copy import deepcopy
 
-from sd_mecha import recipe_nodes, recipe_serializer, model_detection
-from sd_mecha.recipe_nodes import RecipeNode, MergeRecipeNode, RecipeVisitor, ModelRecipeNode, ParameterRecipeNode
-from sd_mecha.recipe_merger import RecipeMerger
-from sd_mecha.hypers import Hyper
-
-from sd_mecha.extensions.merge_methods import MergeMethod
 from sd_optim.merge_methods import MergeMethods
-from sd_mecha.extensions.merge_methods import merge_method, Parameter, Return, StateDict, T # Ensure T is imported or defined
+from sd_mecha.extensions import model_configs, merge_methods
+from sd_mecha.extensions.merge_methods import merge_method, Parameter, Return, StateDict, T, MergeMethod
 from sd_mecha.streaming import StateDictKeyError
+from sd_mecha.extensions.model_configs import ModelConfigImpl, KeyMetadata # Need these for creation
+from omegaconf import DictConfig, OmegaConf # If reading from Hydra config
 
 logger = logging.getLogger(__name__)
 
 
-### What to pik
-OPTIMIZABLE_HYPERPARAMETERS = {
-    "lu_merge": ["alpha", "theta"],
-    "orth_pro": ["alpha"],
-    "clyb_merge": ["alpha"],
-    "ties_sum_extended": ["k"],
-    "streaming_ties_sum_extended": ["min_agreement"],
-    "svd_ties_sum_extended": ["energy_threshold"],
-    "ties_sum_with_dropout": ["probability", "della_eps", "k", "rescale"],
-    "slerp_norm_sign": ["alpha"],
-    "polar_interpolate": ["alpha"],
-    "wavelet_packet_merge": ["alpha"],
-    "multi_domain_alignment": ["alpha", "beta"],
-    "merge_layers": ["alpha"],
-    "delta_dist": ["above_average_ratio", "calibration_value", "direction_ratio", "magnitude_ratio"],
-    "synthetic_fisher_merge": ["noise_scale"],
-    "butterfly_merge": ["alpha", "rank_ratio", "constraint"],
-    "pqr_projected_merge": ["alpha", "rank_ratio"],
-    # ... other methods and their optimizable hyperparameters
-}
-
-### Custom model config code
+########################################
+### --- Custom model config code --- ###
+########################################
 # --- Re-use or define the regexes needed for mapping ---
 # (Copied from sd-mecha's internal block converters for consistency)
 re_inp = re.compile(r"\.input_blocks\.(\d+)\.")  # Matches .input_blocks.0. to .input_blocks.8.
@@ -193,7 +176,216 @@ def convert_sdxl_optim_blocks_to_sdxl_sgm(
 # If generating dynamically, you'd use exec() and then manually register or ensure import.
 
 
-### Method resolve
+#############################
+### --- Custom blocks --- ###
+#############################
+# Placeholder for the dynamic module where we'll exec the converter
+_DYNAMIC_CONVERTER_MODULE_NAME = "sd_optim_dynamic_converters"
+
+def setup_custom_blocks(cfg: DictConfig):
+    """
+    Parses custom block definitions, generates and registers
+    corresponding sd-mecha ModelConfigs and conversion functions.
+    """
+    custom_block_defs = cfg.optimization_guide.get("custom_block_configs")
+    if not custom_block_defs:
+        logger.info("No 'custom_block_configs' section found in optimization_guide. Skipping setup.")
+        return
+
+    if not isinstance(custom_block_defs, (list, ListConfig)):
+        logger.error("'custom_block_configs' must be a list.")
+        raise TypeError("'custom_block_configs' must be a list.")
+
+    logger.info(f"Found {len(custom_block_defs)} custom block configuration(s) to process.")
+
+    # Create a dummy module to hold dynamically generated functions
+    dynamic_module_spec = importlib.util.spec_from_loader(_DYNAMIC_CONVERTER_MODULE_NAME, loader=None)
+    if dynamic_module_spec is None:
+         # Fallback for some environments? Or raise error.
+         logger.warning(f"Could not create spec for dynamic module '{_DYNAMIC_CONVERTER_MODULE_NAME}'. Registration might fail.")
+         dynamic_module = type(sys)(_DYNAMIC_CONVERTER_MODULE_NAME) # Create basic module object
+    else:
+         dynamic_module = importlib.util.module_from_spec(dynamic_module_spec)
+
+    # Add necessary imports to the dynamic module's namespace
+    dynamic_module.sd_mecha = sd_mecha
+    dynamic_module.logging = logging
+    dynamic_module.fnmatch = fnmatch
+    dynamic_module.re = re
+    dynamic_module.Parameter = Parameter
+    dynamic_module.Return = Return
+    dynamic_module.StateDict = StateDict
+    dynamic_module.StateDictKeyError = sd_mecha.streaming.StateDictKeyError
+    dynamic_module.T = T # Make sure T is defined or imported appropriately
+    dynamic_module.merge_method = merge_method # Pass the decorator itself
+
+    # Make the logger available within the generated code's scope if needed
+    dynamic_module.logger = logging.getLogger(f"{__name__}.dynamic_converters")
+
+
+    for i, block_def in enumerate(custom_block_defs):
+        block_config_id = None # Initialize at the start of the iteration's scope
+        try:
+            target_config_id = block_def.get("target_config_id")
+            block_config_id = block_def.get("block_config_id")
+            block_definitions = block_def.get("blocks")
+
+            if not all([target_config_id, block_config_id, block_definitions]):
+                logger.error(f"Custom block definition #{i+1} is missing required keys ('target_config_id', 'block_config_id', 'blocks'). Skipping.")
+                continue
+
+            logger.info(f"Processing custom block config '{block_config_id}' targeting '{target_config_id}'...")
+
+            # --- 1. Generate and Register ModelConfig ---
+            generated_config = generate_block_model_config(block_config_id, block_definitions)
+            model_configs.register(generated_config)
+            logger.info(f"Registered ModelConfig: {block_config_id}")
+
+            # --- 2. Generate and Register Conversion Function ---
+            converter_name = f"convert_{block_config_id.replace('-', '_')}_to_{target_config_id.replace('-', '_')}"
+            converter_code = generate_conversion_function_code(
+                converter_name=converter_name,
+                block_config_id=block_config_id,
+                target_config_id=target_config_id,
+                block_definitions=block_definitions
+            )
+
+            # Execute in the dummy module's namespace
+            exec(converter_code, dynamic_module.__dict__)
+            logger.info(f"Defined conversion function: {converter_name}")
+
+            # Retrieve the function object (it's now an attribute of the dummy module)
+            # converter_func = getattr(dynamic_module, converter_name)
+            # Registration happens via the @merge_method decorator included in the generated code string
+
+        except Exception as e:
+            # Now block_config_id is guaranteed to exist (might be None or the ID)
+            error_id_info = f"'{block_config_id}'" if block_config_id else "(ID assignment failed or missing)"
+            logger.error(f"Failed to process custom block definition #{i+1} ({error_id_info}): {e}", exc_info=True)
+            # raise # Optionally re-raise to halt execution
+
+def generate_block_model_config(config_id: str, block_defs: List[Dict]) -> model_configs.ModelConfig:
+    """Generates an sd_mecha ModelConfig object from block definitions."""
+    components = {'blocks': {}} # Use a single 'blocks' component for simplicity
+    for block in block_defs:
+        name = block.get("name")
+        if not name: continue
+        # Blocks map to single floats in this config
+        components['blocks'][name] = {'shape': [], 'dtype': 'float32'}
+
+    # Validate that a fallback block (e.g., '*_ELSE' or '*') exists if needed
+    has_fallback = any(p == "*" for block in block_defs for p in block.get("patterns",[])) or \
+                   any(n.endswith("_ELSE") for block in block_defs for n in block.get("name",""))
+
+    if not has_fallback and block_defs:
+         logger.warning(f"Custom block config '{config_id}' might be missing a fallback block (e.g., name ending in '_ELSE' or pattern '*') to catch unmapped keys.")
+
+    config_dict = {
+        "identifier": config_id,
+        "components": components
+    }
+    return model_configs.ModelConfigImpl(**config_dict) # Use the concrete implementation
+
+def generate_conversion_function_code(converter_name: str, block_config_id: str, target_config_id: str, block_definitions: List[Dict]) -> str:
+    """Generates the Python source code string for the conversion function."""
+
+    # Header and imports within the generated code's scope
+    code = f"""
+import sd_mecha # Access via passed module object
+import logging
+import fnmatch
+import re
+from sd_mecha.extensions.merge_methods import Parameter, Return, StateDict, T
+from sd_mecha.streaming import StateDictKeyError
+
+# Use logger passed into the dynamic module's scope
+logger = logging.getLogger("{__name__}.dynamic_converters.{converter_name}")
+
+@sd_mecha.extensions.merge_methods.merge_method( # Use decorator via sd_mecha module reference
+    identifier="{converter_name}",
+    is_conversion=True
+)
+def {converter_name}(
+    blocks_dict: Parameter(StateDict[T], model_config="{block_config_id}"),
+    **kwargs,
+) -> Return(T, model_config="{target_config_id}"):
+
+    target_key = kwargs["key"]
+    block_name = None
+    # logger.debug(f"Converter '{converter_name}' called for target key: {{target_key}}")
+
+"""
+    # Build the if/elif chain for pattern matching
+    fallback_block = None
+    for block in block_definitions:
+        name = block.get("name")
+        patterns = block.get("patterns")
+        if not name or not patterns:
+            continue
+
+        # Check if this is the fallback block (must be last)
+        is_fallback = "*" in patterns
+        if is_fallback:
+             if fallback_block is not None:
+                 logger.warning(f"Multiple fallback patterns ('*') found in '{block_config_id}'. Using last one: '{name}'")
+             fallback_block = name
+             continue # Add fallback check at the end
+
+        # Use fnmatch for wildcards, consider regex for more complex patterns
+        # Need to escape regex special chars if using fnmatch patterns directly with re
+        conditions = []
+        for p in patterns:
+             # Basic check if regex might be intended, otherwise use fnmatch
+             if any(c in p for c in r"[]().+?^${}"): # Simple check for regex chars
+                 # Use re.fullmatch (anchored match)
+                 conditions.append(f're.fullmatch(r"{p}", target_key)') # Pass 're' module
+             else:
+                 # Use fnmatch
+                 conditions.append(f'fnmatch.fnmatch(target_key, "{p}")') # Pass 'fnmatch' module
+
+        condition_str = " or ".join(conditions)
+        code += f"""
+    if {condition_str}:
+        block_name = "{name}"
+"""
+
+    # Add the fallback block condition at the end
+    if fallback_block:
+        code += f"""
+    if block_name is None: # If no specific pattern matched, use fallback
+        block_name = "{fallback_block}"
+"""
+    else:
+         # No fallback defined, log error if no match
+         code += f"""
+    if block_name is None:
+        logger.error(f"Converter '{converter_name}': Key '{{target_key}}' did not match any defined block patterns and no fallback ('*') was specified.")
+        # Option 1: Raise an error
+        # raise ValueError(f"Unhandled key in conversion '{converter_name}': {{target_key}}")
+        # Option 2: Return a default (e.g., 0.0) - potentially dangerous
+        logger.warning(f"Returning default value (e.g., 0.0 or neutral) for unmapped key '{{target_key}}'. Define a fallback pattern ('*') to handle this explicitly.")
+        # Attempt to return neutral element (0 for float/tensor) - requires type T awareness
+        return 0.0 # Simplistic default, might need refinement based on T
+"""
+
+    # Add the final lookup and return part
+    code += f"""
+    # logger.debug(f"Key '{{target_key}}' mapped to block '{{block_name}}'")
+    try:
+        return blocks_dict[block_name]
+    except KeyError:
+        logger.error(f"Block name '{{block_name}}' (determined for key '{{target_key}}') not found in input blocks_dict for converter '{converter_name}'. Check block config YAML and guide.yaml definitions.")
+        raise StateDictKeyError(f"Block '{{block_name}}' not found in the input dictionary for conversion.")
+    except Exception as e:
+        logger.error(f"Unexpected error during conversion for key '{{target_key}}' mapped to block '{{block_name}}': {{e}}", exc_info=True)
+        raise
+"""
+    return code
+
+
+##############################
+### --- Method resolve --- ###
+##############################
 def resolve_merge_method(merge_mode_name: str) -> MergeMethod:
     """Resolves merge method from sd-mecha built-ins or local MergeMethods class."""
     try:
@@ -222,7 +414,7 @@ def resolve_merge_method(merge_mode_name: str) -> MergeMethod:
             raise ValueError(f"Merge method '{merge_mode_name}' not found in sd-mecha built-ins or local MergeMethods.")
 
 
-
+### ------------- old functions that haven't been updated to new mecha yet ------------ ###
 
 ### Recipe optimization
 def get_target_nodes(recipe_path: Union[str, pathlib.Path], target_nodes: Union[str, List[str]]) -> Dict[

@@ -407,45 +407,60 @@ class OptunaOptimizer(Optimizer):
             logger.error("Optimizer bounds not initialized in _objective. Cannot suggest parameters.")
             raise optuna.exceptions.TrialPruned("Bounds not available")  # Prune trial if bounds missing
 
-        # V1.1 - Corrected bound handling for float ranges
+        # V1.2 - Corrected int vs float range detection
         for param_name, bounds_value in self.optimizer_pbounds.items():
-            if isinstance(bounds_value, tuple) and len(bounds_value) == 2:
-                # REMOVED check for exact (0.0, 1.0) tuple
-
-                # Check for integer range first
-                if all(isinstance(v, int) or (isinstance(v, float) and v.is_integer()) for v in bounds_value):
-                    # Ensure bounds are actually different before suggesting int range
-                    low, high = int(bounds_value[0]), int(bounds_value[1])
-                    if low == high:
-                        params[param_name] = low  # Treat as fixed if bounds are same
-                        trial.set_user_attr(f"fixed_{param_name}", True)
+            suggested_value = None
+            try:
+                logger.debug(f"Suggesting for: '{param_name}', Bounds: {bounds_value} (Type: {type(bounds_value)})")
+                if isinstance(bounds_value, tuple) and len(bounds_value) == 2:
+                    # --- CORRECTED LOGIC ---
+                    # Check if BOTH bounds are actual Python integers
+                    if all(isinstance(v, int) for v in bounds_value):
+                        # Explicit Integer Range
+                        low, high = int(bounds_value[0]), int(bounds_value[1])
+                        if low == high:
+                            suggested_value = low
+                            trial.set_user_attr(f"fixed_{param_name}", True)
+                            logger.debug(" -> Fixed Int")
+                        else:
+                            suggested_value = trial.suggest_int(param_name, low, high)
+                            logger.debug(" -> suggest_int (Explicit Int Range)")
+                    # Otherwise (at least one is float, or they are floats like 0.0, 1.0), treat as float
                     else:
-                        params[param_name] = trial.suggest_int(param_name, low, high)
-                # Default to float range (handles (0.0, 1.0) correctly now)
-                else:
-                    low, high = float(bounds_value[0]), float(bounds_value[1])
-                    # Ensure bounds are different before suggesting range
-                    if abs(low - high) < 1e-9:  # Check for near equality for floats
-                        params[param_name] = low  # Treat as fixed
-                        trial.set_user_attr(f"fixed_{param_name}", True)
-                    else:
-                        params[param_name] = trial.suggest_float(param_name, low, high)
+                        low, high = float(bounds_value[0]), float(bounds_value[1])
+                        if abs(low - high) < 1e-9:  # Check for fixed float
+                            suggested_value = low
+                            trial.set_user_attr(f"fixed_{param_name}", True)
+                            logger.debug(" -> Fixed Float")
+                        else:
+                            # This now correctly handles (0.0, 1.0)
+                            suggested_value = trial.suggest_float(param_name, low, high)
+                            logger.debug(" -> suggest_float (Float Range or Mixed)")
+                    # --- END OF CORRECTION ---
 
-            elif isinstance(bounds_value, list):
-                # Categorical list - check if only one option (fixed)
-                if len(bounds_value) == 1:
-                    params[param_name] = bounds_value[0]
-                    trial.set_user_attr(f"fixed_{param_name}", True)
+                elif isinstance(bounds_value, list):
+                    # Categorical logic (remains the same)
+                    if len(bounds_value) == 1:
+                        suggested_value = bounds_value[0];
+                        trial.set_user_attr(f"fixed_{param_name}", True);
+                        logger.debug(" -> Fixed Categorical")
+                    else:
+                        suggested_value = trial.suggest_categorical(param_name, bounds_value);
+                        logger.debug(" -> suggest_categorical")
+                elif isinstance(bounds_value, (int, float)):
+                    # Fixed value logic (remains the same)
+                    suggested_value = bounds_value;
+                    trial.set_user_attr(f"fixed_{param_name}", True);
+                    logger.debug(" -> Fixed Value")
                 else:
-                    params[param_name] = trial.suggest_categorical(param_name, bounds_value)
-            elif isinstance(bounds_value, (int, float)):
-                # Fixed value from custom_bounds
-                params[param_name] = bounds_value
-                trial.set_user_attr(f"fixed_{param_name}", True)
-            else:
-                logger.warning(
-                    f"Unsupported bound type for Optuna suggestion: {type(bounds_value)} for '{param_name}'. Skipping.")
-                raise optuna.exceptions.TrialPruned(f"Unsupported bounds for {param_name}")
+                    logger.warning(f"Unsupported bound type: {type(bounds_value)} for '{param_name}'.")
+                    raise optuna.exceptions.TrialPruned(f"Unsupported bounds for {param_name}")
+
+                params[param_name] = suggested_value
+            except Exception as e_suggest:
+                logger.error(f"Error during suggestion for '{param_name}' with bounds {bounds_value}: {e_suggest}",
+                             exc_info=True)
+                raise  # Re-raise error to stop trial
 
         try:
             # Run the async function in a synchronous context

@@ -176,51 +176,56 @@ class Optimizer:
         total_score = 0.0
         images_generated = 0
         scores = []
-        norm_weights = [] # Changed variable name for clarity
-
-        # Use prompter to get payloads and target paths
+        norm_weights = []
         payloads, target_paths = self.prompter.render_payloads(self.cfg.batch_size)
-        if not payloads:
-            logger.error("Prompter did not generate any payloads.")
-            return 0.0
+        if not payloads: logger.error("Prompter generated no payloads."); return 0.0
 
-        img_gen = self.generator.generate(payloads[0], self.cfg) # Start generator for first payload
+        # Assuming generator handles multiple payloads or we loop through them later
+        # For now, focusing on iterating the generator for the first payload
+        # Note: generator.generate might need adjustment if it expects a single payload vs list
+        logger.info(f"Starting image generation for {len(payloads)} payload(s)...")
+        img_gen = self.generator.generate(payloads[0], self.cfg) # Get the async generator
 
         try:
-            async for i, image in enumerate(img_gen): # Iterate using async for
-                if i >= len(payloads): # Safety break if generator yields more than expected
-                    logger.warning("Generator yielded more images than payloads requested.")
+            image_index = 0 # Manual index counter
+            async for image in img_gen: # Use async for directly on the generator
+                # Check if we have a corresponding payload/path
+                if image_index >= len(payloads):
+                    logger.warning(f"Generator yielded more images ({image_index+1}) than payloads ({len(payloads)}). Stopping generation loop.")
                     break
 
-                current_payload = payloads[i]
-                current_target_base_name = target_paths[i] # Get base name from prompter
+                # Get corresponding payload and path info using the manual index
+                current_payload = payloads[image_index]
+                current_target_base_name = target_paths[image_index]
+                logger.debug(f"Processing generated image {image_index+1} for payload '{current_target_base_name}'")
 
                 try:
-                    # Score the image (assuming scorer is synchronous for now)
-                    score = self.scorer.score(image, current_payload["prompt"], name=current_target_base_name) # Pass base name
+                    # Score the image
+                    score = self.scorer.score(image, current_payload["prompt"], name=current_target_base_name)
                 except Exception as e_score:
-                    logger.error(f"Error scoring image {i}: {e_score}", exc_info=True)
+                    logger.error(f"Error scoring image {image_index}: {e_score}", exc_info=True)
                     score = 0.0 # Assign default score on error
 
+                # Store score and weight
                 weight = current_payload.get("score_weight", 1.0)
                 scores.append(score)
                 norm_weights.append(weight)
                 images_generated += 1
+                print(f"  Image {image_index+1}/{len(payloads)} scored: {score:.4f} (Weight: {weight})") # Use manual index
 
-                print(f"  Image {i+1}/{len(payloads)} scored: {score:.4f} (Weight: {weight})")
-
-                # Save image (synchronous, maybe make async later if slow)
+                # Save image
                 if self.cfg.save_imgs:
-                    self.save_img(image, current_target_base_name, score, self.iteration, i, current_payload)
+                    self.save_img(image, current_target_base_name, score, self.iteration, image_index, current_payload) # Use manual index
 
-                # If generator yields per batch, handle next payload here if needed
-                # This assumes generator yields one image at a time matching payloads list
+                image_index += 1 # Increment manual index
 
+        except TypeError as e_type:
+             # Catching the specific error might help debug if generator is wrong
+             logger.error(f"TypeError during async for loop (Generator issue?): {e_type}", exc_info=True)
+             return 0.0 # Fail trial if iteration fails
         except Exception as e_gen:
-            logger.error(f"Error during image generation/scoring loop: {e_gen}", exc_info=True)
-            # Decide return value - maybe partial score or 0.0?
-            # Returning 0.0 for now if loop fails significantly.
-            return 0.0
+            logger.error(f"Error during image generation/scoring async loop: {e_gen}", exc_info=True)
+            return 0.0 # Fail trial
 
         gen_score_duration = asyncio.get_event_loop().time() - start_gen_score_time
         logger.info(f"Image generation & scoring took {gen_score_duration:.2f} seconds for {images_generated} images.")

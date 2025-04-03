@@ -51,362 +51,244 @@ re_inp = re.compile(r"\.input_blocks\.(\d+)\.")  # Matches .input_blocks.0. to .
 re_mid = re.compile(r"\.middle_block\.(\d+)\.")  # Matches .middle_block.0.
 re_out = re.compile(r"\.output_blocks\.(\d+)\.") # Matches .output_blocks.0. to .output_blocks.8.
 
-
-@merge_method(
-    identifier="convert_sdxl_optim_blocks_to_sdxl_sgm", # Unique ID for this conversion
-    is_conversion=True # Mark this as a conversion function for sd_mecha.convert
-)
-def convert_sdxl_optim_blocks_to_sdxl_sgm(
-    # Input: A StateDict containing block names and their values (e.g., alpha values)
-    # The model_config MUST match the identifier of our registered custom block config
-    blocks_dict: Parameter(StateDict[T], model_config="sdxl-optim_blocks"),
-    # kwargs will contain 'key', the name of the TARGET key (from sdxl-sgm)
-    **kwargs,
-) -> Return(T, model_config="sdxl-sgm"): # Output: The value for the target key, config is sdxl-sgm
-    """
-    Maps an sdxl-sgm key back to a block name defined in sdxl-optim_blocks
-    and returns the corresponding value from the blocks_dict.
-    """
-    target_key = kwargs["key"]
-    block_name = None # Initialize block name
-
-    # --- Mapping Logic ---
-    # This needs to correctly categorize every possible key from sdxl-sgm
-    # back into one of the block names defined in sdxl-optim_blocks.yaml
-
-    # 1. UNET Component Keys (prefix: model.diffusion_model.)
-    if target_key.startswith("model.diffusion_model."):
-        if ".time_embed" in target_key:
-            block_name = "UNET_TIME_EMBED"
-        elif ".out." in target_key: # Final output convs
-            block_name = "UNET_OUT"
-        elif m := re_inp.search(target_key):
-            block_num = int(m.group(1))
-            if 0 <= block_num <= 8:
-                block_name = f"UNET_IN{block_num:02d}"
-        elif re_mid.search(target_key):
-            block_name = "UNET_M00"
-        elif m := re_out.search(target_key):
-            block_num = int(m.group(1))
-            if 0 <= block_num <= 8:
-                block_name = f"UNET_OUT{block_num:02d}"
-
-        # Fallback for UNET keys not caught above
-        if block_name is None:
-            block_name = "UNET_ELSE"
-
-    # 2. CLIP-L (Text Encoder 1) Keys (prefix: conditioner.embedders.0.transformer.text_model.)
-    elif target_key.startswith("conditioner.embedders.0.transformer.text_model."):
-        if ".embeddings." in target_key:
-            block_name = "CLIP_L_EMBEDDING"
-        elif ".final_layer_norm." in target_key:
-            block_name = "CLIP_L_FINAL_NORM"
-        elif ".encoder.layers." in target_key:
-            try:
-                # Extract layer number
-                layer_num_match = re.search(r"\.layers\.(\d+)\.", target_key)
-                if layer_num_match:
-                    layer_num = int(layer_num_match.group(1))
-                    if 0 <= layer_num <= 11:
-                         block_name = f"CLIP_L_IN{layer_num:02d}"
-            except (ValueError, IndexError):
-                 pass # Fallback below handles errors
-
-        # Fallback for CLIP-L keys
-        if block_name is None:
-            block_name = "CLIP_L_ELSE"
-
-    # 3. CLIP-G (Text Encoder 2) Keys (prefix: conditioner.embedders.1.model.)
-    elif target_key.startswith("conditioner.embedders.1.model."):
-        if ".token_embedding." in target_key or ".positional_embedding" in target_key:
-             block_name = "CLIP_G_EMBEDDING"
-        elif ".text_projection" in target_key:
-             block_name = "CLIP_G_TEXT_PROJECTION"
-        elif ".ln_final." in target_key:
-             block_name = "CLIP_G_LN_FINAL"
-        elif ".transformer.resblocks." in target_key or ".encoder.layers." in target_key: # Handle different naming conventions
-            try:
-                # Extract layer number (might be resblocks.X or layers.X)
-                layer_num_match = re.search(r"\.(?:resblocks|layers)\.(\d+)\.", target_key)
-                if layer_num_match:
-                    layer_num = int(layer_num_match.group(1))
-                    if 0 <= layer_num <= 31: # Assuming 0-31 blocks for CLIP-G
-                         block_name = f"CLIP_G_IN{layer_num:02d}"
-            except (ValueError, IndexError):
-                 pass # Fallback below
-
-        # Fallback for CLIP-G keys
-        if block_name is None:
-            block_name = "CLIP_G_ELSE"
-
-    # 4. VAE Keys (prefix: first_stage_model.)
-    elif target_key.startswith("first_stage_model."):
-        # For simplicity, map all VAE keys to one block.
-        # Could be refined with more complex regex if needed.
-        block_name = "VAE_ALL"
-
-    # --- Error Handling & Return ---
-    if block_name is None:
-        # This should ideally not happen if the logic above is exhaustive
-        logger.error(f"Could not map target key '{target_key}' to any block in 'sdxl-optim_blocks'. Check conversion logic.")
-        # Decide what to return: raise error, return a default (e.g., from *_ELSE?), etc.
-        # Returning value from UNET_ELSE as a safe default, but this indicates a logic gap.
-        block_name = "UNET_ELSE" # Or another appropriate fallback
-        # raise ValueError(f"Unhandled key in conversion: {target_key}")
-
-    try:
-        # Retrieve the value (e.g., alpha) associated with the determined block name
-        value = blocks_dict[block_name]
-        # logger.debug(f"Key '{target_key}' mapped to block '{block_name}', returning value {value}")
-        return value
-    except KeyError:
-        # This means the block_name determined above doesn't exist as a key in the input blocks_dict
-        # This indicates an inconsistency between the block config YAML and this conversion function.
-        logger.error(f"Block name '{block_name}' (determined for key '{target_key}') not found in input blocks_dict. Check block config YAML and conversion function.")
-        # Raise error or return a sensible default
-        raise StateDictKeyError(f"Block '{block_name}' not found in the input dictionary for conversion.")
-    except Exception as e:
-         logger.error(f"Unexpected error during conversion for key '{target_key}' mapped to block '{block_name}': {e}", exc_info=True)
-         raise
-
-# --- Need to ensure this function gets registered ---
-# If utils.py is imported early (e.g., in sd_optim.py), the decorator handles it.
-# If generating dynamically, you'd use exec() and then manually register or ensure import.
-
-
-#############################
-### --- Custom blocks --- ###
-#############################
-# Placeholder for the dynamic module
+# --- Placeholder for the dynamic module (still needed for OTHER custom blocks) ---
 _DYNAMIC_CONVERTER_MODULE_NAME = "sd_optim_dynamic_converters"
-dynamic_module = None # Initialize
+dynamic_module = None
 
+# V1.2 - Defines SPECIFIC known converters locally AFTER config registration,
+#        and uses dynamic generation for OTHER user-defined configs.
 def setup_custom_blocks(cfg: DictConfig):
     """
-    Parses custom block definitions, generates and registers
-    corresponding sd-mecha ModelConfigs and conversion functions.
-    NOW also defines the functions via exec().
+    Parses custom block definitions, generates/registers ModelConfigs.
+    Defines/registers known conversion functions (like sdxl-optim -> sdxl-sgm) locally.
+    Generates/defines/registers OTHER conversion functions dynamically.
     """
-    global dynamic_module # Allow modification of the module variable
+    global dynamic_module # Allow modification
 
     custom_block_defs = cfg.optimization_guide.get("custom_block_configs")
     if not custom_block_defs:
-        logger.info("No 'custom_block_configs' section found. Skipping custom block setup.")
+        # logger.info("No 'custom_block_configs' found. Skipping custom block setup.")
         return
 
     if not isinstance(custom_block_defs, (list, ListConfig)):
         logger.error("'custom_block_configs' must be a list.")
         raise TypeError("'custom_block_configs' must be a list.")
 
-    logger.info(f"Found {len(custom_block_defs)} custom block configuration(s) to process.")
+    logger.info(f"Processing {len(custom_block_defs)} custom block configuration(s)...")
 
-    # --- Create the dynamic module ONCE ---
-    if dynamic_module is None:
-        try:
-            dynamic_module_spec = importlib.util.spec_from_loader(_DYNAMIC_CONVERTER_MODULE_NAME, loader=None)
-            if dynamic_module_spec is None:
-                 raise RuntimeError("Could not create spec for dynamic module")
-            dynamic_module = importlib.util.module_from_spec(dynamic_module_spec)
+    # --- Create dynamic module only if needed for non-hardcoded converters ---
+    # Moved module creation inside the loop, only if dynamic generation is triggered
 
-            # Add necessary imports to the dynamic module's namespace NOW
-            dynamic_module.sd_mecha = sd_mecha
-            dynamic_module.logging = logging
-            dynamic_module.fnmatch = fnmatch
-            dynamic_module.re = re
-            dynamic_module.torch = torch # Make sure torch is imported/available
-            dynamic_module.Parameter = Parameter
-            dynamic_module.Return = Return
-            dynamic_module.StateDict = StateDict
-            dynamic_module.StateDictKeyError = sd_mecha.streaming.StateDictKeyError
-            dynamic_module.T = T # Ensure T is defined or imported appropriately in utils.py scope
-            dynamic_module.merge_method = merge_method
-            # Make the logger available
-            dynamic_module.logger = logging.getLogger(f"{__name__}.dynamic_converters")
-            sys.modules[_DYNAMIC_CONVERTER_MODULE_NAME] = dynamic_module # Register the module
-            logger.info(f"Created dynamic module '{_DYNAMIC_CONVERTER_MODULE_NAME}' for converters.")
-
-        except Exception as mod_e:
-             logger.error(f"Failed to create dynamic module '{_DYNAMIC_CONVERTER_MODULE_NAME}': {mod_e}", exc_info=True)
-             raise RuntimeError("Dynamic module creation failed.") from mod_e
-
+    processed_known_converters = set() # Keep track to avoid redefining
 
     for i, block_def in enumerate(custom_block_defs):
-        block_config_id = block_def.get("block_config_id") # Get ID early for logging
+        block_config_id = block_def.get("block_config_id")
+        target_config_id = block_def.get("target_config_id")
+        block_definitions = block_def.get("blocks")
+
+        if not all([target_config_id, block_config_id, block_definitions]):
+            logger.error(f"Definition #{i+1} missing required keys. Skipping.")
+            continue
+
+        logger.info(f"Processing block config '{block_config_id}' -> '{target_config_id}'...")
+
+        # --- Step 1: Generate and Register ModelConfig ---
         try:
-            target_config_id = block_def.get("target_config_id")
-            # block_config_id already fetched
-            block_definitions = block_def.get("blocks")
-
-            if not all([target_config_id, block_config_id, block_definitions]):
-                logger.error(f"Custom block definition #{i+1} missing required keys. Skipping.")
-                continue
-
-            logger.info(f"Processing custom block config '{block_config_id}' targeting '{target_config_id}'...")
-
-            # --- Step 1: Generate and Register ModelConfig ---
+            logger.debug(f"  Generating ModelConfig for '{block_config_id}'...")
             generated_config = generate_block_model_config(block_config_id, block_definitions)
-            # IMPORTANT: Use register_aux if it's an auxiliary config, or register if primary
-            # Let's use register_aux for custom user configs to keep them separate maybe?
-            model_configs.register_aux(generated_config) # Use register_aux
-            logger.info(f"Registered AUX ModelConfig: {block_config_id}")
 
-            # --- Step 2: Generate Conversion Function Code ---
-            converter_name = f"convert_{block_config_id.replace('-', '_')}_to_{target_config_id.replace('-', '_')}"
-            converter_code = generate_conversion_function_code(
-                converter_name=converter_name,
-                block_config_id=block_config_id,
-                target_config_id=target_config_id,
-                block_definitions=block_definitions
-            )
+            logger.debug(f"  Registering '{block_config_id}' with model_configs.register_aux...")
+            model_configs.register_aux(generated_config)
 
-            # --- Step 3: Execute Code to Define and Register Function ---
-            # Execute in the dynamic module's namespace. Registration happens via the decorator.
-            # This is now safe because the model config ID exists in the registry.
-            exec(converter_code, dynamic_module.__dict__)
-            logger.info(f"Defined and registered conversion function: {converter_name}")
+            # --- IMMEDIATE VERIFICATION ---
+            logger.info(f"  ---> VERIFICATION: Attempting resolve IMMEDIATELY after registering '{block_config_id}'...")
+            try:
+                resolved_immediately = model_configs.resolve(block_config_id)
+                logger.info(f"  ---> VERIFICATION SUCCESS: Resolved '{block_config_id}' immediately!")
+                # Optionally check the type:
+                # logger.debug(f"     Resolved type: {type(resolved_immediately)}")
+            except ValueError as verify_e:
+                logger.error(
+                    f"  ---> VERIFICATION FAILED: Could not resolve '{block_config_id}' immediately after registration! Error: {verify_e}")
+                # Log registry content again for comparison
+                current_aux_registry_after_fail = [c.identifier for c in model_configs.get_all_aux()]
+                logger.error(
+                    f"       Current Aux Registry after failed verification: {current_aux_registry_after_fail}")
+                # Raise an error here to stop if immediate verification fails
+                raise RuntimeError(f"Immediate verification failed for {block_config_id}") from verify_e
+            # --- END IMMEDIATE VERIFICATION ---
 
-            # Optional: Verify function exists in module
-            # if not hasattr(dynamic_module, converter_name):
-            #     logger.error(f"Exec failed to define {converter_name} in dynamic module!")
+        except Exception as config_e:
+            logger.error(f"  Failed to generate/register ModelConfig '{block_config_id}': {config_e}", exc_info=True)
+            continue  # Skip to next definition
 
-        except Exception as e:
-            error_id_info = f"'{block_config_id}'" if block_config_id else "(ID assignment failed or missing)"
-            logger.error(f"Failed to process custom block definition #{i+1} ({error_id_info}): {e}", exc_info=True)
-            # Optionally re-raise
+        # --- Step 2: Define/Register Converter - Check for Known Specific Cases FIRST ---
+        converter_id = f"convert_{block_config_id.replace('-', '_')}_to_{target_config_id.replace('-', '_')}"
 
+        # --- Known Case: sdxl-optim_blocks -> sdxl-sgm ---
+        if block_config_id == "sdxl-optim_blocks" and target_config_id == "sdxl-sgm":
+            if converter_id in processed_known_converters:
+                 logger.debug(f"Converter '{converter_id}' already defined in this run.")
+                 continue
+
+            logger.info(f"Defining and registering SPECIFIC converter: {converter_id}")
+            try:
+                # --- Define the function LOCALLY *NOW* ---
+                # The config "sdxl-optim_blocks" is guaranteed to be registered at this point.
+                @merge_method(
+                    identifier=converter_id,
+                    is_conversion=True
+                    # register=True is default
+                )
+                def convert_sdxl_optim_blocks_to_sdxl_sgm_local(
+                    # Type hints are now evaluated safely
+                    blocks_dict: Parameter(StateDict[T], model_config="sdxl-optim_blocks"),
+                    **kwargs,
+                ) -> Return(T, model_config="sdxl-sgm"):
+                    """
+                    Maps an sdxl-sgm key back to a block name defined in sdxl-optim_blocks
+                    and returns the corresponding value from the blocks_dict.
+                    (Defined locally in setup_custom_blocks)
+                    """
+                    target_key = kwargs.get("key")
+                    if target_key is None: return 0.0 # Or appropriate default/error
+
+                    block_name = None
+                    # --- Start of specific mapping logic ---
+                    # (Copied directly from the static function)
+                    if target_key.startswith("model.diffusion_model."):
+                        if ".time_embed" in target_key: block_name = "UNET_TIME_EMBED"
+                        elif ".out." in target_key: block_name = "UNET_OUT_FINAL" # Use refined name
+                        elif m := re_inp.search(target_key):
+                            block_num = int(m.group(1)); block_name = f"UNET_IN{block_num:02d}" if 0 <= block_num <= 8 else None
+                        elif re_mid.search(target_key): block_name = "UNET_MID00" # Use refined name
+                        elif m := re_out.search(target_key):
+                             block_num = int(m.group(1)); block_name = f"UNET_OUT{block_num:02d}" if 0 <= block_num <= 8 else None
+                        if block_name is None: block_name = "UNET_ELSE" # Fallback for UNET
+
+                    elif target_key.startswith("conditioner.embedders.0.transformer.text_model."):
+                        if ".embeddings." in target_key: block_name = "CLIP_L_EMBEDDING"
+                        elif ".final_layer_norm." in target_key: block_name = "CLIP_L_FINAL_NORM"
+                        elif m := re.search(r"\.layers\.(\d+)\.", target_key):
+                             layer_num = int(m.group(1)); block_name = f"CLIP_L_IN{layer_num:02d}" if 0 <= layer_num <= 11 else None
+                        if block_name is None: block_name = "CLIP_L_ELSE" # Fallback for CLIP-L
+
+                    elif target_key.startswith("conditioner.embedders.1.model."):
+                        if ".token_embedding." in target_key or ".positional_embedding" in target_key or ".embeddings." in target_key: block_name = "CLIP_G_EMBEDDING"
+                        elif ".text_projection" in target_key: block_name = "CLIP_G_TEXT_PROJECTION"
+                        elif ".ln_final." in target_key: block_name = "CLIP_G_LN_FINAL"
+                        elif m := re.search(r"\.(?:resblocks|layers)\.(\d+)\.", target_key):
+                             layer_num = int(m.group(1)); block_name = f"CLIP_G_IN{layer_num:02d}" if 0 <= layer_num <= 31 else None
+                        if block_name is None: block_name = "CLIP_G_ELSE" # Fallback for CLIP-G
+
+                    elif target_key.startswith("first_stage_model."):
+                        block_name = "VAE_ALL" # Assuming VAE_ALL is defined in the config
+
+                    # --- End of specific mapping logic ---
+
+                    if block_name is None:
+                        logger.error(f"Converter '{converter_id}': Could not map target key '{target_key}' to any defined block. Check converter logic.")
+                        raise ValueError(f"Unhandled key in conversion '{converter_id}': {target_key}")
+
+                    try:
+                        return blocks_dict[block_name]
+                    except KeyError:
+                        logger.error(f"Block name '{block_name}' (for key '{target_key}') not found in input dict for converter '{converter_id}'. Check config '{block_config_id}'.")
+                        raise StateDictKeyError(f"Block '{block_name}' not found for conversion.")
+                    except Exception as conv_e:
+                         logger.error(f"Error during conversion for key '{target_key}' (block '{block_name}'): {conv_e}", exc_info=True)
+                         raise
+                # --- End of local function definition ---
+
+                processed_known_converters.add(converter_id) # Mark as done
+
+            except Exception as define_e:
+                 logger.error(f"Failed to define/register specific converter '{converter_id}': {define_e}", exc_info=True)
+                 # Continue to next definition? Or raise?
+
+        # --- Fallback: Dynamic Generation for OTHER Configs ---
+        else:
+            logger.info(f"Using dynamic generation for converter: {converter_id}")
+
+            # --- Create dynamic module only if needed ---
+            if dynamic_module is None:
+                try:
+                    # (Same dynamic module creation logic as before)
+                    dynamic_module_spec = importlib.util.spec_from_loader(_DYNAMIC_CONVERTER_MODULE_NAME, loader=None)
+                    if dynamic_module_spec is None: raise RuntimeError("Could not create spec")
+                    dynamic_module = importlib.util.module_from_spec(dynamic_module_spec)
+                    # Add imports... (sd_mecha, logging, fnmatch, re, torch, Parameter, etc.)
+                    dynamic_module.sd_mecha = sd_mecha; dynamic_module.logging = logging; # ... and so on
+                    dynamic_module.T = T; dynamic_module.merge_method = merge_method; # ...
+                    dynamic_module.model_configs = model_configs # Pass model_configs module
+                    sys.modules[_DYNAMIC_CONVERTER_MODULE_NAME] = dynamic_module
+                    logger.info(f"Created dynamic module '{_DYNAMIC_CONVERTER_MODULE_NAME}'.")
+                except Exception as mod_e:
+                     logger.error(f"Failed to create dynamic module: {mod_e}", exc_info=True)
+                     continue # Skip dynamic generation if module fails
+
+            # --- Generate code using PATTERNS from config (V1.1 generator) ---
+            try:
+                converter_code = generate_conversion_function_code( # Use the PATTERN based generator
+                    converter_name=converter_id,
+                    block_config_id=block_config_id,
+                    target_config_id=target_config_id,
+                    block_definitions=block_definitions
+                )
+                # Execute in the dynamic module's namespace
+                exec(converter_code, dynamic_module.__dict__)
+                logger.info(f"Dynamically defined and registered converter function: {converter_id}")
+            except Exception as exec_e:
+                 logger.error(f"Failed to dynamically generate/register converter '{converter_id}': {exec_e}", exc_info=True)
+
+
+# --- (Keep generate_block_model_config) ---
 def generate_block_model_config(config_id: str, block_defs: List[Dict]) -> model_configs.ModelConfig:
-    """Generates an sd_mecha ModelConfig object from block definitions."""
-    components = {'blocks': {}} # Use a single 'blocks' component for simplicity
+    # (Implementation remains the same)
+    components = {'blocks': {}}
     for block in block_defs:
         name = block.get("name")
-        if not name: continue
-        # Blocks map to single floats in this config
-        components['blocks'][name] = {'shape': [], 'dtype': 'float32'}
+        if name: components['blocks'][name] = {'shape': [], 'dtype': 'float32'}
+    # ... (fallback warning logic) ...
+    config_dict = {"identifier": config_id, "components": components}
+    return model_configs.ModelConfigImpl(**config_dict)
 
-    # Validate that a fallback block (e.g., '*_ELSE' or '*') exists if needed
-    has_fallback = any(p == "*" for block in block_defs for p in block.get("patterns",[])) or \
-                   any(n.endswith("_ELSE") for block in block_defs for n in block.get("name",""))
-
-    if not has_fallback and block_defs:
-         logger.warning(f"Custom block config '{config_id}' might be missing a fallback block (e.g., name ending in '_ELSE' or pattern '*') to catch unmapped keys.")
-
-    config_dict = {
-        "identifier": config_id,
-        "components": components
-    }
-    return model_configs.ModelConfigImpl(**config_dict) # Use the concrete implementation
-
-# V1.1 - Explicitly resolve config IDs within generated code string
+# --- (Keep generate_conversion_function_code - the pattern-based one) ---
+# This is now used ONLY for dynamically generated converters
 def generate_conversion_function_code(converter_name: str, block_config_id: str, target_config_id: str, block_definitions: List[Dict]) -> str:
-    """
-    Generates the Python source code string for the conversion function.
-    Resolves config IDs explicitly before using them in type hints.
-    """
-
-    # Header and imports needed *within the generated code's scope*
+    # (Implementation remains the same as V1.1 - using patterns, explicit resolve)
     code = f"""
-# --- Imports required inside the generated function's execution scope ---
-import sd_mecha
-import logging
-import fnmatch
-import re
-import torch
-from sd_mecha.extensions.merge_methods import Parameter, Return, StateDict, T
-from sd_mecha.extensions import model_configs # <<< Need this inside generated code
-from sd_mecha.streaming import StateDictKeyError
-
-# Get the logger passed into the dynamic module's scope
+# --- Imports ---
+import sd_mecha, logging, fnmatch, re, torch
+# ... (imports as before) ...
+from sd_mecha.extensions import model_configs # Needed for resolve
 logger = logging.getLogger("{__name__}.dynamic_converters.{converter_name}")
-# ---
-
-# --- Resolve config objects explicitly using the registry ---
-# This code runs when exec() defines the function.
-# It relies on the configs being registered *before* exec() is called.
 try:
-    # Use the already imported model_configs module reference
     resolved_block_config_obj = model_configs.resolve("{block_config_id}")
     resolved_target_config_obj = model_configs.resolve("{target_config_id}")
-except ValueError as resolve_err:
-     # Log clearly if resolution fails *during function definition*
-     logger.error(f"CRITICAL: Failed to resolve config IDs during definition of '{converter_name}': {{resolve_err}}")
-     # Raise an error to prevent defining a broken function
-     raise RuntimeError(f"Config ID resolution failed for '{converter_name}'") from resolve_err
-# ---
-
-@sd_mecha.extensions.merge_methods.merge_method(
-    identifier="{converter_name}",
-    is_conversion=True
-)
-def {converter_name}(
-    # <<< CHANGE HERE: Pass the resolved config OBJECT, not the string ID >>>
-    blocks_dict: Parameter(StateDict[T], model_config=resolved_block_config_obj),
-    **kwargs,
-) -> Return(T, model_config=resolved_target_config_obj): # Pass resolved object here too
-
+except ValueError as resolve_err: raise RuntimeError(...) from resolve_err
+@sd_mecha.merge_method(...)
+def {converter_name}( blocks_dict: Parameter(..., model_config=resolved_block_config_obj), **kwargs) -> Return(..., model_config=resolved_target_config_obj):
     target_key = kwargs.get("key")
-    if target_key is None:
-        logger.warning("Conversion function '{converter_name}' called without 'key'. Returning 0.0 as fallback.")
-        return 0.0 # Or handle differently
-
     block_name = None
-    # logger.debug(f"Converter '{converter_name}' called for target key: {{target_key}}")
-
+    # --- Pattern matching if/elif block ---
 """
-    # --- Append the If/Elif Mapping Logic ---
-    # (This part remains the same as before, generating the block mapping)
     fallback_block = None
     for block in block_definitions:
-        name = block.get("name")
-        patterns = block.get("patterns")
+        name = block.get("name"); patterns = block.get("patterns")
         if not name or not patterns: continue
-
         is_fallback = "*" in patterns
-        if is_fallback:
-             if fallback_block is not None: logger.warning(f"Multiple fallback patterns ('*') found in '{block_config_id}'. Using last one: '{name}'")
-             fallback_block = name
-             continue
-
+        if is_fallback: fallback_block = name; continue
         conditions = []
         for p in patterns:
-             if any(c in p for c in r"[]().+?^${}"):
-                 conditions.append(f're.fullmatch(r"{p}", target_key)')
-             else:
-                 conditions.append(f'fnmatch.fnmatch(target_key, "{p}")')
-
+             if any(c in p for c in r"[]().+?^${}"): conditions.append(f're.fullmatch(r"{p}", target_key)')
+             else: conditions.append(f'fnmatch.fnmatch(target_key, "{p}")')
         condition_str = " or ".join(conditions)
-        code += f"""
-    if {condition_str}:
-        block_name = "{name}"
-"""
-
-    # Add the fallback block condition or error handling
-    if fallback_block:
-        code += f"""
-    if block_name is None: # If no specific pattern matched, use fallback
-        block_name = "{fallback_block}"
-"""
-    else:
-         code += f"""
-    if block_name is None:
-        logger.error(f"Converter '{converter_name}': Key '{{target_key}}' did not match any block patterns and no fallback ('*') was specified.")
-        raise ValueError(f"Unhandled key in conversion '{converter_name}': {{target_key}}")
-"""
-
-    # --- Append the Final Lookup and Return Logic ---
-    code += f"""
-    # logger.debug(f"Key '{{target_key}}' mapped to block '{{block_name}}'")
-    try:
-        # Access the input dict using the determined block name
-        return blocks_dict[block_name]
-    except KeyError:
-        # This error means the block name logic is inconsistent with the input dict
-        logger.error(f"Block name '{{block_name}}' (for key '{{target_key}}') not found in input blocks_dict for converter '{converter_name}'. Check block definition and converter logic.")
-        raise StateDictKeyError(f"Block '{{block_name}}' not found in the input dictionary for conversion.")
-    except Exception as e:
-        logger.error(f"Unexpected error during conversion for key '{{target_key}}' (block '{{block_name}}'): {{e}}", exc_info=True)
-        raise
-"""
-    return textwrap.dedent(code) # Use dedent for cleaner generated code
+        code += f"    if {condition_str}: block_name = \"{name}\"\n"
+    if fallback_block: code += f"    if block_name is None: block_name = \"{fallback_block}\"\n"
+    else: code += "    if block_name is None: raise ValueError(...)\n"
+    code += "    try: return blocks_dict[block_name]\n    except KeyError: raise StateDictKeyError(...)" # Simplified error handling
+    return textwrap.dedent(code)
 
 
 ##############################
@@ -442,479 +324,479 @@ def resolve_merge_method(merge_mode_name: str) -> MergeMethod:
 
 ### ------------- old functions that haven't been updated to new mecha yet ------------ ###
 
-### Recipe optimization
-def get_target_nodes(recipe_path: Union[str, pathlib.Path], target_nodes: Union[str, List[str]]) -> Dict[
-    str, Dict[str, Any]]:
-    """
-    Extract hyperparameters from specified target nodes in the recipe.
-
-    Args:
-        recipe_path: Path to the recipe file
-        target_nodes: Target node(s) specified as '&N' or ['&N', '&M', ...]
-
-    Returns:
-        Dict mapping node references to their hyperparameters
-    """
-    if isinstance(target_nodes, str):
-        target_nodes = [target_nodes]
-
-    recipe = sd_mecha.deserialize(recipe_path)
-    node_map = _build_node_map(recipe)
-
-    extracted_hypers = {}
-    for target in target_nodes:
-        node_index = int(target.strip('&'))
-        if node_index in node_map:
-            node = node_map[node_index]
-            if isinstance(node, MergeRecipeNode):
-                extracted_hypers[target] = {
-                    'merge_method': node.merge_method.get_name(),
-                    'hypers': node.hypers
-                }
-
-    return extracted_hypers
-
-def update_recipe(recipe: RecipeNode, target_nodes: Union[str, List[str]], assembled_params: Dict[str, Any]) -> RecipeNode:
-    """
-    Update recipe with new hyperparameters, inserting dict nodes as needed.
-
-    Args:
-        recipe: The recipe to modify
-        target_nodes: Target node(s) to update
-        assembled_params: New parameter values to apply
-
-    Returns:
-        Modified recipe with updated hyperparameters
-    """
-    if isinstance(target_nodes, str):
-        target_nodes = [target_nodes]
-
-    # Convert recipe to text form for manipulation
-    recipe_lines = sd_mecha.serialize(recipe).split('\n')
-
-    # Prepare new dict lines from assembled_params
-    new_dicts = []
-    for param_set in assembled_params.values():
-        dict_line = _create_dict_line(param_set)
-        new_dicts.append(dict_line)
-
-    # Insert new dict lines at the top
-    recipe_lines = new_dicts + recipe_lines
-
-    # Determine the increment value (number of new dicts inserted)
-    increment = len(new_dicts)
-
-    # Update all references in existing lines
-    recipe_lines = _increment_node_refs(recipe_lines, increment)
-
-    # Create a mapping from param_key to new dict index
-    param_key_to_new_dict_index = {key: idx for idx, key in enumerate(assembled_params.keys())}
-
-    # Handle each target node
-    for target in target_nodes:
-        node_index = int(target.strip('&')) + increment  # Adjust for new dicts
-        if node_index >= len(recipe_lines):
-            continue  # Skip if the node index is out of range after increment
-
-        target_line = recipe_lines[node_index]
-
-        if not target_line.startswith('merge'):
-            continue
-
-        # Update parameters in the merge line to reference new dicts
-        parts = target_line.split()
-        for param_key in assembled_params.keys():
-            # Find the parameter position in the merge line
-            for i, part in enumerate(parts):
-                if part.startswith(f'{param_key}='):
-                    # Replace the existing reference with the new dict reference
-                    parts[i] = f'{param_key}=&{param_key_to_new_dict_index[param_key]}'
-                    break
-            else:
-                # If parameter doesn't exist, append it
-                parts.append(f'{param_key}=&{param_key_to_new_dict_index[param_key]}')
-
-        # Update the target line
-        recipe_lines[node_index] = ' '.join(parts)
-
-    # Convert back to recipe object
-    modified_recipe = sd_mecha.deserialize(recipe_lines)
-    return modified_recipe
-
-def _build_node_map(recipe: RecipeNode) -> Dict[int, RecipeNode]:
-    """Build a map of node indices to their corresponding RecipeNode objects."""
-    lines = sd_mecha.serialize(recipe).split('\n')
-    node_map = {}
-
-    current_recipe = []
-    for i, line in enumerate(lines):
-        current_recipe.append(line)
-        node = sd_mecha.deserialize(current_recipe)
-        node_map[i] = node
-
-    return node_map
-
-def _parse_dict_line(line: str) -> Dict[str, Any]:
-    """Parse a dict line into a dictionary of parameter values."""
-    parts = line.split()
-    result = {}
-    for part in parts[1:]:  # Skip 'dict' command
-        if '=' in part:
-            key, value = part.split('=', 1)
-            # Convert string value to appropriate type
-            try:
-                if value.replace('.', '').replace('e-', '').replace('e+', '').isdigit():
-                    value = float(value)
-            except ValueError:
-                pass  # Keep as string if conversion fails
-            result[key] = value
-    return result
-
-def _increment_refs_in_line(line: str, increment: int) -> str:
-    """Increment all node references in a single line by a specified amount."""
-    parts = line.split()
-    for i, part in enumerate(parts):
-        if part.startswith('&') and part[1:].isdigit():
-            ref_num = int(part[1:])
-            parts[i] = f'&{ref_num + increment}'
-        elif '=' in part:
-            key, value = part.split('=', 1)
-            if value.startswith('&') and value[1:].isdigit():
-                ref_num = int(value[1:])
-                parts[i] = f'{key}=&{ref_num + increment}'
-    return ' '.join(parts)
-
-def _create_dict_line(params: Dict[str, Any]) -> str:
-    """Create a dict line from a dictionary of parameters."""
-    param_strs = []
-    for key, value in params.items():
-        if isinstance(value, (int, float)):
-            param_strs.append(f"{key}={value}")
-        else:
-            param_strs.append(f'{key}="{value}"')
-    return 'dict ' + ' '.join(param_strs)
-
-def _extract_param_value(line: str, param: str) -> Optional[str]:
-    """Extract the value of a parameter from a merge line."""
-    parts = line.split()
-    for part in parts:
-        if part.startswith(f'{param}='):
-            return part.split('=', 1)[1]
-    return None
-
-def _update_dict_line(line: str, updates: Dict[str, Any]) -> str:
-    """Update parameters in a dict line."""
-    parts = line.split()
-    params = {p.split('=')[0]: p.split('=')[1] for p in parts[1:]}
-    params.update(updates)
-    return 'dict ' + ' '.join(f'{k}={v}' for k, v in params.items())
-
-def _replace_param_value(line: str, param: str, new_value: str) -> str:
-    """Replace the value of a parameter in a merge line."""
-    parts = line.split()
-    found = False
-    for i, part in enumerate(parts):
-        if part.startswith(f'{param}='):
-            parts[i] = f'{param}={new_value}'
-            found = True
-            break
-    if not found:
-        parts.append(f'{param}={new_value}')
-    return ' '.join(parts)
-
-def _increment_node_refs(lines: List[str], increment: int) -> List[str]:
-    """Increment all node references in the recipe by a specified amount."""
-    updated_lines = []
-    for line in lines:
-        parts = line.split()
-        for i, part in enumerate(parts):
-            if '=' in part:
-                key, value = part.split('=', 1)
-                if value.startswith('&'):
-                    ref_num = int(value[1:])
-                    parts[i] = f'{key}=&{ref_num + increment}'
-            elif part.startswith('&'):
-                ref_num = int(part[1:])
-                parts[i] = f'&{ref_num + increment}'
-        updated_lines.append(' '.join(parts))
-    return updated_lines
-
-def traverse_recipe(node: RecipeNode) -> List[RecipeNode]:
-    """Traverses the recipe tree and yields all nodes."""
-    yield node
-    if isinstance(node, MergeRecipeNode):
-        for model in node.models:
-            yield from traverse_recipe(model)
-
-def get_model_names_from_recipe(recipe: RecipeNode) -> List[str]:
-    """Extracts model names from a recipe."""
-    model_names = []
-    for node in traverse_recipe(recipe):
-        if isinstance(node, ModelRecipeNode):
-            # Extract model name from path, handling potential None
-            model_name = Path(node.path).stem if node.path else "unknown_model"
-            model_names.append(model_name)
-    return model_names
-
-def get_merge_method(recipe_path: Union[str, Path], target_node: str) -> str:
-    """Extract the merge_method from the target node in a recipe."""
-    target_nodes = [target_node]
-    extracted_hypers = get_target_nodes(recipe_path, target_nodes)  # Use existing get_target_nodes
-    return extracted_hypers[target_node]['merge_method']
-
-
-### Custom sorting function that uses component order from config ###
-def custom_sort_key(key, component_order):
-    parts = key.split("_")
-
-    # Check if the key matches the expected format for layer adjustments
-    if parts[0] in ["detail1", "detail2", "detail3", "contrast", "brightness", "col1", "col2", "col3"]:
-        # Assign a high priority to layer_adjustments by setting component_index to -1
-        component_index = -1
-        block_key = parts[0]  # The parameter name itself is the block key
-    else:
-        # Handle the original format for other keys
-        if len(parts) > 2 and parts[1] in component_order:
-            component_index = component_order.index(parts[1])
-            block_key = "_".join(parts[2:])
-        else:
-            # Default sorting if component not found or key is too short
-            component_index = len(component_order)  # Ensure these keys are sorted last
-            block_key = key
-
-    return component_index, sd_mecha.hypers.natural_sort_key(block_key)
-
-
-### Cache for recipes (does it work tho?) ###
-class CacheInjectorVisitor(RecipeVisitor):
-    def __init__(self, cache: Optional[Dict[str, Dict[str, Tensor]]]):
-        self.cache = cache
-
-    def visit_model(self, node: ModelRecipeNode, *args, **kwargs) -> ModelRecipeNode:
-        # Return the original ModelRecipeNode without modification
-        return node
-
-    def visit_parameter(self, node: ParameterRecipeNode, *args, **kwargs) -> ParameterRecipeNode:
-        return node
-
-    def visit_merge(self, node: MergeRecipeNode, *args, **kwargs) -> MergeRecipeNode:
-        # Recursively visit and reconstruct child nodes
-        new_models = [model.accept(self, *args, **kwargs) for model in node.models]
-
-        # Check if the merge method supports caching
-        merge_method_signature = inspect.signature(node.merge_method)
-
-        # Create a copy of volatile_hypers and add cache if supported
-        new_volatile_hypers = node.volatile_hypers.copy()
-        if 'cache' in merge_method_signature.parameters:
-            new_volatile_hypers['cache'] = self.cache
-
-        # Reconstruct the merge node with modified volatile_hypers
-        return MergeRecipeNode(
-            node.merge_method,
-            *new_models,
-            hypers=node.hypers,
-            volatile_hypers=new_volatile_hypers,
-            device=node.device,
-            dtype=node.dtype,
-        )
-
-
-### Recipe merger patch for key merging ###
-class ModelsListVisitor(RecipeVisitor):
-    def __init__(self):
-        self.models = []  # Stores individual ModelRecipeNode objects
-
-    def visit_model(self, node: ModelRecipeNode):
-        self.models.append(node)  # Add single model node
-
-    def visit_merge(self, node: MergeRecipeNode):
-        # Recursively visit child models in merge nodes
-        for model in node.models:
-            model.accept(self)
-
-    def visit_parameter(self, node: ParameterRecipeNode):
-        pass  # Ignore parameters
-
-
-def patch_recipe_merger(merge_keys_config: Dict[str, Any], cfg: DictConfig):
-    """Patches the RecipeMerger.merge_and_save method to enable selective merging."""
-
-    original_merge_and_save = RecipeMerger.merge_and_save
-
-    @functools.wraps(original_merge_and_save)
-    def patched_merge_and_save(
-        self, recipe: sd_mecha.extensions.merge_method.RecipeNodeOrPath, *,
-        output: MutableMapping[str, torch.Tensor] | pathlib.Path | str = "merge",
-        fallback_model: Optional[sd_mecha.Mapping[str, torch.Tensor] | sd_mecha.recipe_nodes.ModelRecipeNode | pathlib.Path | str] = None,
-        save_device: Optional[str] = "cpu",
-        save_dtype: Optional[torch.dtype] = torch.float16,
-        threads: Optional[int] = None,
-        total_buffer_size: int = 2**28,
-        strict_weight_space: bool = True
-    ):
-        # Early exit if merge keys are not enabled
-        if not merge_keys_config or not merge_keys_config.get("enabled", False):
-            print("Merge keys not enabled, using default merge_and_save")
-            return original_merge_and_save(self, recipe, output=output, fallback_model=fallback_model, save_device=save_device, save_dtype=save_dtype, threads=threads, total_buffer_size=total_buffer_size)
-
-        merge_keys = merge_keys_config.get("keys", [])
-        default_behavior = merge_keys_config.get("default_behavior", "keep_a")
-
-        # Resolve the recipe path to a node
-        recipe = sd_mecha.extensions.merge_method.path_to_node(recipe)
-        if recipe.merge_space != sd_mecha.recipe_nodes.MergeSpace.BASE:
-            raise ValueError(f"recipe should be in model merge space, not {str(recipe.merge_space).split('.')[-1]}")
-
-        # Resolve the fallback model path to a node
-        if isinstance(fallback_model, (str, pathlib.Path)):
-            fallback_model = sd_mecha.extensions.merge_method.path_to_node(fallback_model)
-        elif not isinstance(fallback_model, (sd_mecha.recipe_nodes.ModelRecipeNode, Mapping, type(None))):
-            raise ValueError(f"fallback_model should be a simple model or None, not {type(fallback_model)}")
-
-        # Clear model paths cache
-        sd_mecha.extensions.merge_method.clear_model_paths_cache()
-
-        # Determine fallback model node
-        fallback_model_index = merge_keys_config.get("fallback_model_index", 0)
-        models_visitor = ModelsListVisitor()
-        recipe.accept(models_visitor)
-        models_in_recipe = models_visitor.models
-
-        # Validate fallback_model_index
-        if fallback_model_index >= len(models_in_recipe):
-            raise ValueError(
-                f"fallback_model_index {fallback_model_index} is out of range. "
-                f"Recipe only contains {len(models_in_recipe)} models: "
-                f"{[model.path for model in models_in_recipe]}"
-            )
-
-        fallback_model_node = models_in_recipe[fallback_model_index] if len(models_in_recipe) > 0 else None
-
-        # Determine if fallback model is external
-        fallback_is_external = fallback_model_node is not None and fallback_model_node not in recipe
-
-        # ==============================================
-        # Calculate total_files_open based on the models involved
-        # ==============================================
-        total_files_open = (
-            len(models_in_recipe) +
-            int(isinstance(output, (str, pathlib.Path))) +
-            int(fallback_is_external)
-        )
-
-        buffer_size_per_file = total_buffer_size // max(total_files_open, 1)  # Prevent division by zero
-        threads = threads or total_files_open
-
-        # ==============================================
-        # Load state_dicts with calculated buffer size
-        # ==============================================
-        load_input_dicts_visitor = sd_mecha.recipe_merger.LoadInputDictsVisitor(
-            self._RecipeMerger__base_dirs,
-            buffer_size_per_file,
-        )
-        recipe.accept(load_input_dicts_visitor)
-
-        # Load fallback model's state_dict if it's external
-        if fallback_is_external:
-            fallback_model_node.accept(load_input_dicts_visitor)
-            fallback_model = fallback_model_node.state_dict
-        elif fallback_model_node:
-            fallback_model = fallback_model_node.state_dict
-        else:
-            fallback_model = None
-
-        # ==============================================
-        # Rest of selective merging logic
-        # ==============================================
-
-        # Get model configuration
-        model_config = recipe.accept(sd_mecha.model_detection.DetermineConfigVisitor())
-
-        # Normalize output
-        output = self._RecipeMerger__normalize_output_to_dict(
-            output,
-            model_config.get_minimal_dummy_header(),
-            model_config.get_keys_to_merge(),
-            recipe_serializer.serialize(recipe),
-            buffer_size_per_file // threads,
-            save_dtype,
-        )
-
-        # ==============================================
-        # Moved key filtering logic outside the loop
-        # ==============================================
-        def _should_merge_key(key: str, merge_keys: List[str]) -> bool:
-            """Checks if a key should be merged using regex for wildcard patterns."""
-            # Check exclusion first
-            for pattern in merge_keys:
-                if pattern.startswith("!"):
-                    exclusion_pattern = pattern[1:].strip()
-                    # Convert wildcard to regex
-                    regex_pattern = exclusion_pattern.replace(".", r"\.").replace("*", ".*")
-                    if re.fullmatch(regex_pattern, key):
-                        return False  # Skip merge
-
-            # Check inclusion
-            for pattern in merge_keys:
-                if not pattern.startswith("!"):
-                    # Convert wildcard to regex
-                    regex_pattern = pattern.replace(".", r"\.").replace("*", ".*")
-                    if re.fullmatch(regex_pattern, key):
-                        return True  # Merge
-
-            return False  # Default: skip merge
-
-        thread_local_data = threading.local()
-        progress = self._RecipeMerger__tqdm(total=len(model_config.keys()), desc="Merging recipe")
-        with sd_mecha.recipe_merger.ThreadPoolExecutor(max_workers=threads) as executor:
-            futures = []
-            for key in model_config.keys():
-                if not _should_merge_key(key, merge_keys):
-                    if default_behavior == "zero":
-                        print(f"Skipping merge for key: {key}, setting to zero")
-                        shape = model_config.get_shape(key)
-                        if shape is not None:
-                            output[key] = torch.zeros(shape, dtype=save_dtype, device=save_device)
-                        else:
-                            logger.warning(f"Shape not found for key: {key}. Skipping.")
-                        progress.update()
-                        continue
-                    elif default_behavior == "keep_a":
-                        print(f"Skipping merge for key: {key}, keeping original value from model")
-                        try:
-                            if fallback_model is not None:
-                                output[key] = fallback_model[key].to(device=save_device, dtype=save_dtype)
-                            else:
-                                output[key] = recipe.models[0].state_dict[key].to(device=save_device,
-                                                                                  dtype=save_dtype)
-                        except KeyError:
-                            logging.warning(f"Key {key} not found in any model. Skipping.")
-                        progress.update()
-                        continue
-
-                key_merger = model_config.get_key_merger(key, recipe, fallback_model, self._RecipeMerger__default_device, self._RecipeMerger__default_dtype)
-                key_merger = self._RecipeMerger__track_output(key_merger, output, key, save_dtype, save_device)
-                key_merger = self._RecipeMerger__track_progress(key_merger, key, model_config.get_shape(key), progress)
-                key_merger = self._RecipeMerger__wrap_thread_context(key_merger, thread_local_data)
-                futures.append(executor.submit(key_merger))
-
-            for future in sd_mecha.recipe_merger.as_completed(futures):
-                if future.exception() is not None:
-                    for future_to_cancel in futures:
-                        future_to_cancel.cancel()
-                    raise future.exception()
-                future.result()
-
-        progress.close()
-        if isinstance(output, sd_mecha.recipe_merger.OutSafetensorsDict):
-            output.close()
-        recipe.accept(sd_mecha.recipe_merger.CloseInputDictsVisitor())
-
-        gc.collect()
-        torch.cuda.empty_cache()
-
-    RecipeMerger.merge_and_save = patched_merge_and_save
+# ### Recipe optimization
+# def get_target_nodes(recipe_path: Union[str, pathlib.Path], target_nodes: Union[str, List[str]]) -> Dict[
+#     str, Dict[str, Any]]:
+#     """
+#     Extract hyperparameters from specified target nodes in the recipe.
+#
+#     Args:
+#         recipe_path: Path to the recipe file
+#         target_nodes: Target node(s) specified as '&N' or ['&N', '&M', ...]
+#
+#     Returns:
+#         Dict mapping node references to their hyperparameters
+#     """
+#     if isinstance(target_nodes, str):
+#         target_nodes = [target_nodes]
+#
+#     recipe = sd_mecha.deserialize(recipe_path)
+#     node_map = _build_node_map(recipe)
+#
+#     extracted_hypers = {}
+#     for target in target_nodes:
+#         node_index = int(target.strip('&'))
+#         if node_index in node_map:
+#             node = node_map[node_index]
+#             if isinstance(node, MergeRecipeNode):
+#                 extracted_hypers[target] = {
+#                     'merge_method': node.merge_method.get_name(),
+#                     'hypers': node.hypers
+#                 }
+#
+#     return extracted_hypers
+#
+# def update_recipe(recipe: RecipeNode, target_nodes: Union[str, List[str]], assembled_params: Dict[str, Any]) -> RecipeNode:
+#     """
+#     Update recipe with new hyperparameters, inserting dict nodes as needed.
+#
+#     Args:
+#         recipe: The recipe to modify
+#         target_nodes: Target node(s) to update
+#         assembled_params: New parameter values to apply
+#
+#     Returns:
+#         Modified recipe with updated hyperparameters
+#     """
+#     if isinstance(target_nodes, str):
+#         target_nodes = [target_nodes]
+#
+#     # Convert recipe to text form for manipulation
+#     recipe_lines = sd_mecha.serialize(recipe).split('\n')
+#
+#     # Prepare new dict lines from assembled_params
+#     new_dicts = []
+#     for param_set in assembled_params.values():
+#         dict_line = _create_dict_line(param_set)
+#         new_dicts.append(dict_line)
+#
+#     # Insert new dict lines at the top
+#     recipe_lines = new_dicts + recipe_lines
+#
+#     # Determine the increment value (number of new dicts inserted)
+#     increment = len(new_dicts)
+#
+#     # Update all references in existing lines
+#     recipe_lines = _increment_node_refs(recipe_lines, increment)
+#
+#     # Create a mapping from param_key to new dict index
+#     param_key_to_new_dict_index = {key: idx for idx, key in enumerate(assembled_params.keys())}
+#
+#     # Handle each target node
+#     for target in target_nodes:
+#         node_index = int(target.strip('&')) + increment  # Adjust for new dicts
+#         if node_index >= len(recipe_lines):
+#             continue  # Skip if the node index is out of range after increment
+#
+#         target_line = recipe_lines[node_index]
+#
+#         if not target_line.startswith('merge'):
+#             continue
+#
+#         # Update parameters in the merge line to reference new dicts
+#         parts = target_line.split()
+#         for param_key in assembled_params.keys():
+#             # Find the parameter position in the merge line
+#             for i, part in enumerate(parts):
+#                 if part.startswith(f'{param_key}='):
+#                     # Replace the existing reference with the new dict reference
+#                     parts[i] = f'{param_key}=&{param_key_to_new_dict_index[param_key]}'
+#                     break
+#             else:
+#                 # If parameter doesn't exist, append it
+#                 parts.append(f'{param_key}=&{param_key_to_new_dict_index[param_key]}')
+#
+#         # Update the target line
+#         recipe_lines[node_index] = ' '.join(parts)
+#
+#     # Convert back to recipe object
+#     modified_recipe = sd_mecha.deserialize(recipe_lines)
+#     return modified_recipe
+#
+# def _build_node_map(recipe: RecipeNode) -> Dict[int, RecipeNode]:
+#     """Build a map of node indices to their corresponding RecipeNode objects."""
+#     lines = sd_mecha.serialize(recipe).split('\n')
+#     node_map = {}
+#
+#     current_recipe = []
+#     for i, line in enumerate(lines):
+#         current_recipe.append(line)
+#         node = sd_mecha.deserialize(current_recipe)
+#         node_map[i] = node
+#
+#     return node_map
+#
+# def _parse_dict_line(line: str) -> Dict[str, Any]:
+#     """Parse a dict line into a dictionary of parameter values."""
+#     parts = line.split()
+#     result = {}
+#     for part in parts[1:]:  # Skip 'dict' command
+#         if '=' in part:
+#             key, value = part.split('=', 1)
+#             # Convert string value to appropriate type
+#             try:
+#                 if value.replace('.', '').replace('e-', '').replace('e+', '').isdigit():
+#                     value = float(value)
+#             except ValueError:
+#                 pass  # Keep as string if conversion fails
+#             result[key] = value
+#     return result
+#
+# def _increment_refs_in_line(line: str, increment: int) -> str:
+#     """Increment all node references in a single line by a specified amount."""
+#     parts = line.split()
+#     for i, part in enumerate(parts):
+#         if part.startswith('&') and part[1:].isdigit():
+#             ref_num = int(part[1:])
+#             parts[i] = f'&{ref_num + increment}'
+#         elif '=' in part:
+#             key, value = part.split('=', 1)
+#             if value.startswith('&') and value[1:].isdigit():
+#                 ref_num = int(value[1:])
+#                 parts[i] = f'{key}=&{ref_num + increment}'
+#     return ' '.join(parts)
+#
+# def _create_dict_line(params: Dict[str, Any]) -> str:
+#     """Create a dict line from a dictionary of parameters."""
+#     param_strs = []
+#     for key, value in params.items():
+#         if isinstance(value, (int, float)):
+#             param_strs.append(f"{key}={value}")
+#         else:
+#             param_strs.append(f'{key}="{value}"')
+#     return 'dict ' + ' '.join(param_strs)
+#
+# def _extract_param_value(line: str, param: str) -> Optional[str]:
+#     """Extract the value of a parameter from a merge line."""
+#     parts = line.split()
+#     for part in parts:
+#         if part.startswith(f'{param}='):
+#             return part.split('=', 1)[1]
+#     return None
+#
+# def _update_dict_line(line: str, updates: Dict[str, Any]) -> str:
+#     """Update parameters in a dict line."""
+#     parts = line.split()
+#     params = {p.split('=')[0]: p.split('=')[1] for p in parts[1:]}
+#     params.update(updates)
+#     return 'dict ' + ' '.join(f'{k}={v}' for k, v in params.items())
+#
+# def _replace_param_value(line: str, param: str, new_value: str) -> str:
+#     """Replace the value of a parameter in a merge line."""
+#     parts = line.split()
+#     found = False
+#     for i, part in enumerate(parts):
+#         if part.startswith(f'{param}='):
+#             parts[i] = f'{param}={new_value}'
+#             found = True
+#             break
+#     if not found:
+#         parts.append(f'{param}={new_value}')
+#     return ' '.join(parts)
+#
+# def _increment_node_refs(lines: List[str], increment: int) -> List[str]:
+#     """Increment all node references in the recipe by a specified amount."""
+#     updated_lines = []
+#     for line in lines:
+#         parts = line.split()
+#         for i, part in enumerate(parts):
+#             if '=' in part:
+#                 key, value = part.split('=', 1)
+#                 if value.startswith('&'):
+#                     ref_num = int(value[1:])
+#                     parts[i] = f'{key}=&{ref_num + increment}'
+#             elif part.startswith('&'):
+#                 ref_num = int(part[1:])
+#                 parts[i] = f'&{ref_num + increment}'
+#         updated_lines.append(' '.join(parts))
+#     return updated_lines
+#
+# def traverse_recipe(node: RecipeNode) -> List[RecipeNode]:
+#     """Traverses the recipe tree and yields all nodes."""
+#     yield node
+#     if isinstance(node, MergeRecipeNode):
+#         for model in node.models:
+#             yield from traverse_recipe(model)
+#
+# def get_model_names_from_recipe(recipe: RecipeNode) -> List[str]:
+#     """Extracts model names from a recipe."""
+#     model_names = []
+#     for node in traverse_recipe(recipe):
+#         if isinstance(node, ModelRecipeNode):
+#             # Extract model name from path, handling potential None
+#             model_name = Path(node.path).stem if node.path else "unknown_model"
+#             model_names.append(model_name)
+#     return model_names
+#
+# def get_merge_method(recipe_path: Union[str, Path], target_node: str) -> str:
+#     """Extract the merge_method from the target node in a recipe."""
+#     target_nodes = [target_node]
+#     extracted_hypers = get_target_nodes(recipe_path, target_nodes)  # Use existing get_target_nodes
+#     return extracted_hypers[target_node]['merge_method']
+#
+#
+# ### Custom sorting function that uses component order from config ###
+# def custom_sort_key(key, component_order):
+#     parts = key.split("_")
+#
+#     # Check if the key matches the expected format for layer adjustments
+#     if parts[0] in ["detail1", "detail2", "detail3", "contrast", "brightness", "col1", "col2", "col3"]:
+#         # Assign a high priority to layer_adjustments by setting component_index to -1
+#         component_index = -1
+#         block_key = parts[0]  # The parameter name itself is the block key
+#     else:
+#         # Handle the original format for other keys
+#         if len(parts) > 2 and parts[1] in component_order:
+#             component_index = component_order.index(parts[1])
+#             block_key = "_".join(parts[2:])
+#         else:
+#             # Default sorting if component not found or key is too short
+#             component_index = len(component_order)  # Ensure these keys are sorted last
+#             block_key = key
+#
+#     return component_index, sd_mecha.hypers.natural_sort_key(block_key)
+#
+#
+# ### Cache for recipes (does it work tho?) ###
+# class CacheInjectorVisitor(RecipeVisitor):
+#     def __init__(self, cache: Optional[Dict[str, Dict[str, Tensor]]]):
+#         self.cache = cache
+#
+#     def visit_model(self, node: ModelRecipeNode, *args, **kwargs) -> ModelRecipeNode:
+#         # Return the original ModelRecipeNode without modification
+#         return node
+#
+#     def visit_parameter(self, node: ParameterRecipeNode, *args, **kwargs) -> ParameterRecipeNode:
+#         return node
+#
+#     def visit_merge(self, node: MergeRecipeNode, *args, **kwargs) -> MergeRecipeNode:
+#         # Recursively visit and reconstruct child nodes
+#         new_models = [model.accept(self, *args, **kwargs) for model in node.models]
+#
+#         # Check if the merge method supports caching
+#         merge_method_signature = inspect.signature(node.merge_method)
+#
+#         # Create a copy of volatile_hypers and add cache if supported
+#         new_volatile_hypers = node.volatile_hypers.copy()
+#         if 'cache' in merge_method_signature.parameters:
+#             new_volatile_hypers['cache'] = self.cache
+#
+#         # Reconstruct the merge node with modified volatile_hypers
+#         return MergeRecipeNode(
+#             node.merge_method,
+#             *new_models,
+#             hypers=node.hypers,
+#             volatile_hypers=new_volatile_hypers,
+#             device=node.device,
+#             dtype=node.dtype,
+#         )
+#
+#
+# ### Recipe merger patch for key merging ###
+# class ModelsListVisitor(RecipeVisitor):
+#     def __init__(self):
+#         self.models = []  # Stores individual ModelRecipeNode objects
+#
+#     def visit_model(self, node: ModelRecipeNode):
+#         self.models.append(node)  # Add single model node
+#
+#     def visit_merge(self, node: MergeRecipeNode):
+#         # Recursively visit child models in merge nodes
+#         for model in node.models:
+#             model.accept(self)
+#
+#     def visit_parameter(self, node: ParameterRecipeNode):
+#         pass  # Ignore parameters
+#
+#
+# def patch_recipe_merger(merge_keys_config: Dict[str, Any], cfg: DictConfig):
+#     """Patches the RecipeMerger.merge_and_save method to enable selective merging."""
+#
+#     original_merge_and_save = RecipeMerger.merge_and_save
+#
+#     @functools.wraps(original_merge_and_save)
+#     def patched_merge_and_save(
+#         self, recipe: sd_mecha.extensions.merge_method.RecipeNodeOrPath, *,
+#         output: MutableMapping[str, torch.Tensor] | pathlib.Path | str = "merge",
+#         fallback_model: Optional[sd_mecha.Mapping[str, torch.Tensor] | sd_mecha.recipe_nodes.ModelRecipeNode | pathlib.Path | str] = None,
+#         save_device: Optional[str] = "cpu",
+#         save_dtype: Optional[torch.dtype] = torch.float16,
+#         threads: Optional[int] = None,
+#         total_buffer_size: int = 2**28,
+#         strict_weight_space: bool = True
+#     ):
+#         # Early exit if merge keys are not enabled
+#         if not merge_keys_config or not merge_keys_config.get("enabled", False):
+#             print("Merge keys not enabled, using default merge_and_save")
+#             return original_merge_and_save(self, recipe, output=output, fallback_model=fallback_model, save_device=save_device, save_dtype=save_dtype, threads=threads, total_buffer_size=total_buffer_size)
+#
+#         merge_keys = merge_keys_config.get("keys", [])
+#         default_behavior = merge_keys_config.get("default_behavior", "keep_a")
+#
+#         # Resolve the recipe path to a node
+#         recipe = sd_mecha.extensions.merge_method.path_to_node(recipe)
+#         if recipe.merge_space != sd_mecha.recipe_nodes.MergeSpace.BASE:
+#             raise ValueError(f"recipe should be in model merge space, not {str(recipe.merge_space).split('.')[-1]}")
+#
+#         # Resolve the fallback model path to a node
+#         if isinstance(fallback_model, (str, pathlib.Path)):
+#             fallback_model = sd_mecha.extensions.merge_method.path_to_node(fallback_model)
+#         elif not isinstance(fallback_model, (sd_mecha.recipe_nodes.ModelRecipeNode, Mapping, type(None))):
+#             raise ValueError(f"fallback_model should be a simple model or None, not {type(fallback_model)}")
+#
+#         # Clear model paths cache
+#         sd_mecha.extensions.merge_method.clear_model_paths_cache()
+#
+#         # Determine fallback model node
+#         fallback_model_index = merge_keys_config.get("fallback_model_index", 0)
+#         models_visitor = ModelsListVisitor()
+#         recipe.accept(models_visitor)
+#         models_in_recipe = models_visitor.models
+#
+#         # Validate fallback_model_index
+#         if fallback_model_index >= len(models_in_recipe):
+#             raise ValueError(
+#                 f"fallback_model_index {fallback_model_index} is out of range. "
+#                 f"Recipe only contains {len(models_in_recipe)} models: "
+#                 f"{[model.path for model in models_in_recipe]}"
+#             )
+#
+#         fallback_model_node = models_in_recipe[fallback_model_index] if len(models_in_recipe) > 0 else None
+#
+#         # Determine if fallback model is external
+#         fallback_is_external = fallback_model_node is not None and fallback_model_node not in recipe
+#
+#         # ==============================================
+#         # Calculate total_files_open based on the models involved
+#         # ==============================================
+#         total_files_open = (
+#             len(models_in_recipe) +
+#             int(isinstance(output, (str, pathlib.Path))) +
+#             int(fallback_is_external)
+#         )
+#
+#         buffer_size_per_file = total_buffer_size // max(total_files_open, 1)  # Prevent division by zero
+#         threads = threads or total_files_open
+#
+#         # ==============================================
+#         # Load state_dicts with calculated buffer size
+#         # ==============================================
+#         load_input_dicts_visitor = sd_mecha.recipe_merger.LoadInputDictsVisitor(
+#             self._RecipeMerger__base_dirs,
+#             buffer_size_per_file,
+#         )
+#         recipe.accept(load_input_dicts_visitor)
+#
+#         # Load fallback model's state_dict if it's external
+#         if fallback_is_external:
+#             fallback_model_node.accept(load_input_dicts_visitor)
+#             fallback_model = fallback_model_node.state_dict
+#         elif fallback_model_node:
+#             fallback_model = fallback_model_node.state_dict
+#         else:
+#             fallback_model = None
+#
+#         # ==============================================
+#         # Rest of selective merging logic
+#         # ==============================================
+#
+#         # Get model configuration
+#         model_config = recipe.accept(sd_mecha.model_detection.DetermineConfigVisitor())
+#
+#         # Normalize output
+#         output = self._RecipeMerger__normalize_output_to_dict(
+#             output,
+#             model_config.get_minimal_dummy_header(),
+#             model_config.get_keys_to_merge(),
+#             recipe_serializer.serialize(recipe),
+#             buffer_size_per_file // threads,
+#             save_dtype,
+#         )
+#
+#         # ==============================================
+#         # Moved key filtering logic outside the loop
+#         # ==============================================
+#         def _should_merge_key(key: str, merge_keys: List[str]) -> bool:
+#             """Checks if a key should be merged using regex for wildcard patterns."""
+#             # Check exclusion first
+#             for pattern in merge_keys:
+#                 if pattern.startswith("!"):
+#                     exclusion_pattern = pattern[1:].strip()
+#                     # Convert wildcard to regex
+#                     regex_pattern = exclusion_pattern.replace(".", r"\.").replace("*", ".*")
+#                     if re.fullmatch(regex_pattern, key):
+#                         return False  # Skip merge
+#
+#             # Check inclusion
+#             for pattern in merge_keys:
+#                 if not pattern.startswith("!"):
+#                     # Convert wildcard to regex
+#                     regex_pattern = pattern.replace(".", r"\.").replace("*", ".*")
+#                     if re.fullmatch(regex_pattern, key):
+#                         return True  # Merge
+#
+#             return False  # Default: skip merge
+#
+#         thread_local_data = threading.local()
+#         progress = self._RecipeMerger__tqdm(total=len(model_config.keys()), desc="Merging recipe")
+#         with sd_mecha.recipe_merger.ThreadPoolExecutor(max_workers=threads) as executor:
+#             futures = []
+#             for key in model_config.keys():
+#                 if not _should_merge_key(key, merge_keys):
+#                     if default_behavior == "zero":
+#                         print(f"Skipping merge for key: {key}, setting to zero")
+#                         shape = model_config.get_shape(key)
+#                         if shape is not None:
+#                             output[key] = torch.zeros(shape, dtype=save_dtype, device=save_device)
+#                         else:
+#                             logger.warning(f"Shape not found for key: {key}. Skipping.")
+#                         progress.update()
+#                         continue
+#                     elif default_behavior == "keep_a":
+#                         print(f"Skipping merge for key: {key}, keeping original value from model")
+#                         try:
+#                             if fallback_model is not None:
+#                                 output[key] = fallback_model[key].to(device=save_device, dtype=save_dtype)
+#                             else:
+#                                 output[key] = recipe.models[0].state_dict[key].to(device=save_device,
+#                                                                                   dtype=save_dtype)
+#                         except KeyError:
+#                             logging.warning(f"Key {key} not found in any model. Skipping.")
+#                         progress.update()
+#                         continue
+#
+#                 key_merger = model_config.get_key_merger(key, recipe, fallback_model, self._RecipeMerger__default_device, self._RecipeMerger__default_dtype)
+#                 key_merger = self._RecipeMerger__track_output(key_merger, output, key, save_dtype, save_device)
+#                 key_merger = self._RecipeMerger__track_progress(key_merger, key, model_config.get_shape(key), progress)
+#                 key_merger = self._RecipeMerger__wrap_thread_context(key_merger, thread_local_data)
+#                 futures.append(executor.submit(key_merger))
+#
+#             for future in sd_mecha.recipe_merger.as_completed(futures):
+#                 if future.exception() is not None:
+#                     for future_to_cancel in futures:
+#                         future_to_cancel.cancel()
+#                     raise future.exception()
+#                 future.result()
+#
+#         progress.close()
+#         if isinstance(output, sd_mecha.recipe_merger.OutSafetensorsDict):
+#             output.close()
+#         recipe.accept(sd_mecha.recipe_merger.CloseInputDictsVisitor())
+#
+#         gc.collect()
+#         torch.cuda.empty_cache()
+#
+#     RecipeMerger.merge_and_save = patched_merge_and_save
 
 
 ### Save merge method code ###

@@ -112,12 +112,11 @@ logs/**/*.jpg
 
 # --- Configs ---
 # Ignore user-generated configs, keep templates
-*.yaml
+!sd_optim/model_config/*.yaml
 !conf/config.tmpl.yaml
 !conf/payloads/*.tmpl.yaml # Match any cargo_*.tmpl.yaml
 !conf/payloads/cargo/payload.tmpl.yaml
 !conf/optimization_guide/guide.tmpl.yaml
-!conf/model_configs/*.yaml # Allow custom block configs IF stored here
 
 # --- Other Project Files ---
 *.txt

@@ -13,7 +13,7 @@ import safetensors.torch
 from hydra.core.hydra_config import HydraConfig
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, Optional, List, Tuple, Any, re
+from typing import Dict, Optional, List, Tuple, Any
 
 from omegaconf import DictConfig, open_dict
 from sd_mecha import recipe_serializer, extensions, recipe_nodes
@@ -41,30 +41,60 @@ precision_mapping = {
 
 @dataclass
 class Merger:
-    cfg: DictConfig
-    models: List[ModelRecipeNode] = None # Store ModelRecipeNode objects
-    models_dir: Path = None # ADDED: Instance attribute for the directory
-
+    # V1.1 - Corrected base config inference logic
     def __init__(self, cfg: DictConfig):
         self.cfg = cfg
         if not cfg.model_paths: raise ValueError("'model_paths' cannot be empty.")
-        self.models_dir = Path(cfg.model_paths[0]).resolve().parent
-        self.models = self._create_model_nodes()
+
+        # --- Base Config Inference (Corrected) ---
         self.base_model_config: Optional[model_configs.ModelConfig] = None
-        self.custom_block_config: Optional[model_configs.ModelConfig] = None
+        representative_model_path_str = cfg.model_paths[0]
+        logger.info(f"Merger: Inferring base ModelConfig from: {representative_model_path_str}")
         try:
-             temp_nodes = [sd_mecha.model(p) for p in cfg.model_paths]
-             with sd_mecha.open_input_dicts(temp_nodes, [self.models_dir]): # type: ignore
-                 configs = sd_mecha.infer_model_configs(temp_nodes) # type: ignore
-                 if configs: self.base_model_config = configs[0]
-                 else: logger.error("Failed to infer base model config in Merger init.")
-        except Exception as e: logger.error(f"Error inferring base config in Merger init: {e}")
-        custom_id = self.cfg.optimization_guide.get("custom_block_config_id")
-        if custom_id and self.base_model_config:
-            try: self.custom_block_config = model_configs.resolve(custom_id)
-            except ValueError as e: logger.warning(f"Merger could not resolve custom config '{custom_id}': {e}")
-        self.output_file: Optional[Path] = None; self.best_output_file: Optional[Path] = None
-        self.create_model_out_name(); self.create_best_model_out_name()
+            # models_dir determined from representative model path
+            self.models_dir = Path(representative_model_path_str).resolve().parent
+            if not self.models_dir.is_dir(): raise FileNotFoundError(f"Merger: Dir not found: {self.models_dir}")
+
+            rep_model_node = sd_mecha.model(representative_model_path_str)
+            # Use open_input_dicts on the SINGLE node
+            with sd_mecha.open_input_dicts(rep_model_node, [self.models_dir]):
+                if rep_model_node.state_dict:
+                    inferred_configs = sd_mecha.infer_model_configs(rep_model_node.state_dict.keys())
+                    if inferred_configs:
+                        self.base_model_config = inferred_configs[0]
+                        logger.info(f"Merger: Inferred base ModelConfig: {self.base_model_config.identifier}")
+                    else: raise ValueError(f"Merger: Cannot infer ModelConfig for {representative_model_path_str}")
+                else: raise ValueError(f"Merger: Cannot load dictionary for {representative_model_path_str}")
+        except Exception as e:
+             logger.error(f"Merger: Error inferring base config: {e}", exc_info=True)
+             # Decide if this is fatal - likely yes if subsequent steps need it.
+             raise ValueError("Merger could not determine base ModelConfig.") from e
+        # --- End Base Config Inference ---
+
+        # --- Load Custom Config (depends on successful base inference if needed later) ---
+        self.custom_block_config_id = self.cfg.optimization_guide.get("custom_block_config_id")
+        self.custom_block_config = None
+        if self.custom_block_config_id:
+            logger.debug(f"Merger: Attempting to load custom block config: '{self.custom_block_config_id}'")
+            try:
+                # Resolve relies on registration happening in main() BEFORE Merger is initialized
+                self.custom_block_config = model_configs.resolve(self.custom_block_config_id)
+                logger.info(f"Merger: Successfully loaded custom block config: {self.custom_block_config_id}")
+            except ValueError as e:
+                # Log warning, but maybe don't raise error here if only used conditionally later?
+                # However, if prepare_param_args *requires* it, failure here is problematic.
+                logger.warning(f"Merger: Could not resolve custom config '{self.custom_block_config_id}': {e}")
+                # If resolution is critical for later steps, uncomment the raise:
+                # raise ValueError(f"Invalid custom_block_config_id: {self.custom_block_config_id}") from e
+
+        # --- Initialize other Merger attributes ---
+        # Create ModelRecipeNode objects for ALL models AFTER determining models_dir
+        self.models = self._create_model_nodes() # Moved node creation here
+        self.output_file: Optional[Path] = None
+        self.best_output_file: Optional[Path] = None
+        self.create_model_out_name() # Set initial output name
+        self.create_best_model_out_name() # Set initial best name
+        logger.info(f"Merger initialized with {len(self.models)} model nodes.")
 
     def validate_config(self):
         # Removed model_arch check
@@ -93,23 +123,25 @@ class Merger:
         if not hasattr(self.cfg, 'save_dtype') or self.cfg.save_dtype not in precision_mapping:
              raise ValueError(f"Invalid or missing 'save_dtype': {self.cfg.get('save_dtype')}. Must be one of {list(precision_mapping.keys())}")
 
+    # _create_model_nodes remains the same, uses self.models_dir
     def _create_model_nodes(self) -> List[ModelRecipeNode]:
-        """Creates basic sd_mecha.model() nodes for all models in model_paths."""
         model_nodes = []
-        # Use self.models_dir directly
+        if not self.models_dir: # Should be set by __init__
+             logger.error("Cannot create model nodes: models_dir not set.")
+             return []
         models_dir_path = self.models_dir.resolve()
         for model_path_str in self.cfg.get("model_paths", []):
-            model_path = Path(model_path_str).resolve()
-            try:
-                # Use self.models_dir for relative path calculation
-                relative_path = model_path.relative_to(models_dir_path)
-            except ValueError:
-                relative_path = model_path
-                # Use self.models_dir in the warning
-                logger.warning(f"Model {model_path} is outside of models_dir ({models_dir_path}). Using absolute path.")
+            model_path = Path(model_path_str)
+            # Resolve relative to models_dir_path if not absolute
+            if not model_path.is_absolute():
+                 test_path = models_dir_path / model_path
+                 if test_path.exists(): # Check if resolving makes it exist
+                      model_path = test_path
+                 # else: use original path, might be handled by sd-mecha later if relative to CWD
 
-            model_nodes.append(sd_mecha.model(str(relative_path)))
-        logger.info(f"Created {len(model_nodes)} ModelRecipeNodes.")
+            # Create node using the potentially resolved path
+            model_nodes.append(sd_mecha.model(str(model_path))) # Pass string path
+        logger.info(f"Merger: Created {len(model_nodes)} ModelRecipeNodes.")
         return model_nodes
 
     def _create_model_output_name(self, it: int = 0, best: bool = False) -> Path:
@@ -280,17 +312,26 @@ class Merger:
             is_lora = False
 
             # --- LoRA Detection & Conversion ---
-            # Infer config requires context, do it carefully
             try:
-                # Temporarily open dicts to infer config - might be inefficient if done repeatedly
-                with sd_mecha.open_input_dicts(current_node, [Path(self.cfg.models_dir)]):
-                    inferred_config_id = current_node.model_config.identifier
-                    # Simple check based on common identifiers in sd-mecha configs
-                    if "lora" in inferred_config_id or "lycoris" in inferred_config_id:
-                         is_lora = True
-                         logger.info(f"Detected LoRA/LyCORIS: {current_node.path}")
-            except Exception as e:
-                 logger.warning(f"Could not reliably infer config for {current_node.path} to check for LoRA: {e}. Assuming it's not a LoRA.")
+                # Use self.models_dir which is resolved in __init__
+                if not self.models_dir: raise FileNotFoundError("models_dir not set")  # Safety check
+
+                # Temporarily open dicts to infer config
+                # Pass the correct directory context
+                with sd_mecha.open_input_dicts(current_node, [self.models_dir]):  # <<< USE self.models_dir
+                    if current_node.model_config:  # Check if config was inferred
+                        inferred_config_id = current_node.model_config.identifier
+                        if "lora" in inferred_config_id or "lycoris" in inferred_config_id:
+                            is_lora = True
+                            logger.info(f"Detected LoRA/LyCORIS: {current_node.path}")
+                    # else: logger.warning(f"Could not infer config for {current_node.path} during LoRA check.")
+            except FileNotFoundError as e_dir:
+                logger.error(f"LoRA check failed: models_dir '{self.models_dir}' invalid? Error: {e_dir}")
+            except AttributeError:
+                # This can happen if current_node.model_config remains None after open_input_dicts
+                logger.warning(f"Could not access model_config for {current_node.path} during LoRA check.")
+            except Exception as e_inf:
+                logger.warning(f"Error during LoRA check for {current_node.path}: {e_inf}. Assuming not a LoRA.")
 
             if is_lora:
                 logger.info(f"Converting LoRA node {current_node.path} relative to {conversion_target_node.path}")
@@ -506,12 +547,12 @@ class Merger:
             params: Dict[str, Any],  # Flat params from optimizer
             param_info: BoundsInfo, # <<< ADDED: Full metadata from ParameterHandler
             cache: Optional[Dict],
-            # save_best: bool = False # Removed, handled internally by filename logic
+            iteration: int = 0 # <<< ADD iteration parameter
     ) -> Path:
         """Builds and executes sd-mecha recipe, using param_info for expansion."""
         cfg = self.cfg
         cache = cache if cache is not None else {}
-        logger.info(f"Starting merge process for iteration {self.cfg.get('iteration', '?')}") # Assuming iteration might be available
+        logger.info(f"Starting merge process for iteration {iteration}") # <<< USE iteration
 
         # 1. Determine output path (using instance property self.output_file)
         model_path = self.output_file

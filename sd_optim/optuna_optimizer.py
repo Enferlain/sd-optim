@@ -12,6 +12,8 @@ import optuna
 
 from pathlib import Path
 from typing import Dict, List, Optional
+
+from omegaconf import ListConfig
 from optuna import Trial, Study
 from optuna.trial import TrialState, FrozenTrial
 from optuna.samplers import (
@@ -230,8 +232,7 @@ class OptunaOptimizer(Optimizer):
     async def optimize(self) -> None:
         """Run Optuna optimization process."""
         self.optimization_start_time = time.time()
-        self._param_bounds = self.init_params()
-        logger.debug(f"Initial Parameter Bounds: {self._param_bounds}")
+        logger.debug(f"Initial Parameter Bounds: {self.optimizer_pbounds}")  # Use the attribute directly
 
         # Configure sampler
         sampler = self._configure_sampler() # Call the new function
@@ -247,42 +248,47 @@ class OptunaOptimizer(Optimizer):
                 pruner = SuccessiveHalvingPruner()
                 logger.info("Using Successive Halving Pruner")
 
-        # Create or load study with error handling
         study_name = f"optimization_{self.log_name}"
-        storage_path = os.path.join(os.getcwd(), f'{study_name}.db')
+        # Use checkpoint dir for storage DB (ensure self.checkpoint_dir is Path)
+        storage_path = self.checkpoint_dir / f'{study_name}.db'
         storage = f"sqlite:///{storage_path}"
+        logger.info(f"Using Optuna storage: {storage}")
+
+        # --- Determine if loading or creating ---
+        # Use the common load_log_file flag to indicate resuming
+        # Optuna's load_if_exists=True handles both creating and loading
+        should_load_study = bool(self.cfg.optimizer.get("load_log_file", False))
+        logger.info(f"Attempting to {'load' if should_load_study else 'create'} study '{study_name}'.")
 
         try:
-            load_if_exists = bool(self.cfg.optimizer.get("load_log_file", False))
             self.study = optuna.create_study(
                 study_name=study_name,
                 storage=storage,
                 sampler=sampler,
                 pruner=pruner,
                 direction="maximize",
-                load_if_exists=load_if_exists
+                load_if_exists=True # <<< ALWAYS TRUE: Creates if not exist, loads if exists
             )
-        except Exception as e:
-            logger.error(f"Failed to create/load study: {e}")
-            # Fallback to in-memory storage if database fails
-            logger.info("Falling back to in-memory storage")
-            self.study = optuna.create_study(
-                study_name=study_name,
-                sampler=sampler,
-                pruner=pruner,
-                direction="maximize"
-            )
+            # Log whether it was loaded or created
+            if should_load_study and len(self.study.trials) > 0:
+                 logger.info(f"Successfully loaded existing study '{study_name}' with {len(self.study.trials)} trials.")
+            elif not should_load_study and len(self.study.trials) == 0:
+                 logger.info(f"Successfully created new study '{study_name}'.")
+            elif should_load_study and len(self.study.trials) == 0:
+                 logger.warning(f"Load specified, but study '{study_name}' was created new or is empty.")
+            # else: !should_load_study and len > 0 means created new study but somehow got trials? Unlikely.
 
-            # Try to restore from JSON logs if available
-            self._restore_from_trials_log()
+        except Exception as e_study:
+             # Fallback to in-memory might lose history unless we load from JSONL logs
+             logger.error(f"Failed to create/load study using DB: {e_study}. Check DB path/permissions.")
+             logger.info("Attempting fallback to in-memory storage.")
+             self.study = optuna.create_study(study_name=study_name, sampler=sampler, pruner=pruner, direction="maximize")
+             self._restore_from_trials_log() # Attempt restore if using in-memory
 
-        # Register callback for logging
-        self.study.add_trial_callback(self._trial_callback)
-
-        # Calculate remaining trials if resuming
-        completed_trials = len(self.study.trials)
-        total_trials = self.cfg.optimizer.n_iters + self.cfg.optimizer.init_points
-        remaining_trials = max(0, total_trials - completed_trials)
+        # --- Calculate remaining trials ---
+        completed_trials = len(self.study.trials) # Count trials loaded/existing
+        total_trials_planned = self.cfg.optimizer.init_points + self.cfg.optimizer.n_iters
+        remaining_trials = max(0, total_trials_planned - completed_trials)
 
         if completed_trials > 0:
             logger.info(f"Found {completed_trials} completed trials. {remaining_trials} trials remaining.")
@@ -303,21 +309,21 @@ class OptunaOptimizer(Optimizer):
                     n_trials=remaining_trials,
                     n_jobs=self.cfg.optimizer.get("n_jobs", 1),
                     show_progress_bar=True,
-                    callbacks=[self._checkpoint_callback]
+                    callbacks=[self._trial_callback, self._checkpoint_callback]
                 )
 
             except KeyboardInterrupt:
                 logger.info("Optimization interrupted by user. Saving current state...")
-                self._save_checkpoint()
+                self.save_checkpoint()
             except Exception as e:
                 logger.error(f"Optimization failed: {e}")
-                self._save_checkpoint()
+                self.save_checkpoint()
                 raise
         else:
             logger.info("All trials already completed. Skipping optimization.")
 
         # Save final checkpoint
-        self._save_checkpoint()
+        self.save_checkpoint()
 
         # Analyze parameter importance
         self._analyze_parameter_importance()
@@ -348,7 +354,7 @@ class OptunaOptimizer(Optimizer):
 
         logger.info(f"Restored {len(self.study.trials)} valid trials")
 
-    def _save_checkpoint(self):
+    def save_checkpoint(self):
         """Save current optimization state."""
         if not self.study:
             logger.warning("No study to checkpoint")
@@ -383,7 +389,7 @@ class OptunaOptimizer(Optimizer):
         """Callback to periodically save checkpoints."""
         if trial.number % self.checkpoint_interval == 0 and trial.number > 0:
             logger.info(f"Creating periodic checkpoint at trial {trial.number}")
-            self._save_checkpoint()
+            self.save_checkpoint()
 
         # Perform garbage collection periodically
         if trial.number % 5 == 0 and trial.number > 0:
@@ -396,23 +402,50 @@ class OptunaOptimizer(Optimizer):
         """Objective function for Optuna optimization."""
         # Convert param bounds to Optuna parameter suggestions
         params = {}
-        for param_name, bounds in self._param_bounds.items():
-            if isinstance(bounds, (list, tuple)) and len(bounds) == 2:
-                if all(isinstance(v, int) and v in [0, 1] for v in bounds):
-                    # Binary parameter
-                    params[param_name] = trial.suggest_categorical(param_name, [0.0, 1.0])
-                elif all(isinstance(v, int) for v in bounds):
-                    # Integer parameter
-                    params[param_name] = trial.suggest_int(param_name, int(bounds[0]), int(bounds[1]))
+        # Use self.optimizer_pbounds (or self.param_info) which was set during __post_init__
+        if not self.optimizer_pbounds:
+            logger.error("Optimizer bounds not initialized in _objective. Cannot suggest parameters.")
+            raise optuna.exceptions.TrialPruned("Bounds not available")  # Prune trial if bounds missing
+
+        # V1.1 - Corrected bound handling for float ranges
+        for param_name, bounds_value in self.optimizer_pbounds.items():
+            if isinstance(bounds_value, tuple) and len(bounds_value) == 2:
+                # REMOVED check for exact (0.0, 1.0) tuple
+
+                # Check for integer range first
+                if all(isinstance(v, int) or (isinstance(v, float) and v.is_integer()) for v in bounds_value):
+                    # Ensure bounds are actually different before suggesting int range
+                    low, high = int(bounds_value[0]), int(bounds_value[1])
+                    if low == high:
+                        params[param_name] = low  # Treat as fixed if bounds are same
+                        trial.set_user_attr(f"fixed_{param_name}", True)
+                    else:
+                        params[param_name] = trial.suggest_int(param_name, low, high)
+                # Default to float range (handles (0.0, 1.0) correctly now)
                 else:
-                    # Continuous parameter
-                    params[param_name] = trial.suggest_float(param_name, float(bounds[0]), float(bounds[1]))
-            elif isinstance(bounds, (list, tuple)):
-                # Categorical parameter with multiple options
-                params[param_name] = trial.suggest_categorical(param_name, bounds)
+                    low, high = float(bounds_value[0]), float(bounds_value[1])
+                    # Ensure bounds are different before suggesting range
+                    if abs(low - high) < 1e-9:  # Check for near equality for floats
+                        params[param_name] = low  # Treat as fixed
+                        trial.set_user_attr(f"fixed_{param_name}", True)
+                    else:
+                        params[param_name] = trial.suggest_float(param_name, low, high)
+
+            elif isinstance(bounds_value, list):
+                # Categorical list - check if only one option (fixed)
+                if len(bounds_value) == 1:
+                    params[param_name] = bounds_value[0]
+                    trial.set_user_attr(f"fixed_{param_name}", True)
+                else:
+                    params[param_name] = trial.suggest_categorical(param_name, bounds_value)
+            elif isinstance(bounds_value, (int, float)):
+                # Fixed value from custom_bounds
+                params[param_name] = bounds_value
+                trial.set_user_attr(f"fixed_{param_name}", True)
             else:
-                # Fixed value
-                params[param_name] = bounds
+                logger.warning(
+                    f"Unsupported bound type for Optuna suggestion: {type(bounds_value)} for '{param_name}'. Skipping.")
+                raise optuna.exceptions.TrialPruned(f"Unsupported bounds for {param_name}")
 
         try:
             # Run the async function in a synchronous context

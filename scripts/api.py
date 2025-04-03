@@ -1,172 +1,221 @@
-# scripts/api.py - Version 1.1 - Reverted load/unload, adjusted URL handling
+# scripts/api.py - V1.2 - Corrected callback, load/unload logic, paths
 
 import logging
 import os
-import requests
+import requests # Keep requests for Swarm
 
+# FastAPI imports
 from fastapi import FastAPI, Body, HTTPException, Query
-from pydantic import BaseModel # For request body structure
+# Pydantic for request body validation
+from pydantic import BaseModel, Field # Field helps with validation/defaults
 from typing import Optional
 
-
-logger = logging.getLogger(__name__)
-# Consider making logging level configurable or inherit from main app
-logging.basicConfig(level=logging.INFO)
-
-
-# Conditional imports based on WebUI environment
+# --- Conditional WebUI Imports ---
+# Try to import modules that only exist within A1111/Forge environment
 try:
-    # Try A1111/Forge imports first
     from modules import script_callbacks, sd_models, shared
-    # Forge specific (confirm these are the correct modules)
+    # Forge specific imports (confirm these are correct for your version)
     from modules_forge import main_entry
     from backend import memory_management
     A1111_FORGE_AVAILABLE = True
-    logger.info("A1111/Forge environment detected.")
+    logger = logging.getLogger(__name__) # Get logger AFTER potential module import
+    logger.info("A1111/Forge environment detected. API endpoints enabled.")
 except ImportError:
     A1111_FORGE_AVAILABLE = False
-    # Define dummy variables or skip logic if needed when running outside A1111/Forge
-    class DummyShared: device = "cpu" # Example dummy
+    # Define logger even if outside environment for consistency
+    logger = logging.getLogger(__name__)
+    logger.warning("Not running in A1111/Forge context. API endpoints will be inactive.")
+    # Define dummy objects if absolutely needed for code analysis, but better to check the flag
+    class DummyShared: device = "cpu"; state = None # Add state if needed
     shared = DummyShared()
-    script_callbacks = None # Or a dummy object with an on_app_started method
-    logger.warning("A1111/Forge environment not detected. API functionality for these UIs will be disabled.")
+    script_callbacks = None # Explicitly None
 
-# --- Request Body Models ---
+# Configure logger (can be basic here, Forge might override)
+logging.basicConfig(level=logging.INFO)
+
+# --- Pydantic Model for Load Request Body ---
 class LoadModelPayload(BaseModel):
-    model_path: str
-    webui: str
-    # URL is optional, only needed for specific targets like Swarm proxying
-    target_url: Optional[str] = None
+    model_path: str = Field(..., title="Absolute path to the model file")
+    webui: str = Field(..., title="Target WebUI type (a1111, forge, swarm)")
+    # target_url is only needed for Swarm, make it optional
+    target_url: Optional[str] = Field(None, title="Target URL (required for Swarm)")
 
-# --- API Endpoint Definition ---
-def api_endpoints(app: FastAPI):
-    """Defines API endpoints for model loading/unloading."""
+# --- Main Callback Function for Registration ---
+def sd_optim_api_setup(_gui_unused, app: FastAPI):
+    """
+    This function is registered with script_callbacks.on_app_started.
+    It defines the API endpoints.
+    """
+    if not A1111_FORGE_AVAILABLE:
+        logger.warning("A1111/Forge modules not loaded. Skipping API route registration.")
+        return # Don't register routes if environment isn't right
 
-    @app.post("/sd_optim/load-model", response_model=None) # Use sd-optim prefix
+    logger.info("Registering sd-optim API endpoints...")
+
+    @app.post("/sd_optim/load-model", response_model=None, tags=["SD Optim"])
     async def load_model_api(payload: LoadModelPayload = Body(...)):
-        """Loads a model into the specified WebUI."""
-        logger.info(f"Received request to load model on {payload.webui}: {payload.model_path}")
+        """Loads the specified model into the target WebUI."""
+        logger.info(f"Received load request: UI='{payload.webui}', Path='{payload.model_path}'")
+        webui_lower = payload.webui.lower()
+
         try:
-            if payload.webui.lower() in ["a1111", "forge", "reforge"]:
-                if not A1111_FORGE_AVAILABLE:
-                     raise HTTPException(status_code=501, detail=f"{payload.webui} environment not detected.")
-
-                # --- Keep verified A1111/Forge Load Logic ---
+            if webui_lower == "a1111":
+                # --- A1111 Load Logic (from reference) ---
+                logger.debug(f"Loading for A1111 using sd_models...")
                 checkpoint_info = sd_models.CheckpointInfo(payload.model_path)
-                sd_models.load_model(checkpoint_info) # Load the model into memory
-                # Forge specific reload/update steps (Verify correctness for Forge)
-                if payload.webui.lower() in ["forge", "reforge"]:
-                     # main_entry might update UI elements, check if needed after sd_models.load_model
-                     main_entry.checkpoint_change(os.path.basename(payload.model_path))
-                     # forge_model_reload seems more relevant for applying the loaded model
+                # Prevent reloading if it's already loaded? sd_models might handle this.
+                sd_models.load_model(checkpoint_info)
+                logger.info(f"A1111: Loaded model '{os.path.basename(payload.model_path)}'")
+                # --- End A1111 Logic ---
+
+            elif webui_lower == "forge":
+                # --- Forge Load Logic (from reference) ---
+                logger.debug(f"Loading for Forge using forge_model_reload...")
+                checkpoint_info = sd_models.CheckpointInfo(payload.model_path)
+                # Set parameters for Forge loading
+                # Ensure model_data exists and has forge_loading_parameters attribute
+                if hasattr(sd_models, 'model_data') and hasattr(sd_models.model_data, 'forge_loading_parameters'):
+                     sd_models.model_data.forge_loading_parameters = {
+                         "checkpoint_info": checkpoint_info,
+                         "additional_modules": [] # Add other modules if needed
+                     }
+                     # Trigger the actual reload mechanism in Forge
                      sd_models.forge_model_reload()
-                # --- End A1111/Forge Load Logic ---
-                logger.info(f"Loaded model in {payload.webui} from {payload.model_path}")
+                     # Update UI elements if necessary (e.g., dropdowns)
+                     if hasattr(main_entry, 'checkpoint_change'):
+                          main_entry.checkpoint_change(os.path.basename(payload.model_path))
+                     else:
+                          logger.warning("main_entry.checkpoint_change not found.")
+                     logger.info(f"Forge: Loaded model '{os.path.basename(payload.model_path)}'")
+                else:
+                     logger.error("Forge loading structures (sd_models.model_data.forge_loading_parameters) not found.")
+                     raise RuntimeError("Forge environment setup appears incorrect.")
+                # --- End Forge Logic ---
 
-            elif payload.webui.lower() == "swarm":
-                 if not payload.target_url:
-                      raise HTTPException(status_code=400, detail="target_url is required in request body for SwarmUI operations.")
-                 target_url = payload.target_url
-                 api_url = f"{target_url}/API/SelectModel"
-                 try:
-                     # Simplistic session get - robust session management might be needed
-                     session_id = requests.post(url=f"{target_url}/API/GetNewSession", json={}, timeout=5).json()["session_id"]
-                     # Swarm might expect just the model name
-                     request_payload = {"session_id": session_id, "model": os.path.basename(payload.model_path)}
-                     response = requests.post(api_url, json=request_payload, timeout=10)
-                     response.raise_for_status()
-                     logger.info(f"Sent model load request to SwarmUI ({target_url}) for {os.path.basename(payload.model_path)}")
-                 except requests.exceptions.RequestException as req_err:
-                     logger.error(f"Failed to communicate with SwarmUI at {target_url}: {req_err}")
-                     raise HTTPException(status_code=502, detail=f"Failed to contact SwarmUI: {req_err}")
+            elif webui_lower == "swarm":
+                # --- Swarm Load Logic (from reference) ---
+                if not payload.target_url:
+                    raise HTTPException(status_code=400, detail="target_url is required in request body for SwarmUI.")
+                target_url = payload.target_url
+                api_url = f"{target_url.rstrip('/')}/API/SelectModel" # Ensure no double slash
+                model_name = os.path.basename(payload.model_path) # Swarm likely uses name
+                logger.debug(f"Sending load request to Swarm: URL='{api_url}', Model='{model_name}'")
+                try:
+                    # Get new session ID (synchronous requests for simplicity here)
+                    session_resp = requests.post(f"{target_url.rstrip('/')}/API/GetNewSession", json={}, timeout=10)
+                    session_resp.raise_for_status()
+                    session_id = session_resp.json().get("session_id")
+                    if not session_id: raise ValueError("Swarm GetNewSession did not return session_id")
 
-            elif payload.webui.lower() == "comfy":
-                 logger.warning("ComfyUI model loading via API requires specific workflow triggers.")
-                 raise HTTPException(status_code=501, detail="ComfyUI loading not supported via direct load API call.")
+                    # Send SelectModel request
+                    request_payload = {"session_id": session_id, "model": model_name}
+                    response = requests.post(api_url, json=request_payload, timeout=30) # Longer timeout for load
+                    response.raise_for_status() # Check for HTTP errors
+                    # Check response content if Swarm provides confirmation
+                    logger.info(f"SwarmUI: Sent SelectModel request for '{model_name}'")
+                except requests.exceptions.RequestException as req_err:
+                    logger.error(f"Failed to communicate with SwarmUI at {target_url}: {req_err}")
+                    raise HTTPException(status_code=502, detail=f"Failed to contact SwarmUI: {req_err}")
+                except Exception as swarm_e:
+                     logger.error(f"Error during Swarm load request: {swarm_e}")
+                     raise HTTPException(status_code=500, detail=f"Swarm request failed: {swarm_e}")
+                # --- End Swarm Logic ---
+
+            elif webui_lower == "comfy":
+                logger.warning("ComfyUI model loading via API requires workflow execution, not direct loading.")
+                raise HTTPException(status_code=501, detail="ComfyUI loading not supported via this direct API call.")
             else:
                 raise HTTPException(status_code=400, detail=f"Invalid WebUI type specified: {payload.webui}")
 
+            # If successful up to here
             return {"message": f"Model load request processed for {payload.webui} / {os.path.basename(payload.model_path)}"}
 
         except HTTPException as http_err:
-             raise http_err # Re-raise FastAPI errors
+             raise http_err # Re-raise specific HTTP errors
         except Exception as e:
+            # Catch any other unexpected errors during load process
             logger.error(f"Error processing load model request: {e}", exc_info=True)
             raise HTTPException(status_code=500, detail=f"Internal server error processing load request: {e}")
 
-    @app.post("/sd_optim/unload-model", response_model=None) # Use sd-optim prefix
+    @app.post("/sd_optim/unload-model", response_model=None, tags=["SD Optim"])
     async def unload_model_api(
-            webui: str = Query(..., title="WebUI Type"),
-            # URL might be needed if proxied request to Swarm
-            target_url: Optional[str] = Query(None, title="Target URL (e.g., for Swarm)")
+            webui: str = Query(..., title="WebUI Type (a1111, forge, swarm)"),
+            # URL only needed for Swarm
+            target_url: Optional[str] = Query(None, title="Target URL (required for Swarm)")
     ):
         """Unloads the currently loaded model in the specified WebUI."""
-        logger.info(f"Received request to unload model on {webui}")
+        logger.info(f"Received unload request for UI='{webui}'")
+        webui_lower = webui.lower()
+
         try:
-            if webui.lower() in ["a1111", "forge", "reforge"]:
-                if not A1111_FORGE_AVAILABLE:
-                     raise HTTPException(status_code=501, detail=f"{webui} environment not detected.")
-
-                # --- Keep verified A1111/Forge Unload Logic ---
-                # Try both methods for broader compatibility, log if one fails
-                unloaded = False
-                try: # Forge memory management
-                    if hasattr(memory_management, 'free_memory'):
-                         memory_management.free_memory(1e30, shared.device, keep_loaded=[], free_all=True)
-                         unloaded = True
-                         logger.info("Used Forge memory_management to unload.")
-                except Exception as forge_e:
-                     logger.warning(f"Forge memory_management unload failed (may be harmless): {forge_e}")
-
-                try: # A1111 unload
-                    if hasattr(sd_models, 'unload_model_weights'):
-                        sd_models.unload_model_weights()
-                        unloaded = True
-                        logger.info("Used A1111 sd_models.unload_model_weights.")
-                except Exception as a1111_e:
-                     logger.warning(f"A1111 unload_model_weights failed (may be harmless): {a1111_e}")
-
-                if not unloaded:
-                     logger.warning(f"Could not confirm model unload for {webui} using known methods.")
+            if webui_lower == "a1111":
+                # --- A1111 Unload Logic (from reference) ---
+                logger.debug("Unloading model for A1111 using sd_models...")
+                if hasattr(sd_models, 'unload_model_weights'):
+                    sd_models.unload_model_weights()
+                    logger.info("A1111: Unloaded model weights.")
                 else:
-                     logger.info(f"Model unload executed for {webui}")
-                 # --- End A1111/Forge Unload Logic ---
+                     logger.warning("sd_models.unload_model_weights not found.")
+                # --- End A1111 Logic ---
 
-            elif webui.lower() == "swarm":
-                 if not target_url:
-                      raise HTTPException(status_code=400, detail="target_url query parameter is required for SwarmUI operations.")
-                 api_url = f"{target_url}/API/FreeBackendMemory"
-                 try:
-                     session_id = requests.post(url=f"{target_url}/API/GetNewSession", json={}, timeout=5).json()["session_id"]
-                     payload = {"session_id": session_id, "system_ram": False, "backend": "all"}
-                     response = requests.post(api_url, json=payload, timeout=10)
-                     response.raise_for_status()
-                     logger.info(f"Sent model unload request to SwarmUI ({target_url})")
-                 except requests.exceptions.RequestException as req_err:
-                     logger.error(f"Failed to communicate with SwarmUI at {target_url}: {req_err}")
-                     raise HTTPException(status_code=502, detail=f"Failed to contact SwarmUI: {req_err}")
+            elif webui_lower == "forge":
+                # --- Forge Unload Logic (from reference) ---
+                logger.debug("Unloading model for Forge using memory_management...")
+                if hasattr(memory_management, 'free_memory'):
+                    # Freeing all should unload the main checkpoint
+                    memory_management.free_memory(1e30, shared.device, keep_loaded=[], free_all=True)
+                    logger.info("Forge: Called memory_management.free_memory(free_all=True).")
+                else:
+                    logger.warning("backend.memory_management.free_memory not found.")
+                # --- End Forge Logic ---
 
-            elif webui.lower() == "comfy":
-                 logger.warning("ComfyUI model unloading not typically done via direct API.")
-                 raise HTTPException(status_code=501, detail="ComfyUI unloading not supported via this API.")
+            elif webui_lower == "swarm":
+                # --- Swarm Unload Logic (from reference) ---
+                if not target_url:
+                    raise HTTPException(status_code=400, detail="target_url query parameter is required for SwarmUI.")
+                target_url = target_url.rstrip('/')
+                api_url = f"{target_url}/API/FreeBackendMemory"
+                logger.debug(f"Sending unload request to Swarm: URL='{api_url}'")
+                try:
+                    # Get new session ID
+                    session_resp = requests.post(f"{target_url}/API/GetNewSession", json={}, timeout=10)
+                    session_resp.raise_for_status()
+                    session_id = session_resp.json().get("session_id")
+                    if not session_id: raise ValueError("Swarm GetNewSession did not return session_id")
+
+                    # Send FreeBackendMemory request
+                    request_payload = {"session_id": session_id, "system_ram": False, "backend": "all"}
+                    response = requests.post(api_url, json=request_payload, timeout=20) # Slightly longer timeout
+                    response.raise_for_status()
+                    logger.info("SwarmUI: Sent FreeBackendMemory request.")
+                except requests.exceptions.RequestException as req_err:
+                    logger.error(f"Failed to communicate with SwarmUI at {target_url}: {req_err}")
+                    raise HTTPException(status_code=502, detail=f"Failed to contact SwarmUI: {req_err}")
+                except Exception as swarm_e:
+                     logger.error(f"Error during Swarm unload request: {swarm_e}")
+                     raise HTTPException(status_code=500, detail=f"Swarm request failed: {swarm_e}")
+                # --- End Swarm Logic ---
+
+            elif webui_lower == "comfy":
+                logger.warning("ComfyUI model unloading not typically done via direct API call.")
+                raise HTTPException(status_code=501, detail="ComfyUI unloading not supported via this API.")
             else:
                 raise HTTPException(status_code=400, detail=f"Invalid WebUI type specified: {webui}")
 
+            # If successful up to here
             return {"message": f"Model unload request processed for {webui}."}
 
         except HTTPException as http_err:
-             raise http_err
+             raise http_err # Re-raise specific HTTP errors
         except Exception as e:
+            # Catch any other unexpected errors during unload process
             logger.error(f"Error processing unload model request: {e}", exc_info=True)
             raise HTTPException(status_code=500, detail=f"Internal server error processing unload request: {e}")
 
-# Register endpoints when the extension loads in A1111/Forge context
+# --- Register the Callback with Script Callbacks ---
+# Ensure this runs only if script_callbacks was successfully imported
 if script_callbacks and A1111_FORGE_AVAILABLE:
-    # Ensure the callback receives the app instance
-    def register_api_routes(app: FastAPI):
-        logger.info("Registering sd-optim API endpoints...")
-        api_endpoints(app) # Call the function that defines routes
-
-    script_callbacks.on_app_started(register_api_routes)
+    script_callbacks.on_app_started(sd_optim_api_setup)
+    logger.info("sd-optim API setup callback registered.")
 else:
-     logger.warning("Not running in A1111/Forge context or script_callbacks not available. API endpoints not registered via callback.")
+    logger.warning("script_callbacks not available or not in A1111/Forge env. API endpoints will not be registered.")

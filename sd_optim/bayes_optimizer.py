@@ -72,8 +72,7 @@ class BayesOptimizer(Optimizer):
 
     async def optimize(self) -> None: # Changed to async
         self.optimization_start_time = time.time()
-        pbounds = self.init_params()
-        logger.debug(f"Initial Parameter Bounds: {pbounds}")
+        logger.debug(f"Initial Parameter Bounds: {self.optimizer_pbounds}")  # Use the attribute directly
 
         # --- Acquisition Function Configuration ---
         acq_config = self.cfg.optimizer.get("acquisition_function", {})
@@ -109,7 +108,7 @@ class BayesOptimizer(Optimizer):
         # --- Initialize BayesianOptimization ---
         self.optimizer = BayesianOptimization(
             f=sync_target_function_wrapper, # Use the synchronous wrapper
-            pbounds=pbounds,
+            pbounds=self.optimizer_pbounds,
             random_state=self.cfg.optimizer.random_state,
             bounds_transformer=bounds_transformer_instance if bounds_transformer_enabled else None,
             # verbose=2 # Optional: set verbosity level
@@ -142,7 +141,7 @@ class BayesOptimizer(Optimizer):
             iteration = len(instance.res)
             if iteration % self.checkpoint_interval == 0 and iteration > 0:
                 logger.info(f"Creating periodic checkpoint at iteration {iteration}")
-                self._save_checkpoint(instance)
+                self.save_checkpoint(instance)
         self.optimizer.subscribe(Events.OPTIMIZATION_STEP, checkpoint_subscriber)
 
         # --- Initial Sampling (Quasi-Random) ---
@@ -213,19 +212,19 @@ class BayesOptimizer(Optimizer):
                 ) # acq is deprecated
             except KeyboardInterrupt:
                 logger.info("Optimization interrupted by user. Saving current state...")
-                self._save_checkpoint(self.optimizer) # Pass optimizer instance
+                self.save_checkpoint(self.optimizer) # Pass optimizer instance
             except Exception as e:
                 logger.error(f"Optimization failed: {e}", exc_info=True)
-                self._save_checkpoint(self.optimizer) # Pass optimizer instance
+                self.save_checkpoint(self.optimizer) # Pass optimizer instance
                 raise
         else:
             logger.info("All optimization iterations already completed. Skipping maximize.")
 
         # Save final checkpoint
-        self._save_checkpoint(self.optimizer)
+        self.save_checkpoint(self.optimizer)
 
 
-    def _save_checkpoint(self, optimizer_instance: BayesianOptimization):
+    def save_checkpoint(self, optimizer_instance: BayesianOptimization):
         """Save current optimization state using pickle."""
         if not optimizer_instance:
             logger.warning("No optimizer instance to checkpoint")

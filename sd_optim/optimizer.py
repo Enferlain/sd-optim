@@ -118,13 +118,13 @@ class Optimizer:
         try:
             start_merge_time = asyncio.get_event_loop().time()
             if self.cfg.optimization_mode == "merge":
-                # Call merge, passing optimizer params AND the param_info metadata
                 model_path = self.merger.merge(
                     params=params,
-                    param_info=self.param_info, # <<< PASS METADATA HERE
-                    cache=self.cache
-                    # save_best=False implicitly handled by filename logic
+                    param_info=self.param_info,
+                    cache=self.cache,
+                    iteration=self.iteration # <<< PASS ITERATION HERE
                 )
+
             elif self.cfg.optimization_mode == "layer_adjust":
                 # layer_adjust likely doesn't need param_info, just params
                 model_path = self.merger.layer_adjust(params, self.cfg) # Assuming it's sync for now

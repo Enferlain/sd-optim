@@ -8,121 +8,95 @@ import fnmatch
 import torch
 import inspect # Needed to inspect parameter types
 
-from typing import Dict, List, Tuple, Union, Optional
+from typing import Dict, List, Tuple, Union, Optional, Any
 from omegaconf import DictConfig, ListConfig
 from sd_mecha.extensions import model_configs, merge_methods, merge_spaces # Added imports
-from sd_mecha.recipe_nodes import ModelRecipeNode
-
+from sd_mecha.extensions.merge_methods import StateDict, ParameterData # For type checking
 from sd_optim import utils
 
 logger = logging.getLogger(__name__)
 
 
 class ParameterHandler:
-    """Handles parameter bounds creation, aware of custom block configs."""
-
     def __init__(self, cfg: DictConfig):
         self.cfg = cfg
-        # Infer the base model config from input paths
+        self.models_dir = Path(self.cfg.model_paths[0]).resolve().parent # Assuming model_paths[0] exists
         try:
-            # Create temporary ModelRecipeNodes just for inference
-            temp_model_nodes: List[ModelRecipeNode] = [sd_mecha.model(p) for p in cfg.model_paths]
-            # Need context to infer configs if paths are relative
-            # Ignore type error for open_input_dicts accepting List[RecipeNode]
+            # Infer base config (needs context) - simplified version
+            temp_model_nodes = [sd_mecha.model(p) for p in cfg.model_paths]
             with sd_mecha.open_input_dicts(temp_model_nodes, [self.models_dir]): # type: ignore[arg-type]
-                 # Ignore type error for infer_model_configs accepting List[RecipeNode]
-                 # The function iterates keys from the loaded state_dict within the context
-                 inferred_configs = sd_mecha.infer_model_configs(temp_model_nodes) # type: ignore[arg-type]
-                 if not inferred_configs:
-                      raise ValueError("sd_mecha.infer_model_configs returned no matching configurations.")
-                 self.base_model_config = inferred_configs[0]
-                 logger.info(f"Inferred base ModelConfig: {self.base_model_config.identifier}")
+                inferred_configs = sd_mecha.infer_model_configs(temp_model_nodes) # type: ignore[arg-type]
+                if not inferred_configs: raise ValueError("No base configs inferred.")
+                self.base_model_config = inferred_configs[0]
+                logger.info(f"Inferred base ModelConfig: {self.base_model_config.identifier}")
         except Exception as e:
-             logger.error(f"Failed to infer base ModelConfig from model_paths: {e}", exc_info=True)
+             logger.error(f"Failed to infer base ModelConfig: {e}", exc_info=True)
              raise ValueError("Could not determine base ModelConfig.") from e
 
-        # Resolve the primary merge method
-        self.merge_method = utils.resolve_merge_method(cfg.merge_method)
+        self.merge_method = utils.resolve_merge_method(cfg.merge_method) # Assumes utils.resolve_merge_method exists
 
-        # Get the custom block config if specified
-        self.custom_block_config_id = self.cfg.optimization_guide.get("custom_block_config_id", None)
+        # Load custom block config if ID is set
+        self.custom_block_config_id = self.cfg.optimization_guide.get("custom_block_config_id")
         self.custom_block_config = None
         if self.custom_block_config_id:
             try:
+                # Resolve using sd_mecha's registry (assuming it's registered by setup_custom_blocks)
                 self.custom_block_config = model_configs.resolve(self.custom_block_config_id)
-                logger.info(f"Using custom block ModelConfig: {self.custom_block_config_id}")
+                logger.info(f"Successfully loaded custom block ModelConfig: {self.custom_block_config_id}")
             except ValueError as e:
-                logger.error(f"Could not resolve custom_block_config_id '{self.custom_block_config_id}': {e}. Make sure it's registered.")
-                # Decide how to handle this: error out or proceed without custom blocks?
-                raise ValueError(f"Invalid custom_block_config_id: {self.custom_block_config_id}") from e
+                logger.error(f"Could not resolve custom_block_config_id '{self.custom_block_config_id}': {e}. Ensure it's defined and registered before ParameterHandler is initialized.")
+                raise # Stop if the specified custom config can't be loaded
 
-        # Get list of optimizable parameters (names only)
-        self.param_names = self._get_optimizable_parameter_names()
-
-    def _is_block_level_parameter(self, param_name: str) -> bool:
-        """
-        Heuristic to determine if a merge method parameter likely accepts block-level weights.
-        Checks if the parameter is hinted as StateDict or Tensor.
-        """
-        try:
-            param_info = self.merge_method.get_params().as_dict().get(param_name)
-            if param_info:
-                # Check if the type hint is StateDict or Tensor (or potentially float/int if broadcasting is intended)
-                type_hint = param_info.interface
-                origin = getattr(type_hint, '__origin__', None) or type_hint
-                if issubclass(origin, (merge_methods.StateDict, torch.Tensor)):
-                     # Could add more checks, e.g., exclude parameters named 'base', 'model', etc.
-                    return True
-        except Exception as e:
-             logger.warning(f"Could not inspect type for parameter '{param_name}': {e}")
-        return False
-
-    def _get_model_config_for_parameter(self, param_name: str) -> model_configs.ModelConfig:
-        """Determines the ModelConfig to use for generating bounds for a specific parameter."""
-        if self.custom_block_config and self._is_block_level_parameter(param_name):
-            # Use the custom block config if specified and the parameter seems block-level
-            return self.custom_block_config
-        else:
-            # Otherwise, try to get the config from the parameter's type hint
-            try:
-                 param_data = self.merge_method.get_params().as_dict().get(param_name)
-                 if param_data and param_data.model_config:
-                     # Ensure it's resolved if it's an ID string
-                     return model_configs.resolve(param_data.model_config) if isinstance(param_data.model_config, str) else param_data.model_config
-            except Exception as e:
-                 logger.warning(f"Could not get model_config from type hint for '{param_name}': {e}. Using base config.")
-            # Fallback to the inferred base model config
-            return self.base_model_config
-
+        self.param_names = self._get_optimizable_parameter_names() # Base names like 'alpha'
 
     def _get_optimizable_parameter_names(self) -> List[str]:
-        """Gets the names of optimizable parameters from the merge method."""
-        param_names = []
+        """Gets the names of likely optimizable parameters from the merge method."""
+        optimizable_names = []
+        if not self.merge_method:
+            logger.error("Merge method not resolved in ParameterHandler. Cannot get optimizable parameters.")
+            return []
+
         try:
-            param_details = self.merge_method.get_params().as_dict()
-            param_defaults = self.merge_method.get_default_args().as_dict()
+            # Get keyword-only parameters and their default values
+            kwarg_params: Dict[str, ParameterData] = self.merge_method.get_params().kwargs
+            kwarg_defaults: Dict[str, Any] = self.merge_method.get_default_args().kwargs
 
-            for name, data in param_details.items():
-                # Only include parameters that don't have a default value
-                # (Parameters with defaults are usually fixed settings, not optimized variables)
-                 is_positional = isinstance(name, int)
-                 param_actual_name = self.merge_method.get_param_names().as_dict().get(name) if is_positional else name
+            logger.debug(f"Inspecting merge method '{self.merge_method.identifier}' for optimizable parameters...")
+            logger.debug(f"  Keyword Params: {list(kwarg_params.keys())}")
+            logger.debug(f"  Keyword Defaults: {list(kwarg_defaults.keys())}")
 
-                 if name not in param_defaults and param_actual_name not in param_defaults:
-                     # Check if it's a type we typically optimize (Tensor/StateDict)
-                     # This might need adjustment based on merge methods used
-                     type_hint = data.interface
-                     origin = getattr(type_hint, '__origin__', None) or type_hint
-                     if issubclass(origin, (merge_methods.StateDict, torch.Tensor, float, int)): # Allow float/int optimization too
-                          if param_actual_name: # Ensure we have a valid name
-                            param_names.append(param_actual_name)
+            for name, param_data in kwarg_params.items():
+                # --- Condition 1: Parameter should NOT have a default value ---
+                # Parameters with defaults are usually fixed settings, not variables for optimization.
+                if name in kwarg_defaults:
+                    logger.debug(f"  Skipping '{name}': Has a default value ({kwarg_defaults[name]}).")
+                    continue
+
+                # --- Condition 2 (Optional): Filter by expected type ---
+                # We might only want to optimize numerical parameters (float/int) or maybe Tensors.
+                # Let's allow float/int for now, as these are common optimization targets.
+                expected_type = param_data.interface
+                origin_type = getattr(expected_type, '__origin__', None) or expected_type
+                # Allow basic numerical types or Tensors/StateDicts (though optimizing Tensor/SD directly is complex)
+                # Note: sd_mecha.Parameter wraps the type, so access it via .interface
+                if not issubclass(origin_type, (float, int, torch.Tensor, StateDict)):
+                     logger.debug(f"  Skipping '{name}': Type hint '{expected_type}' is not typically optimized (float, int, Tensor, StateDict).")
+                     continue
+
+                # If conditions pass, add the base name to the list
+                optimizable_names.append(name)
+                logger.debug(f"  Identified '{name}' as potentially optimizable.")
 
         except Exception as e:
              logger.error(f"Failed to get optimizable parameters for method '{self.merge_method.identifier}': {e}", exc_info=True)
              # Decide: return empty list or raise error?
-             # raise ValueError(f"Could not determine optimizable parameters.") from e
-        logger.debug(f"Optimizable parameters for '{self.merge_method.identifier}': {param_names}")
-        return param_names
+             # raise ValueError(f"Could not determine optimizable parameters for {self.merge_method.identifier}") from e
+
+        if not optimizable_names:
+             logger.warning(f"No optimizable keyword parameters (without defaults, numerical/Tensor type) found for merge method '{self.merge_method.identifier}'. Check method signature and guide.yaml.")
+
+        logger.info(f"Optimizable parameter base names for '{self.merge_method.identifier}': {optimizable_names}")
+        return optimizable_names
 
     def get_bounds(
         self,
@@ -167,7 +141,6 @@ class ParameterHandler:
                      # Use default bounds if no custom bound found
                      final_bounds[param_name] = bounds[param_name]
 
-
         # Log final bounds
         logger.info("--- Final Optimization Bounds ---")
         for name, bound in final_bounds.items():
@@ -177,104 +150,101 @@ class ParameterHandler:
         return final_bounds
 
     def create_parameter_bounds(self) -> Dict[str, Tuple[float, float]]:
-        """Creates parameter bounds based on the optimization guide."""
-        bounds = {}
-        # Iterate through each optimizable parameter of the merge method
-        for param_name in self.param_names:
-            # Determine the correct ModelConfig for THIS parameter
-            param_model_config = self._get_model_config_for_parameter(param_name)
+        """V1.1: Creates parameter bounds based on the optimization guide, using custom blocks where applicable."""
+        bounds: Dict[str, Tuple[float, float]] = {}
+        optimizable_base_params = self.param_names # Base names like 'alpha', 'beta'
+        use_custom_blocks = bool(self.custom_block_config)
 
-            # Now, apply strategies based on guide.yaml using param_model_config
-            for component_config in self.cfg.optimization_guide.components:
-                component_name = component_config.name
+        if not self.cfg.optimization_guide.get("components"):
+             logger.warning("No 'components' defined in optimization_guide. No bounds will be generated.")
+             return bounds
 
-                # Check if the component exists in the parameter's relevant config
-                if component_name not in param_model_config.components:
-                    # This might happen if e.g. guide has 'unet' but param_config is 'sdxl-optim_blocks'
-                    # which only has a 'blocks' component. Skip or warn.
-                    # logger.debug(f"Component '{component_name}' not found in config '{param_model_config.identifier}' for param '{param_name}'. Skipping.")
-                    continue
+        for component_config_from_guide in self.cfg.optimization_guide.components:
+            guide_component_name = component_config_from_guide.name
+            strategy = component_config_from_guide.strategy
+            logger.debug(f"Processing guide component: '{guide_component_name}', strategy: '{strategy}'")
 
-                strategy = component_config.strategy
+            # --- Decide which config provides the keys/blocks for this guide component ---
+            config_to_iterate: Optional[model_configs.ModelConfig] = None
+            iteration_target_is_blocks: bool = False
+
+            if use_custom_blocks and self.custom_block_config and guide_component_name in self.custom_block_config.components:
+                # Use custom blocks if available and guide targets a component within it
+                config_to_iterate = self.custom_block_config
+                iteration_target_is_blocks = True
+                logger.debug(f"-> Iterating custom blocks from '{config_to_iterate.identifier}'")
+            elif guide_component_name in self.base_model_config.components:
+                # Fallback to base config keys
+                config_to_iterate = self.base_model_config
+                iteration_target_is_blocks = False
+                logger.debug(f"-> Iterating base keys from '{config_to_iterate.identifier}'")
+            else:
+                logger.warning(f"Guide component '{guide_component_name}' not found in custom block config ('{self.custom_block_config_id}') or base config ('{self.base_model_config.identifier}'). Skipping.")
+                continue
+
+            # --- Get the list of block names or model keys ---
+            try:
+                 # Get the actual keys/block names for the targeted component within the chosen config
+                 keys_or_blocks_to_process = list(config_to_iterate.components[guide_component_name].keys.keys())
+                 if not keys_or_blocks_to_process:
+                      logger.warning(f"Component '{guide_component_name}' in config '{config_to_iterate.identifier}' has no keys/blocks defined. Skipping.")
+                      continue
+                 # logger.debug(f"   Items to process for '{guide_component_name}': {keys_or_blocks_to_process[:5]}...") # Log first few
+            except KeyError:
+                 logger.warning(f"Component '{guide_component_name}' structure error in config '{config_to_iterate.identifier}'. Skipping.")
+                 continue
+
+            # --- Apply strategy for each optimizable base parameter ---
+            for base_param_name in optimizable_base_params:
+                default_bounds = (0.0, 1.0) # Define default here
 
                 if strategy == "all":
-                    bounds.update(
-                        self._handle_strategy_all(param_name, component_name, param_model_config)
-                    )
+                    for key_or_block in keys_or_blocks_to_process:
+                        generated_param_name = f"{key_or_block}_{base_param_name}"
+                        bounds[generated_param_name] = default_bounds
                 elif strategy == "select":
-                    bounds.update(
-                        self._handle_strategy_select(param_name, component_name, component_config.keys, param_model_config)
-                    )
+                    patterns = component_config_from_guide.get("keys", [])
+                    if not patterns: logger.warning(f"'select' strategy for '{guide_component_name}' has no 'keys' defined."); continue
+                    for pattern in patterns:
+                        for key_or_block in keys_or_blocks_to_process:
+                            if fnmatch.fnmatch(key_or_block, pattern):
+                                generated_param_name = f"{key_or_block}_{base_param_name}"
+                                bounds[generated_param_name] = default_bounds
                 elif strategy == "group":
-                    bounds.update(
-                        self._handle_strategy_group(param_name, component_config.groups)
-                    )
+                    groups = component_config_from_guide.get("groups", [])
+                    if not groups: logger.warning(f"'group' strategy for '{guide_component_name}' has no 'groups' defined."); continue
+                    for group in groups:
+                        group_name = group.get("name")
+                        group_patterns = group.get("keys", [])
+                        if not group_name or not group_patterns: logger.warning(f"Invalid group definition in '{guide_component_name}'."); continue
+
+                        # Check if any key/block in this component matches the group patterns
+                        match_found_in_component = any(
+                            fnmatch.fnmatch(k_or_b, pattern)
+                            for pattern in group_patterns
+                            for k_or_b in keys_or_blocks_to_process
+                        )
+
+                        if match_found_in_component:
+                            generated_param_name = f"{group_name}_{base_param_name}"
+                            # Only add if not already added by another group targeting the same component
+                            if generated_param_name not in bounds:
+                                 bounds[generated_param_name] = default_bounds
+                        # else: logger.debug(f"Group '{group_name}' patterns didn't match any items in component '{guide_component_name}' of config '{config_to_iterate.identifier}'.")
+
                 elif strategy == "single":
-                    bounds.update(
-                        self._handle_strategy_single(param_name, component_name)
-                    )
+                    generated_param_name = f"{guide_component_name}_single_param_{base_param_name}"
+                    bounds[generated_param_name] = default_bounds
                 elif strategy == "none":
-                    pass # Do nothing for this component and this parameter
-                # TODO: Handle layer adjustments if needed for specific parameters
+                    logger.debug(f"Strategy 'none' for component '{guide_component_name}', skipping parameter '{base_param_name}'.")
+                    pass # Explicitly do nothing
                 else:
-                    raise ValueError(f"Invalid optimization strategy: {strategy}")
+                    logger.warning(f"Unsupported strategy '{strategy}' for component '{guide_component_name}'. Skipping.")
+
+        logger.info(f"Generated {len(bounds)} parameter bounds based on optimization guide.")
+        # Optionally log the first few bounds for debugging:
+        # if bounds: logger.debug(f"Example bounds: {dict(list(bounds.items())[:5])}")
         return bounds
-
-    # --- Strategy Handlers ---
-    # These now take param_name and the relevant model_config
-
-    def _handle_strategy_all(self, param_name: str, component_name: str, config: model_configs.ModelConfig) -> Dict[str, Tuple[float, float]]:
-        """Handles 'all' strategy for a specific parameter."""
-        component_bounds = {}
-        default_bounds = (0.0, 1.0) # Default bounds
-        try:
-            for key in config.components[component_name].keys:
-                 # Generate name: key_paramname (e.g., IN00_alpha)
-                generated_param_name = f"{key}_{param_name}"
-                component_bounds[generated_param_name] = default_bounds
-        except KeyError:
-             logger.warning(f"Component '{component_name}' not found in config '{config.identifier}' while processing param '{param_name}'.")
-        return component_bounds
-
-    def _handle_strategy_select(self, param_name: str, component_name: str, patterns: List[str], config: model_configs.ModelConfig) -> Dict[str, Tuple[float, float]]:
-        """Handles 'select' strategy with wildcards for a specific parameter."""
-        component_bounds = {}
-        default_bounds = (0.0, 1.0)
-        try:
-             component_keys = config.components[component_name].keys
-             for pattern in patterns:
-                 matched_any = False
-                 for key in component_keys:
-                     if fnmatch.fnmatch(key, pattern):
-                         generated_param_name = f"{key}_{param_name}"
-                         component_bounds[generated_param_name] = default_bounds
-                         matched_any = True
-                 if not matched_any:
-                      logger.warning(f"Pattern '{pattern}' in 'select' strategy did not match any keys in component '{component_name}' of config '{config.identifier}' for param '{param_name}'.")
-        except KeyError:
-              logger.warning(f"Component '{component_name}' not found in config '{config.identifier}' while processing param '{param_name}'.")
-        return component_bounds
-
-    def _handle_strategy_group(self, param_name: str, groups: List[Dict]) -> Dict[str, Tuple[float, float]]:
-        """Handles 'group' strategy for a specific parameter."""
-        component_bounds = {}
-        default_bounds = (0.0, 1.0)
-        for group in groups:
-            group_name = group.get("name")
-            if not group_name:
-                logger.warning(f"Group definition missing 'name', skipping: {group}")
-                continue
-             # Generate name: groupname_paramname (e.g., my_group_1_alpha)
-            generated_param_name = f"{group_name}_{param_name}"
-            component_bounds[generated_param_name] = default_bounds
-        return component_bounds
-
-    def _handle_strategy_single(self, param_name: str, component_name: str) -> Dict[str, Tuple[float, float]]:
-        """Handles 'single' strategy for a specific parameter."""
-        default_bounds = (0.0, 1.0)
-        # Generate name: componentname_single_param_paramname (e.g., unet_single_param_alpha)
-        generated_param_name = f"{component_name}_single_param_{param_name}"
-        return {generated_param_name: default_bounds}
 
     # --- Validation ---
     @staticmethod

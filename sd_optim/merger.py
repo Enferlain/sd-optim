@@ -13,7 +13,7 @@ import safetensors.torch
 from hydra.core.hydra_config import HydraConfig
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, Optional, List, Tuple
+from typing import Dict, Optional, List, Tuple, Any, re
 
 from omegaconf import DictConfig, open_dict
 from sd_mecha import recipe_serializer, extensions, recipe_nodes
@@ -323,48 +323,164 @@ class Merger:
 
         return prepared_nodes
 
-    def _prepare_param_recipe_args(self, params: Dict, merge_method: MergeMethod) -> Dict[str, RecipeNodeOrValue]:
-        """Wraps optimizer parameters into sd_mecha.literal nodes."""
-        param_nodes = {}
-        expected_params = merge_method.get_param_names().kwargs # Get keyword param names
-        input_types = merge_method.get_input_types().kwargs # Get keyword param types
+    def _prepare_param_recipe_args(
+            self,
+            params: Dict[str, Any],
+            merge_method: MergeMethod
+    ) -> Dict[str, RecipeNodeOrValue]:
+        """
+        V1.2: Wraps optimizer parameters into sd_mecha nodes, handling block params via convert().
+        Relies on bounds.py generating names like BLOCK_NAME_param_name for block params.
+        """
+        grouped_block_params: Dict[str, Dict[str, Any]] = {}
+        single_params: Dict[str, Any] = {}
+        final_param_nodes: Dict[str, RecipeNodeOrValue] = {}
 
-        for name, value in params.items():
-            # Check if this parameter is expected by the merge method's keyword args
-            if name in expected_params:
-                 expected_type = input_types.get(name)
-                 # Wrap the value using sd_mecha.literal
-                 # literal() handles basic type conversions (e.g., float to Tensor if needed)
-                 param_nodes[name] = sd_mecha.literal(value)
+        logger.debug(f"Preparing param recipe args from raw optimizer params: {params}")
+
+        # Define regex to capture BLOCK_NAME and base_param_name
+        # Assumes block names do not end with an underscore followed by the parameter name pattern.
+        # Allows underscores within block names.
+        param_name_pattern = re.compile(r"^(.*)_([^_]+)$")
+        expected_kwargs = merge_method.get_param_names().kwargs
+
+        block_param_base_names = set() # Track which base names were treated as block-level
+
+        # --- Iterate through raw optimizer parameters and group them ---
+        for param_key, value in params.items():
+            match = param_name_pattern.match(param_key)
+            if match:
+                block_name, base_param_name = match.groups()
+
+                # Check if the extracted base_param_name is an expected keyword argument
+                if base_param_name in expected_kwargs:
+                    # Assume it's block-level based on the naming convention from bounds.py
+                    if base_param_name not in grouped_block_params:
+                        grouped_block_params[base_param_name] = {}
+                    grouped_block_params[base_param_name][block_name] = value
+                    block_param_base_names.add(base_param_name)
+                    # logger.debug(f"Grouped block param: '{base_param_name}' -> '{block_name}' = {value}")
+                else:
+                    # Name matched pattern but base_param_name isn't a kwarg. Treat as single.
+                    logger.warning(f"Parameter '{param_key}' matched block pattern, but '{base_param_name}' is not a keyword arg for '{merge_method.identifier}'. Treating as single param '{param_key}'.")
+                    # Check if the original full key is an expected kwarg (unlikely but possible)
+                    if param_key in expected_kwargs:
+                        single_params[param_key] = value
+                    else:
+                         # Log warning only if truly unexpected
+                         logger.warning(f"Ignoring unexpected parameter '{param_key}'.")
+
             else:
-                 # Check if it matches positional args (less common for optimized params but possible)
-                 # This part might be complex if optimized params correspond to positional args
-                 # For now, we primarily assume optimized params match keyword args of the merge method
-                 logger.warning(f"Parameter '{name}' from optimizer doesn't match any keyword argument of merge method '{merge_method.identifier}'. It might be ignored.")
+                # Doesn't match BLOCK_param pattern, treat as single.
+                # Check if this name is an expected keyword argument.
+                if param_key in expected_kwargs:
+                    single_params[param_key] = value
+                    # logger.debug(f"Identified single param: '{param_key}' = {value}")
+                else:
+                    # This parameter from the optimizer is not expected by the merge method's keywords.
+                    logger.warning(f"Parameter '{param_key}' from optimizer doesn't match any keyword argument of merge method '{merge_method.identifier}'. It might be ignored.")
 
-        return param_nodes
+        # --- Create sd-mecha nodes for parameters ---
+        custom_block_config_id = self.cfg.optimization_guide.get("custom_block_config_id")
+        target_model_node = self._select_base_model() or (self.models[0] if self.models else None)
 
+        # Validate prerequisites for block parameter conversion
+        if grouped_block_params and not custom_block_config_id:
+            logger.error("Found block-style parameters (e.g., BLOCK_alpha) but 'custom_block_config_id' is not set in guide.yaml. Conversion cannot proceed.")
+            raise ValueError("Missing 'custom_block_config_id' required for block parameters.")
+
+        if grouped_block_params and not target_model_node:
+            logger.error("Cannot prepare block parameters for conversion without a target model context (base model or first input model).")
+            raise ValueError("Missing target model context required for sd_mecha.convert() with block parameters.")
+
+        # Process grouped block parameters -> create literal dict node -> create convert node
+        for base_param_name, block_value_dict in grouped_block_params.items():
+            if base_param_name not in block_param_base_names: continue # Safety check
+
+            try:
+                # Create the dictionary literal node, hinting its config
+                literal_node = sd_mecha.literal(block_value_dict, config=custom_block_config_id)
+                logger.debug(f"Created literal node for block param '{base_param_name}' with config '{custom_block_config_id}': {len(block_value_dict)} blocks")
+
+                # Create the conversion node using the target model for context
+                # This node, when evaluated by sd-mecha for a specific key,
+                # will call our dynamic conversion function.
+                converted_node = sd_mecha.convert(literal_node, target_model_node)
+                target_config_id = target_model_node.model_config.identifier if target_model_node.model_config else 'Unknown'
+                logger.debug(f"Created conversion node for '{base_param_name}' targeting config '{target_config_id}'.")
+
+                # Assign the conversion node to the final dictionary
+                final_param_nodes[base_param_name] = converted_node
+            except Exception as e:
+                logger.error(f"Failed to create literal/conversion node for block parameter '{base_param_name}': {e}", exc_info=True)
+                raise ValueError(f"Error processing block parameter '{base_param_name}'") from e
+
+        # Process single parameters -> create simple literal node
+        for name, value in single_params.items():
+            # Make sure it wasn't accidentally a block param base name
+            if name not in block_param_base_names:
+                try:
+                    literal_node = sd_mecha.literal(value)
+                    # logger.debug(f"Created literal node for single param '{name}' = {value}")
+                    final_param_nodes[name] = literal_node
+                except Exception as e:
+                    logger.error(f"Failed to create literal node for single parameter '{name}': {e}", exc_info=True)
+                    raise ValueError(f"Error processing single parameter '{name}'") from e
+
+        logger.info(f"Prepared {len(final_param_nodes)} final parameter nodes for merge method '{merge_method.identifier}'.")
+        logger.debug(f"Final param nodes: {final_param_nodes}") # Log the nodes themselves
+        return final_param_nodes
+
+    # V1.1 - Added handling for fallback_model_index, including -1/None check.
     def _execute_recipe(self, final_recipe_node: recipe_nodes.RecipeNode, model_path: Path):
-        """Executes the final recipe using sd_mecha.merge."""
+        """Executes the final recipe using sd_mecha.merge, including fallback."""
         logger.info(f"Executing merge recipe and saving to: {model_path}")
+
+        # --- Determine Fallback Model ---
+        fallback_node: Optional[ModelRecipeNode] = None
+        # Use .get() with a default of None to handle missing key gracefully
+        fallback_index = self.cfg.get("fallback_model_index", None)
+
+        # Check if fallback is explicitly disabled or not provided
+        if fallback_index is None or fallback_index == -1:
+            logger.info("No fallback model specified (index is None or -1).")
+        elif not isinstance(fallback_index, int):
+             logger.error(f"Invalid fallback_model_index type: {type(fallback_index)}. Must be an integer or null. No fallback will be used.")
+        elif not self.models:
+             logger.error(f"fallback_model_index {fallback_index} specified, but no models were loaded (self.models is empty). No fallback will be used.")
+        elif not (0 <= fallback_index < len(self.models)):
+             logger.error(f"Invalid fallback_model_index: {fallback_index}. Must be between 0 and {len(self.models) - 1}. No fallback will be used.")
+        else:
+            # Valid index provided
+            fallback_node = self.models[fallback_index]
+            logger.info(f"Using model at index {fallback_index} ('{fallback_node.path}') as fallback source for missing keys.")
+
+        # --- Execute Merge ---
         try:
+            # Make sure self.models_dir is correctly set in __post_init__
+            if not self.models_dir or not self.models_dir.is_dir():
+                 logger.warning(f"Merger.models_dir ('{self.models_dir}') is not set or invalid. Relative paths in sd_mecha might fail.")
+                 effective_model_dirs = [] # Pass empty list if models_dir is bad
+            else:
+                 effective_model_dirs = [self.models_dir]
+
             sd_mecha.merge(
-                final_recipe_node,
+                recipe=final_recipe_node,
                 output=model_path,
-                # Pass relevant config options to sd_mecha.merge
-                merge_device=self.cfg.get("device"), # Use 'device' from main config for merge
-                merge_dtype=precision_mapping[self.cfg.merge_dtype],
-                output_device="cpu", # Save to CPU by default
-                output_dtype=precision_mapping[self.cfg.save_dtype],
+                fallback_model=fallback_node, # Pass the selected node (or None)
+                merge_device=self.cfg.get("device", "cpu"), # Default merge device if not set
+                merge_dtype=precision_mapping.get(self.cfg.merge_dtype), # Get dtype object
+                output_device="cpu", # Keep saving to CPU
+                output_dtype=precision_mapping.get(self.cfg.save_dtype), # Get dtype object
                 threads=self.cfg.get("threads"),
-                model_dirs=[self.models_dir],
-                # Add other relevant sd_mecha.merge options as needed
-                # strict_weight_space=..., check_finite=..., etc.
+                model_dirs=effective_model_dirs, # Use the directory containing models
+                # Add other relevant sd_mecha.merge options as needed:
+                # strict_weight_space=True, check_finite=True, etc.
             )
             logging.info(f"Successfully merged and saved model to {model_path}")
         except Exception as e:
              logger.error(f"sd-mecha merge execution failed: {e}", exc_info=True)
-             # Re-raise the exception to stop the optimization iteration
+             # Re-raise the exception to signal failure to the optimizer
              raise
 
     def _save_recipe_etc(self, final_recipe_node: recipe_nodes.RecipeNode, model_path: Path):

@@ -29,6 +29,7 @@ model_paths:  # List of paths to input models (.safetensors, .ckpt, etc.)
   - path/to/model_b.safetensors
   # - path/to/lora.safetensors # Loras are automatically converted
 base_model_index: 0 # Index (starting from 0) of the model in model_paths to use as base for delta methods
+fallback_model_index: 0 # Optional: Index of model in model_paths to use for missing keys (-1 or null for none)
 
 # --- Merge Settings (sd-mecha) ---
 merge_method: weighted_sum # Name of the sd-mecha merge method (built-in or custom)

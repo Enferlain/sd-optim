@@ -40,7 +40,7 @@ from sd_mecha.extensions.model_configs import ModelConfigImpl, KeyMetadata # Nee
 from omegaconf import DictConfig, OmegaConf # If reading from Hydra config
 
 logger = logging.getLogger(__name__)
-
+# Define T if not already imported from merge_methods
 
 ########################################
 ### --- Custom model config code --- ###
@@ -51,8 +51,6 @@ re_inp = re.compile(r"\.input_blocks\.(\d+)\.")  # Matches .input_blocks.0. to .
 re_mid = re.compile(r"\.middle_block\.(\d+)\.")  # Matches .middle_block.0.
 re_out = re.compile(r"\.output_blocks\.(\d+)\.") # Matches .output_blocks.0. to .output_blocks.8.
 
-# Define T if not already imported from merge_methods
-# T = TypeVar("T")
 
 @merge_method(
     identifier="convert_sdxl_optim_blocks_to_sdxl_sgm", # Unique ID for this conversion
@@ -179,17 +177,21 @@ def convert_sdxl_optim_blocks_to_sdxl_sgm(
 #############################
 ### --- Custom blocks --- ###
 #############################
-# Placeholder for the dynamic module where we'll exec the converter
+# Placeholder for the dynamic module
 _DYNAMIC_CONVERTER_MODULE_NAME = "sd_optim_dynamic_converters"
+dynamic_module = None # Initialize
 
 def setup_custom_blocks(cfg: DictConfig):
     """
     Parses custom block definitions, generates and registers
     corresponding sd-mecha ModelConfigs and conversion functions.
+    NOW also defines the functions via exec().
     """
+    global dynamic_module # Allow modification of the module variable
+
     custom_block_defs = cfg.optimization_guide.get("custom_block_configs")
     if not custom_block_defs:
-        logger.info("No 'custom_block_configs' section found in optimization_guide. Skipping setup.")
+        logger.info("No 'custom_block_configs' section found. Skipping custom block setup.")
         return
 
     if not isinstance(custom_block_defs, (list, ListConfig)):
@@ -198,50 +200,57 @@ def setup_custom_blocks(cfg: DictConfig):
 
     logger.info(f"Found {len(custom_block_defs)} custom block configuration(s) to process.")
 
-    # Create a dummy module to hold dynamically generated functions
-    dynamic_module_spec = importlib.util.spec_from_loader(_DYNAMIC_CONVERTER_MODULE_NAME, loader=None)
-    if dynamic_module_spec is None:
-         # Fallback for some environments? Or raise error.
-         logger.warning(f"Could not create spec for dynamic module '{_DYNAMIC_CONVERTER_MODULE_NAME}'. Registration might fail.")
-         dynamic_module = type(sys)(_DYNAMIC_CONVERTER_MODULE_NAME) # Create basic module object
-    else:
-         dynamic_module = importlib.util.module_from_spec(dynamic_module_spec)
+    # --- Create the dynamic module ONCE ---
+    if dynamic_module is None:
+        try:
+            dynamic_module_spec = importlib.util.spec_from_loader(_DYNAMIC_CONVERTER_MODULE_NAME, loader=None)
+            if dynamic_module_spec is None:
+                 raise RuntimeError("Could not create spec for dynamic module")
+            dynamic_module = importlib.util.module_from_spec(dynamic_module_spec)
 
-    # Add necessary imports to the dynamic module's namespace
-    dynamic_module.sd_mecha = sd_mecha
-    dynamic_module.logging = logging
-    dynamic_module.fnmatch = fnmatch
-    dynamic_module.re = re
-    dynamic_module.Parameter = Parameter
-    dynamic_module.Return = Return
-    dynamic_module.StateDict = StateDict
-    dynamic_module.StateDictKeyError = sd_mecha.streaming.StateDictKeyError
-    dynamic_module.T = T # Make sure T is defined or imported appropriately
-    dynamic_module.merge_method = merge_method # Pass the decorator itself
+            # Add necessary imports to the dynamic module's namespace NOW
+            dynamic_module.sd_mecha = sd_mecha
+            dynamic_module.logging = logging
+            dynamic_module.fnmatch = fnmatch
+            dynamic_module.re = re
+            dynamic_module.torch = torch # Make sure torch is imported/available
+            dynamic_module.Parameter = Parameter
+            dynamic_module.Return = Return
+            dynamic_module.StateDict = StateDict
+            dynamic_module.StateDictKeyError = sd_mecha.streaming.StateDictKeyError
+            dynamic_module.T = T # Ensure T is defined or imported appropriately in utils.py scope
+            dynamic_module.merge_method = merge_method
+            # Make the logger available
+            dynamic_module.logger = logging.getLogger(f"{__name__}.dynamic_converters")
+            sys.modules[_DYNAMIC_CONVERTER_MODULE_NAME] = dynamic_module # Register the module
+            logger.info(f"Created dynamic module '{_DYNAMIC_CONVERTER_MODULE_NAME}' for converters.")
 
-    # Make the logger available within the generated code's scope if needed
-    dynamic_module.logger = logging.getLogger(f"{__name__}.dynamic_converters")
+        except Exception as mod_e:
+             logger.error(f"Failed to create dynamic module '{_DYNAMIC_CONVERTER_MODULE_NAME}': {mod_e}", exc_info=True)
+             raise RuntimeError("Dynamic module creation failed.") from mod_e
 
 
     for i, block_def in enumerate(custom_block_defs):
-        block_config_id = None # Initialize at the start of the iteration's scope
+        block_config_id = block_def.get("block_config_id") # Get ID early for logging
         try:
             target_config_id = block_def.get("target_config_id")
-            block_config_id = block_def.get("block_config_id")
+            # block_config_id already fetched
             block_definitions = block_def.get("blocks")
 
             if not all([target_config_id, block_config_id, block_definitions]):
-                logger.error(f"Custom block definition #{i+1} is missing required keys ('target_config_id', 'block_config_id', 'blocks'). Skipping.")
+                logger.error(f"Custom block definition #{i+1} missing required keys. Skipping.")
                 continue
 
             logger.info(f"Processing custom block config '{block_config_id}' targeting '{target_config_id}'...")
 
-            # --- 1. Generate and Register ModelConfig ---
+            # --- Step 1: Generate and Register ModelConfig ---
             generated_config = generate_block_model_config(block_config_id, block_definitions)
-            model_configs.register(generated_config)
-            logger.info(f"Registered ModelConfig: {block_config_id}")
+            # IMPORTANT: Use register_aux if it's an auxiliary config, or register if primary
+            # Let's use register_aux for custom user configs to keep them separate maybe?
+            model_configs.register_aux(generated_config) # Use register_aux
+            logger.info(f"Registered AUX ModelConfig: {block_config_id}")
 
-            # --- 2. Generate and Register Conversion Function ---
+            # --- Step 2: Generate Conversion Function Code ---
             converter_name = f"convert_{block_config_id.replace('-', '_')}_to_{target_config_id.replace('-', '_')}"
             converter_code = generate_conversion_function_code(
                 converter_name=converter_name,
@@ -250,19 +259,20 @@ def setup_custom_blocks(cfg: DictConfig):
                 block_definitions=block_definitions
             )
 
-            # Execute in the dummy module's namespace
+            # --- Step 3: Execute Code to Define and Register Function ---
+            # Execute in the dynamic module's namespace. Registration happens via the decorator.
+            # This is now safe because the model config ID exists in the registry.
             exec(converter_code, dynamic_module.__dict__)
-            logger.info(f"Defined conversion function: {converter_name}")
+            logger.info(f"Defined and registered conversion function: {converter_name}")
 
-            # Retrieve the function object (it's now an attribute of the dummy module)
-            # converter_func = getattr(dynamic_module, converter_name)
-            # Registration happens via the @merge_method decorator included in the generated code string
+            # Optional: Verify function exists in module
+            # if not hasattr(dynamic_module, converter_name):
+            #     logger.error(f"Exec failed to define {converter_name} in dynamic module!")
 
         except Exception as e:
-            # Now block_config_id is guaranteed to exist (might be None or the ID)
             error_id_info = f"'{block_config_id}'" if block_config_id else "(ID assignment failed or missing)"
             logger.error(f"Failed to process custom block definition #{i+1} ({error_id_info}): {e}", exc_info=True)
-            # raise # Optionally re-raise to halt execution
+            # Optionally re-raise
 
 def generate_block_model_config(config_id: str, block_defs: List[Dict]) -> model_configs.ModelConfig:
     """Generates an sd_mecha ModelConfig object from block definitions."""
@@ -286,62 +296,82 @@ def generate_block_model_config(config_id: str, block_defs: List[Dict]) -> model
     }
     return model_configs.ModelConfigImpl(**config_dict) # Use the concrete implementation
 
+# V1.1 - Explicitly resolve config IDs within generated code string
 def generate_conversion_function_code(converter_name: str, block_config_id: str, target_config_id: str, block_definitions: List[Dict]) -> str:
-    """Generates the Python source code string for the conversion function."""
+    """
+    Generates the Python source code string for the conversion function.
+    Resolves config IDs explicitly before using them in type hints.
+    """
 
-    # Header and imports within the generated code's scope
+    # Header and imports needed *within the generated code's scope*
     code = f"""
-import sd_mecha # Access via passed module object
+# --- Imports required inside the generated function's execution scope ---
+import sd_mecha
 import logging
 import fnmatch
 import re
+import torch
 from sd_mecha.extensions.merge_methods import Parameter, Return, StateDict, T
+from sd_mecha.extensions import model_configs # <<< Need this inside generated code
 from sd_mecha.streaming import StateDictKeyError
 
-# Use logger passed into the dynamic module's scope
+# Get the logger passed into the dynamic module's scope
 logger = logging.getLogger("{__name__}.dynamic_converters.{converter_name}")
+# ---
 
-@sd_mecha.extensions.merge_methods.merge_method( # Use decorator via sd_mecha module reference
+# --- Resolve config objects explicitly using the registry ---
+# This code runs when exec() defines the function.
+# It relies on the configs being registered *before* exec() is called.
+try:
+    # Use the already imported model_configs module reference
+    resolved_block_config_obj = model_configs.resolve("{block_config_id}")
+    resolved_target_config_obj = model_configs.resolve("{target_config_id}")
+except ValueError as resolve_err:
+     # Log clearly if resolution fails *during function definition*
+     logger.error(f"CRITICAL: Failed to resolve config IDs during definition of '{converter_name}': {{resolve_err}}")
+     # Raise an error to prevent defining a broken function
+     raise RuntimeError(f"Config ID resolution failed for '{converter_name}'") from resolve_err
+# ---
+
+@sd_mecha.extensions.merge_methods.merge_method(
     identifier="{converter_name}",
     is_conversion=True
 )
 def {converter_name}(
-    blocks_dict: Parameter(StateDict[T], model_config="{block_config_id}"),
+    # <<< CHANGE HERE: Pass the resolved config OBJECT, not the string ID >>>
+    blocks_dict: Parameter(StateDict[T], model_config=resolved_block_config_obj),
     **kwargs,
-) -> Return(T, model_config="{target_config_id}"):
+) -> Return(T, model_config=resolved_target_config_obj): # Pass resolved object here too
 
-    target_key = kwargs["key"]
+    target_key = kwargs.get("key")
+    if target_key is None:
+        logger.warning("Conversion function '{converter_name}' called without 'key'. Returning 0.0 as fallback.")
+        return 0.0 # Or handle differently
+
     block_name = None
     # logger.debug(f"Converter '{converter_name}' called for target key: {{target_key}}")
 
 """
-    # Build the if/elif chain for pattern matching
+    # --- Append the If/Elif Mapping Logic ---
+    # (This part remains the same as before, generating the block mapping)
     fallback_block = None
     for block in block_definitions:
         name = block.get("name")
         patterns = block.get("patterns")
-        if not name or not patterns:
-            continue
+        if not name or not patterns: continue
 
-        # Check if this is the fallback block (must be last)
         is_fallback = "*" in patterns
         if is_fallback:
-             if fallback_block is not None:
-                 logger.warning(f"Multiple fallback patterns ('*') found in '{block_config_id}'. Using last one: '{name}'")
+             if fallback_block is not None: logger.warning(f"Multiple fallback patterns ('*') found in '{block_config_id}'. Using last one: '{name}'")
              fallback_block = name
-             continue # Add fallback check at the end
+             continue
 
-        # Use fnmatch for wildcards, consider regex for more complex patterns
-        # Need to escape regex special chars if using fnmatch patterns directly with re
         conditions = []
         for p in patterns:
-             # Basic check if regex might be intended, otherwise use fnmatch
-             if any(c in p for c in r"[]().+?^${}"): # Simple check for regex chars
-                 # Use re.fullmatch (anchored match)
-                 conditions.append(f're.fullmatch(r"{p}", target_key)') # Pass 're' module
+             if any(c in p for c in r"[]().+?^${}"):
+                 conditions.append(f're.fullmatch(r"{p}", target_key)')
              else:
-                 # Use fnmatch
-                 conditions.append(f'fnmatch.fnmatch(target_key, "{p}")') # Pass 'fnmatch' module
+                 conditions.append(f'fnmatch.fnmatch(target_key, "{p}")')
 
         condition_str = " or ".join(conditions)
         code += f"""
@@ -349,38 +379,34 @@ def {converter_name}(
         block_name = "{name}"
 """
 
-    # Add the fallback block condition at the end
+    # Add the fallback block condition or error handling
     if fallback_block:
         code += f"""
     if block_name is None: # If no specific pattern matched, use fallback
         block_name = "{fallback_block}"
 """
     else:
-         # No fallback defined, log error if no match
          code += f"""
     if block_name is None:
-        logger.error(f"Converter '{converter_name}': Key '{{target_key}}' did not match any defined block patterns and no fallback ('*') was specified.")
-        # Option 1: Raise an error
-        # raise ValueError(f"Unhandled key in conversion '{converter_name}': {{target_key}}")
-        # Option 2: Return a default (e.g., 0.0) - potentially dangerous
-        logger.warning(f"Returning default value (e.g., 0.0 or neutral) for unmapped key '{{target_key}}'. Define a fallback pattern ('*') to handle this explicitly.")
-        # Attempt to return neutral element (0 for float/tensor) - requires type T awareness
-        return 0.0 # Simplistic default, might need refinement based on T
+        logger.error(f"Converter '{converter_name}': Key '{{target_key}}' did not match any block patterns and no fallback ('*') was specified.")
+        raise ValueError(f"Unhandled key in conversion '{converter_name}': {{target_key}}")
 """
 
-    # Add the final lookup and return part
+    # --- Append the Final Lookup and Return Logic ---
     code += f"""
     # logger.debug(f"Key '{{target_key}}' mapped to block '{{block_name}}'")
     try:
+        # Access the input dict using the determined block name
         return blocks_dict[block_name]
     except KeyError:
-        logger.error(f"Block name '{{block_name}}' (determined for key '{{target_key}}') not found in input blocks_dict for converter '{converter_name}'. Check block config YAML and guide.yaml definitions.")
+        # This error means the block name logic is inconsistent with the input dict
+        logger.error(f"Block name '{{block_name}}' (for key '{{target_key}}') not found in input blocks_dict for converter '{converter_name}'. Check block definition and converter logic.")
         raise StateDictKeyError(f"Block '{{block_name}}' not found in the input dictionary for conversion.")
     except Exception as e:
-        logger.error(f"Unexpected error during conversion for key '{{target_key}}' mapped to block '{{block_name}}': {{e}}", exc_info=True)
+        logger.error(f"Unexpected error during conversion for key '{{target_key}}' (block '{{block_name}}'): {{e}}", exc_info=True)
         raise
 """
-    return code
+    return textwrap.dedent(code) # Use dedent for cleaner generated code
 
 
 ##############################

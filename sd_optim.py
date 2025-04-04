@@ -113,30 +113,26 @@ def main(cfg: DictConfig) -> None:
     logger.info(f"Using Optimizer: {optimizer_name}")
 
     # --- Initialize and Run Optimizer ---
-    optim_instance = None # Initialize for finally block
+    optim_instance = None
     try:
         logger.info(f"--- Initializing {optimizer_name} ---")
-        # Initialization order: Optimizer -> ParameterHandler -> (loads configs/method)
-        # This is safe now because custom configs/converters were loaded above.
         optim_instance = optimizer_class(cfg)
 
         logger.info("Validating optimizer configuration...")
         if not optim_instance.validate_optimizer_config():
-             # Specific error message should be logged by validate_optimizer_config
              logger.error(f"Invalid configuration for {optimizer_name}. Please check config.yaml.")
              sys.exit(1)
         logger.info("Optimizer configuration validated.")
 
-        # Log planned iterations from config
         init_points = cfg.optimizer.get('init_points', 0)
         n_iters = cfg.optimizer.get('n_iters', 0)
         logger.info(f"--- Starting Optimization Loop ({init_points} init + {n_iters} iters = {init_points + n_iters} total) ---")
 
-        # Run the main async optimization loop using asyncio.run
+        # --- MODIFIED: Use asyncio.run for the main optimization loop ---
         asyncio.run(optim_instance.optimize())
 
         logger.info("--- Optimization Finished: Running Postprocessing ---")
-        # Run async postprocessing
+        # --- MODIFIED: Use asyncio.run for postprocessing as well ---
         asyncio.run(optim_instance.postprocess())
 
         # --- Optional: Optuna Dashboard ---

@@ -1,3 +1,4 @@
+import asyncio
 import platform
 import subprocess
 import threading
@@ -226,7 +227,7 @@ class AestheticScorer:
             "aestheticv25": lambda: AES25(self.cfg.scorer_device["aestheticv25"]),
         }
 
-    def score(self, image: Image.Image, prompt, name=None) -> float:
+    async def score(self, image: Image.Image, prompt, name=None) -> float:
         values = []
         scorer_weights = []
         logger.info("Entering score method.")
@@ -251,127 +252,103 @@ class AestheticScorer:
                 logger.error(f"Error displaying image: {e}")
 
         for evaluator in self.cfg.scorer_method:
+            individual_eval_score = 0.0 # Score for this evaluator
+            weight = 1.0 # Default weight
+
             if evaluator == 'manual':
-                # Display the image in a separate thread
+                # --- Run blocking input in a separate thread ---
+                # We still start the image display thread
                 threading.Thread(target=show_image, daemon=True).start()
-                values.append(self.get_user_score())
-                scorer_weights.append(1)
+                # Await the result from the thread running get_user_score
+                individual_eval_score = await asyncio.to_thread(self.get_user_score)
+                # --- End modification ---
+
+                if individual_eval_score == -1.0:
+                    return -1.0 # Pass the override signal up immediately
+
+                weight = self.cfg.scorer_weight.get(evaluator, 1.0)
             else:
-                # For automatic scoring, check background for specific models
+                # Non-manual scoring remains synchronous within this loop iteration
                 if should_check_background and not background_check_passed:
                     logger.info(f"Assigning 0 score for {evaluator} due to background check failure")
-                    values.append(0.0)
+                    individual_eval_score = 0.0
                 else:
                     try:
-                        values.append(self.model[evaluator].score(prompt, image))
+                        # Note: If any *automatic* scorer also uses blocking I/O,
+                        # it would need the asyncio.to_thread treatment too.
+                        # Assuming they are CPU/GPU bound or use async I/O internally.
+                        individual_eval_score = self.model[evaluator].score(prompt, image)
                     except Exception as e:
                         logger.error(f"Error scoring image with {evaluator}: {e}")
-                        values.append(0.0)
-                scorer_weights.append(int(self.cfg.scorer_weight[evaluator]))
+                        individual_eval_score = 0.0
+                weight = self.cfg.scorer_weight.get(evaluator, 1.0)
+
+            values.append(individual_eval_score)
+            scorer_weights.append(weight)
 
             if self.cfg.scorer_print_individual:
                 print(f"{evaluator}:{values[-1]}")
 
+        # Calculate average only if no override signal was passed up
         score = self.average_calc(values, scorer_weights, self.cfg.scorer_average_type)
         return score
 
-    def batch_score(
-            self,
-            images: List[Image.Image],
-            payload_names: List[str],
-            payloads: Dict,
-            it: int,
-    ) -> Tuple[List[float], List[float]]:
-        logger.info("Entering batch_score method.")
-        scores = []
-        norm = []  # Restore the norm list
+    # --- ADDED: Static method to handle override prompt ---
+    @staticmethod
+    def handle_override_prompt() -> float:
+        """Prompts the user for a fake average score during an override."""
+        logger.warning("Score override activated!")
         fake_score = 0.0
-
-        for i, (img, name, payload) in enumerate(zip(images, payload_names, payloads)):
-            score = self.score(img, payload["prompt"], name=name)
-            if self.cfg.save_imgs:
-                img_path = self.save_img(img, name, score, it, i, payload)
-                if img_path is None:
-                    logger.warning(f"Failed to save image for {name}-{i}. Skipping...")
-                    scores.append(0.0)  # Assign a default score or handle the error appropriately
-                    continue
-
-            # Check for override signal and handle it
-            if score == -1:
-                logger.warning("Score override activated! Using fake average score for the entire batch.")
-                while True:
-                    fake_score_input = input("\tEnter the fake average score (0-10): ")
-                    if fake_score_input:
-                        try:
-                            fake_score = float(fake_score_input)
-                            if 0 <= fake_score <= 10:
-                                break
-                            else:
-                                print("\tInvalid fake score. Please enter a number between 0 and 10.")
-                        except ValueError:
-                            print("\tInvalid input. Please enter a number between 0 and 10.")
+        while True:
+            # Use a slightly different prompt to indicate context
+            fake_score_input = input("\tOVERRIDE: Enter the final average score for this entire iteration (0-10): ")
+            if fake_score_input:
+                try:
+                    fake_score = float(fake_score_input)
+                    if 0 <= fake_score <= 10:
+                        logger.info(f"Using fake average score: {fake_score:.4f}")
+                        return fake_score # Return the validated fake score
                     else:
-                        print("\tInput cannot be empty. Please enter a fake average score.")
-
-                scores = [fake_score] * len(
-                    images)
-                norm = [1.0] * len(images)
-                return scores, norm  # Exit early
-
-            # Proceed with normal scoring
-            if "score_weight" in payload:
-                norm.append(payload["score_weight"])
+                        print("\tInvalid score. Please enter a number between 0 and 10.")
+                except ValueError:
+                    print("\tInvalid input. Please enter a number.")
             else:
-                norm.append(1.0)
-            scores.append(score)
-
-            print(f"{name}-{i} {score:4.3f}")
-
-        return scores, norm  # Return both scores and norm
+                print("\tInput cannot be empty.")
 
     def average_calc(self, values: List[float], scorer_weights: List[float], average_type: str) -> float:
-        norm = sum(scorer_weights)  # Calculate norm directly using sum
+        # Ensure weights and values match length
+        if len(values) != len(scorer_weights):
+             logger.error(f"Score calculation error: Mismatched values ({len(values)}) and weights ({len(scorer_weights)}). Using default weights.")
+             # Fallback to equal weights if lengths mismatch
+             scorer_weights = [1.0] * len(values)
+
+        # Filter out potential None values if errors occurred and weren't handled before
+        valid_data = [(v, w) for v, w in zip(values, scorer_weights) if v is not None]
+        if not valid_data: return 0.0 # Return 0 if no valid scores
+
+        values, scorer_weights = zip(*valid_data)
+        norm = sum(scorer_weights)
+        if norm == 0: return 0.0 # Avoid division by zero
 
         if average_type == 'geometric':
-            avg = 1
+            # Avoid log(0) or negative numbers for geometric mean
+            product = 1.0
+            total_weight = 0.0
             for value, weight in zip(values, scorer_weights):
-                avg *= value ** weight
-            return avg ** (1 / norm)
+                if value > 0:
+                    product *= value ** weight
+                    total_weight += weight
+                else: # Handle non-positive scores - maybe skip or use a floor? Skipping is safer.
+                    logger.warning(f"Skipping non-positive score {value} in geometric mean calculation.")
+            return product ** (1 / total_weight) if total_weight > 0 else 0.0
         elif average_type == 'arithmetic':
             return sum(value * weight for value, weight in zip(values, scorer_weights)) / norm
         elif average_type == 'quadratic':
-            avg = sum((value ** 2) * weight for value, weight in zip(values, scorer_weights))
-            return (avg / norm) ** (1 / 2)
+            # Ensure values are non-negative for quadratic mean if that's intended
+            avg_sq = sum((value ** 2) * weight for value, weight in zip(values, scorer_weights))
+            return (avg_sq / norm) ** 0.5 # Use 0.5 for square root
         else:
             raise ValueError(f"Invalid average type: {average_type}")
-
-    def image_path(self, name: str, score: float, it: int, batch_n: int) -> Path:
-        return Path(
-            self.imgs_dir,
-            f"{it:03}-{batch_n:02}-{name}-{score:4.3f}.png",
-        )
-
-    def save_img(
-            self,
-            image: Image.Image,
-            name: str,
-            score: float,
-            it: int,
-            batch_n: int,
-            payload: Dict,
-    ) -> Optional[Path]:
-        img_path = self.image_path(name, score, it, batch_n)
-        pnginfo = PngImagePlugin.PngInfo()
-        for k, v in payload.items():
-            pnginfo.add_text(k, str(v))
-
-        try:
-            image.save(img_path, pnginfo=pnginfo)
-        except (OSError, IOError) as e:
-            logger.error(f"Error saving image to {img_path}: {e}")
-            return None
-
-        return img_path
 
     def open_image(self, image_path: Path) -> None:
         system = platform.system()

@@ -10,6 +10,7 @@ import aiohttp
 import requests
 import time # <<< Import time for logging durations
 
+from contextlib import suppress
 from abc import abstractmethod
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -69,47 +70,64 @@ class Optimizer:
              raise ValueError("Optimization parameter space is empty.")
         logger.info(f"Prepared {len(self.optimizer_pbounds)} parameters for the optimizer.")
 
-    async def _produce_image_task(
+    # --- ADDED: Sequential Producer Coroutine ---
+    async def _sequential_producer(
             self,
-            payload: Dict,
-            path_info: str,
+            payloads: List[Dict],
+            target_paths: List[str],
             queue: asyncio.Queue,
             semaphore: asyncio.Semaphore,
             session: aiohttp.ClientSession,
-            order_index: int  # <<< ADD order_index parameter
+            interrupt_event: asyncio.Event # Shared event for interruption
     ):
-        """Async task to generate image(s) for a payload and put them on the queue with order index."""
-        img_gen = self.generator.generate(payload, self.cfg, session)
-        image_index_in_payload = 0
-        generated_image = None  # Keep track if at least one image was generated
-        async with semaphore:
-            # logger.info(f"Starting generation for payload '{path_info}' (Order: {order_index})...") # Optional logging
-            try:
-                async for image in img_gen:
-                    # For now, assume generator yields only one image per call because we set API batch=1
-                    # If it could yield multiple, this needs adjustment
-                    if image_index_in_payload == 0:  # Process only the first image if multiple yielded unexpectedly
-                        unique_path_info = f"{path_info}"  # Use base path_info, index added by consumer now
-                        logger.debug(f"Putting image for Order {order_index} ('{unique_path_info}') onto queue.")
-                        # <<< Put tuple with order_index FIRST >>>
-                        await queue.put((order_index, image, payload, unique_path_info))
-                        generated_image = image  # Mark that we got an image
-                    image_index_in_payload += 1
-                # If loop finishes without yielding any image (generator empty)
-                if generated_image is None:
-                    logger.warning(f"Generation task for Order {order_index} ('{path_info}') yielded no images.")
-                    # Put failure signal if no image was ever generated
-                    await queue.put((order_index, None, payload, path_info))
+        """
+        Requests image generation sequentially, putting results onto the queue.
+        Starts generation N+1 immediately after receiving image N.
+        Checks interrupt_event before starting each new generation.
+        """
+        logger.info("Sequential Producer started.")
+        total_payloads = len(payloads)
+        for i in range(total_payloads):
+            # Check for interruption BEFORE starting generation
+            if interrupt_event.is_set():
+                logger.warning(f"Producer: Interrupt detected before starting generation {i}. Stopping.")
+                break # Stop producing new requests
 
-                # logger.info(f"Finished generation task for Order {order_index} ('{path_info}').") # Optional logging
+            current_payload = payloads[i]
+            current_target_base_name = target_paths[i]
+            generated_image = None
 
-            except Exception as e_gen_task:
-                logger.error(f"Error in generation task for Order {order_index} ('{path_info}'): {e_gen_task}",
-                             exc_info=True)
-                # <<< Put tuple with order_index FIRST >>>
-                await queue.put((order_index, None, payload, path_info))  # Signal failure
+            async with semaphore: # Acquire semaphore before generating
+                logger.info(f"Producer: Requesting generation {i+1}/{total_payloads} ('{current_target_base_name}')...")
+                try:
+                    # Await the generator for image 'i'
+                    img_gen = self.generator.generate(current_payload, self.cfg, session)
+                    async for image in img_gen:
+                        logger.debug(f"Producer: Received image {i} ('{current_target_base_name}'). Putting onto queue.")
+                        await queue.put((i, image, current_payload, current_target_base_name))
+                        generated_image = image
+                        break # Assume batch_size=1 in generator/payload
+                    if generated_image is None:
+                        logger.warning(f"Producer: Generation task {i} ('{current_target_base_name}') yielded no images.")
+                        await queue.put((i, None, current_payload, current_target_base_name))
 
-    # --- MODIFIED: sd_target_function to create and pass session ---
+                except asyncio.CancelledError:
+                     logger.info(f"Producer: Generation task {i} cancelled.")
+                     # Don't put anything on queue if cancelled mid-gen
+                     break # Stop producing if cancelled
+                except Exception as e_gen_task:
+                    logger.error(f"Producer: Error during generation task {i} ('{current_target_base_name}'): {e_gen_task}", exc_info=True)
+                    await queue.put((i, None, current_payload, current_target_base_name)) # Signal failure
+
+            # Extra check after generation i completes
+            if interrupt_event.is_set():
+                 logger.warning(f"Producer: Interrupt detected after finishing generation {i}. Stopping.")
+                 break
+
+        logger.info("Sequential Producer finished.")
+        # Optionally signal completion: await queue.put(None)
+
+    # --- MODIFIED: sd_target_function to use sequential producer ---
     async def sd_target_function(self, params: Dict[str, Any]) -> Optional[float]:
         self.iteration += 1
         iteration_start_time = time.time()
@@ -117,25 +135,30 @@ class Optimizer:
             "warmup" if self.iteration <= self.cfg.optimizer.init_points else "optimization"
         )
         if self.iteration in {1, self.cfg.optimizer.init_points + 1}:
-            logger.info(f"\n{'-'*10} Starting {iteration_type} Phase {'-'*10}>")
+          logger.info(f"\n{'-' * 10} Starting {iteration_type} Phase {'-' * 10}>")
+
         logger.info(f"\n--- {iteration_type} - Iteration: {self.iteration} ---")
         logger.info(f"Optimizer proposed parameters: {params}")
 
         # Update the output file name for this iteration
         self.merger.create_model_out_name(self.iteration)
 
-        # --- Unload previous model (keep as is, assumes synchronous is okay here) ---
+        # --- Unload / Merge / Load (Synchronous parts remain similar) ---
         try:
             api_url = f"{self.cfg.url}/sd_optim/unload-model"
-            response = requests.post(api_url, params={"webui": self.cfg.webui, "target_url": self.cfg.url if self.cfg.webui == 'swarm' else None})
+            # Add timeout to synchronous requests
+            response = requests.post(api_url, params={"webui": self.cfg.webui,
+                                                      "target_url": self.cfg.url if self.cfg.webui == 'swarm' else None},
+                                     timeout=30)
             response.raise_for_status()
             logger.info("Unload model request sent successfully.")
+        except requests.exceptions.Timeout:
+            logger.warning(f"Timeout sending unload request to {api_url}. Continuing...")
         except requests.exceptions.RequestException as e:
             logger.warning(f"Failed to send unload request to {api_url}: {e}. Continuing...")
         except Exception as e_unl:
-             logger.error(f"Unexpected error during unload request: {e_unl}", exc_info=True)
+            logger.error(f"Unexpected error during unload request: {e_unl}", exc_info=True)
 
-        # --- Perform Merge / Adjust / Recipe (keep as is, assumes synchronous merge) ---
         model_path: Optional[Path] = None
         try:
             start_merge_time = time.time()
@@ -188,161 +211,157 @@ class Optimizer:
         payloads, target_paths = self.prompter.render_payloads(self.cfg.batch_size)
         if not payloads: logger.error("Prompter generated no payloads."); return 0.0
 
-        image_queue = asyncio.Queue() # <<< Create the queue
-        total_expected_images = len(payloads) # Assumes batch_size handled by prompter
-
-        # Limit concurrent API requests to avoid overwhelming the WebUI
-        # Configurable limit, default to a reasonable number like 2 or 3
+        # Determine queue size: number of concurrent generators + maybe 1 buffer slot
         concurrency_limit = self.cfg.get("generator_concurrency_limit", 2)
+        image_queue = asyncio.Queue(maxsize=concurrency_limit + 1)
+        interrupt_event = asyncio.Event() # Event for interrupt signal
+        total_expected_images = len(payloads)
+        final_score_for_optimizer = 0.0 # Default score
+        interrupt_triggered = False
+        fake_score_value = 0.0 # Value entered by user on override
+
         semaphore = asyncio.Semaphore(concurrency_limit)
-        # logger.info(f"Starting concurrent image generation (limit: {concurrency_limit})...")
 
-        # --- V-- MODIFICATION START --V ---
-
-        # --- Configure aiohttp Client (Simplified) ---
-
-        # 1. Configure TCP Connector with Keep-Alive (Simplified)
-        keepalive_interval = self.cfg.get("generator_keepalive_interval", 60) # Default 60s
+        # Configure aiohttp session (remains the same)
+        keepalive_interval = self.cfg.get("generator_keepalive_interval", 60)
         connector = aiohttp.TCPConnector(
             limit=concurrency_limit + 5,
             limit_per_host=concurrency_limit,
-            # REMOVED enable_keepalive=True,
-            # Setting keepalive_timeout enables keep-alive automatically
-            keepalive_timeout=keepalive_interval, # <<< Set interval here
-            # REMOVED socket_options - rely on keepalive_timeout
+            keepalive_timeout=keepalive_interval,
         )
         logger.info(f"Configured aiohttp TCPConnector: KeepAlive Enabled (Interval: {keepalive_interval}s)")
-
-        # 2. Set a Single High Total Timeout (or None)
-        # (This part remains the same)
-        total_timeout_seconds = self.cfg.get("generator_total_timeout", 3600)
+        total_timeout_seconds = self.cfg.get("generator_total_timeout", 3600) # Timeout for queue.get
         client_timeout_setting = None if total_timeout_seconds is None or total_timeout_seconds <= 0 else aiohttp.ClientTimeout(total=total_timeout_seconds)
+        if client_timeout_setting: logger.info(f"Configured aiohttp ClientSession: Total Timeout = {total_timeout_seconds}s")
+        else: logger.info("Configured aiohttp ClientSession: Client-side timeout DISABLED.")
 
-        if client_timeout_setting:
-            logger.info(f"Configured aiohttp ClientSession: Total Timeout = {total_timeout_seconds}s")
-        else:
-            logger.info("Configured aiohttp ClientSession: Client-side timeout DISABLED.")
+        producer_task = None
 
-        # Create the session context that wraps producer launch and consumer loop
-        async with aiohttp.ClientSession(
-            connector=connector,
-            timeout=client_timeout_setting
-        ) as session: # <<< Session created here
+        try:
+            async with aiohttp.ClientSession(
+                connector=connector,
+                timeout=client_timeout_setting
+            ) as session:
 
-            logger.info(f"Starting concurrent image generation (limit: {concurrency_limit})...") # Moved logging here
-
-            # --- Launch Producer Tasks ---
-            producer_tasks = []
-            for i, payload in enumerate(payloads): # <<< 'i' is our order_index
-                path_info = target_paths[i]
-                task = asyncio.create_task(
-                    # <<< Pass the order_index 'i' >>>
-                    self._produce_image_task(payload, path_info, image_queue, semaphore, session, order_index=i)
+                # Launch ONE Sequential Producer Task
+                producer_task = asyncio.create_task(
+                    self._sequential_producer(
+                        payloads, target_paths, image_queue, semaphore, session, interrupt_event
+                    )
                 )
-                producer_tasks.append(task)
 
-            # --- Consumer Loop (Scoring - Modified for Order) ---
-            images_processed = 0
-            images_generated = 0
-            avg_score: float = 0.0
-            processed_order_buffer = {} # <<< Buffer for out-of-order items
-            expected_order_index = 0    # <<< Next index we expect to score
-            try:
-                logger.info(f"Waiting to receive {total_expected_images} images...")
-                # Loop to RECEIVE all expected items from the queue
-                for _ in range(total_expected_images): # Use _ as counter isn't the primary index now
-                    logger.debug(f"Waiting for ANY image from queue...")
-                    queue_item = await image_queue.get()
-                    images_generated += 1 # Count receiving an item (success or failure signal)
+                # --- Consumer Loop ---
+                images_processed = 0
+                logger.info(f"Consumer: Waiting to receive and score up to {total_expected_images} images sequentially...")
 
-                    if queue_item is None: # Should be (index, None, ...) now
-                        logger.warning(f"Received failure signal (None item) from queue. Cannot determine order index.")
-                        # We might lose track if this happens, but mark task done
-                        image_queue.task_done()
-                        continue # Skip this item, hope others arrive
+                for i in range(total_expected_images):
+                    if interrupt_event.is_set():
+                         logger.warning(f"Consumer: Interrupt detected before waiting for image {i}. Stopping consumption.")
+                         interrupt_triggered = True
+                         break
 
-                    # Unpack item including the order index
+                    logger.debug(f"Consumer: Waiting for image {i} from queue...")
+                    try:
+                        # Use a timeout slightly longer than typical generation if possible, or the total timeout
+                        effective_timeout = total_timeout_seconds if total_timeout_seconds else 3600 # Default 1hr
+                        queue_item = await asyncio.wait_for(image_queue.get(), timeout=effective_timeout)
+                    except asyncio.TimeoutError:
+                         logger.error(f"Consumer: Timeout waiting for image {i} from queue. Stopping.")
+                         interrupt_triggered = True
+                         interrupt_event.set()
+                         break
+
+                    if queue_item is None:
+                        logger.info("Consumer: Received end signal from producer.")
+                        break # Optional: Handle producer end signal
+
                     order_index, image, current_payload, current_target_base_name = queue_item
 
+                    if order_index != i:
+                         logger.error(f"Consumer: Order mismatch! Expected index {i}, got {order_index}. Stopping.")
+                         interrupt_triggered = True
+                         interrupt_event.set()
+                         image_queue.task_done()
+                         break
+
                     if image is None:
-                        logger.warning(f"Received failure signal for order index {order_index}. Skipping scoring.")
-                        processed_order_buffer[order_index] = (None, current_payload, current_target_base_name) # Store failure signal
-                    else:
-                        logger.debug(f"Received image for order index {order_index} ('{current_target_base_name}'). Storing in buffer.")
-                        processed_order_buffer[order_index] = (image, current_payload, current_target_base_name) # Store received item
+                        logger.warning(f"Consumer: Received failure signal for image {i} ('{current_target_base_name}'). Skipping scoring.")
+                        image_queue.task_done()
+                        continue
 
-                    image_queue.task_done() # Mark item as received from queue
+                    # --- Score the received image ---
+                    logger.info(f"Consumer: Scoring image {i+1}/{total_expected_images} ('{current_target_base_name}')...")
+                    score_start_time = time.time()
+                    individual_score = 0.0
+                    processed_item = False # Flag to track if we should call task_done
+                    try:
+                        individual_score = await self.scorer.score(image, current_payload["prompt"], name=current_target_base_name)
 
-                    # --- Inner loop: Process items from buffer IN ORDER ---
-                    while expected_order_index in processed_order_buffer:
-                        logger.debug(f"Processing expected index {expected_order_index} from buffer...")
-                        # Get the item for the expected index
-                        image_to_score, payload_to_score, path_to_score = processed_order_buffer.pop(expected_order_index)
+                        if individual_score == -1.0:
+                            logger.warning(f"Consumer: OVERRIDE_SCORE detected during scoring of image {i}.")
+                            interrupt_event.set()
+                            fake_score_value = self.scorer.handle_override_prompt()
+                            interrupt_triggered = True
+                            # --- DO NOT call task_done here anymore ---
+                            break # Exit loop, finally block will be skipped for this item
 
-                        if image_to_score is None:
-                            logger.warning(f"Skipping scoring for failed generation at index {expected_order_index}.")
-                            # No score to add, maybe handle weights differently? For now, just skip.
-                        else:
-                            logger.info(f"Scoring image {expected_order_index + 1}/{total_expected_images} ('{path_to_score}')...")
-                            score_start_time = time.time()
-                            score = 0.0
-                            try:
-                                # Score the image (blocking happens here if manual)
-                                score = self.scorer.score(image_to_score, payload_to_score["prompt"], name=path_to_score)
-                            except Exception as e_score:
-                                logger.error(f"Error scoring image '{path_to_score}': {e_score}", exc_info=True)
-                                score = 0.0
-                            # No finally/task_done here, it was done when item was received
+                        # --- Normal Score Processing ---
+                        score_duration = time.time() - score_start_time
+                        logger.debug(f"Scoring index {i} took {score_duration:.2f}s.")
 
-                            score_duration = time.time() - score_start_time
-                            logger.debug(f"Scoring index {expected_order_index} took {score_duration:.2f}s.")
+                        weight = current_payload.get("score_weight", 1.0)
+                        scores.append(individual_score)
+                        norm_weights.append(weight)
+                        print(f"  Image {i+1}/{total_expected_images} scored: {individual_score:.4f} (Weight: {weight})")
 
-                            # Store score and weight
-                            weight = payload_to_score.get("score_weight", 1.0)
-                            scores.append(score)
-                            norm_weights.append(weight)
-                            print(f"  Image {expected_order_index + 1}/{total_expected_images} scored: {score:.4f} (Weight: {weight})")
+                        if self.cfg.save_imgs:
+                            self.save_img(image, current_target_base_name, individual_score, self.iteration, i, current_payload)
 
-                            # Save image using expected_order_index for consistent naming
-                            if self.cfg.save_imgs:
-                                self.save_img(image_to_score, path_to_score, score, self.iteration, expected_order_index, payload_to_score)
+                        images_processed += 1
+                        processed_item = True # Mark that we processed normally
 
-                            images_processed += 1 # Increment processed count here
+                    except Exception as e_score:
+                        logger.error(f"Consumer: Error scoring image '{current_target_base_name}' (index {i}): {e_score}", exc_info=True)
+                        # Decide if task_done should be called on error? Usually yes.
+                        processed_item = True # Mark as processed even on error? Or handle differently? Let's mark done.
+                    finally:
+                        # --- Call task_done() ONLY if the loop didn't break early ---
+                        if processed_item:
+                            image_queue.task_done()
+                        # If 'break' happened, processed_item is False, so task_done is skipped here.
 
-                        # Move to the next expected index
-                        expected_order_index += 1
-                    # --- End inner processing loop ---
+                # End of consumer loop
 
-            except asyncio.CancelledError:
-                 logger.warning("Scoring loop cancelled.")
-            except Exception as e_consume:
-                logger.error(f"Error during image scoring loop: {e_consume}", exc_info=True)
-            finally:
-                # --- Wait for Producers and Queue ---
-                # (This part remains the same - wait for queue empty, then gather tasks)
-                logger.info("Waiting for all generation tasks to complete...")
-                await image_queue.join() # Should be empty if outer loop finished
-                logger.debug("Image queue joined.")
-                results = await asyncio.gather(*producer_tasks, return_exceptions=True)
-                for idx, result in enumerate(results):
-                    if isinstance(result, Exception):
-                        logger.error(f"Generation task {idx} failed: {result}")
-                logger.info("All generation tasks finished.")
-
-
-        # --- ^-- MODIFICATION END --^ ---
+        except asyncio.CancelledError:
+             logger.warning("Main task cancelled.")
+             if interrupt_event: interrupt_event.set() # Ensure producer stops
+        except Exception as e_main:
+            logger.error(f"Error during concurrent generation/scoring: {e_main}", exc_info=True)
+            if interrupt_event: interrupt_event.set() # Signal producer on error
+        finally:
+            # --- Cleanup ---
+            if producer_task and not producer_task.done():
+                logger.info("Cancelling producer task...")
+                producer_task.cancel()
+                with suppress(asyncio.CancelledError):
+                    await producer_task
+                logger.info("Producer task cancelled.")
+            # Session closes automatically with 'async with'
 
         gen_score_duration = time.time() - start_gen_score_time
-        # Use 'images_processed' for logging as it reflects successfully scored images
-        logger.info(f"Concurrent generation & scoring took {gen_score_duration:.2f} seconds for {images_processed} scored images.")
+        logger.info(f"Generation & scoring phase took {gen_score_duration:.2f} seconds.")
 
         # --- Calculate Final Score ---
-        if not scores:
+        if interrupt_triggered:
+            logger.info(f"Iteration interrupted by override. Using final score: {fake_score_value:.4f}")
+            avg_score = fake_score_value
+        elif not scores:
             logger.warning("No images were successfully scored.")
-            avg_score = 0.0 # Already initialized, but good practice
+            avg_score = 0.0
         else:
             try:
                 avg_score = self.scorer.average_calc(scores, norm_weights, self.cfg.img_average_type)
+                logger.info(f"Calculated average score: {avg_score:.4f}")
             except Exception as e_avg:
                 logger.error(f"Error calculating average score: {e_avg}", exc_info=True)
                 avg_score = 0.0
@@ -354,8 +373,9 @@ class Optimizer:
         self.artist.collect_data(avg_score, params)
 
         iteration_duration = time.time() - iteration_start_time
-        logger.info(f"Iteration {self.iteration} finished. Average Score: {avg_score:.4f}. Duration: {iteration_duration:.2f}s")
-        return avg_score # Return the final calculated or default score
+        logger.info(f"Iteration {self.iteration} finished. Final Score for Optimizer: {avg_score:.4f}. Duration: {iteration_duration:.2f}s")
+
+        return avg_score
 
     # --- save_img, image_path, update_best_score remain the same ---
     def save_img(

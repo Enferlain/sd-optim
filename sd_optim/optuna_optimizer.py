@@ -1,6 +1,7 @@
-# optuna_optimizer.py - Version 1.3 - more samplers and better validate
+# optuna_optimizer.py - Version 1.5 - directory correction
 
 import os
+import subprocess
 import time
 import json
 import logging
@@ -13,6 +14,7 @@ import optuna
 from pathlib import Path
 from typing import Dict, List, Optional
 
+from hydra.core.hydra_config import HydraConfig
 from omegaconf import ListConfig
 from optuna import Trial, Study
 from optuna.trial import TrialState, FrozenTrial
@@ -31,14 +33,35 @@ class OptunaOptimizer(Optimizer):
         super().__init__(*args, **kwargs)
         self.study = None
         self._param_bounds = None
-        self.log_name = self.cfg.get("log_name", "default")
+#        self.log_name = self.cfg.get("log_name", "default")
+        self.study_name = None # Will be set in optimize()
 
-        # Make checkpoint directory configurable
-        self.checkpoint_dir = Path(self.cfg.optimizer.get("checkpoint_dir", os.getcwd())) / "checkpoints"
-        self.checkpoint_dir.mkdir(parents=True, exist_ok=True)
+        # --- Determine Optuna Storage Directory ---
+        try:
+            # 1. Determine Project Root (assuming this file is in sd_optim/)
+            project_root = Path(__file__).parent.parent.resolve() # sd_optim/ -> sd-optim/
 
-        # Enhanced settings
-        self.checkpoint_interval = self.cfg.optimizer.get("checkpoint_interval", 10)
+            # 2. Define Default Path (relative to project root)
+            default_storage_path = project_root / "optuna_db" # e.g., D:\...\sd-optim\optuna_db
+
+            # 3. Read Config or Use Default
+            # Use '.get' to safely access nested keys, provide default path as string
+            optuna_storage_path_str = self.cfg.optimizer.optuna_config.get("storage_dir", str(default_storage_path))
+
+            # 4. Resolve Final Path and Create Directory
+            self.optuna_storage_dir = Path(optuna_storage_path_str).resolve()
+            self.optuna_storage_dir.mkdir(parents=True, exist_ok=True)
+            logger.info(f"Optuna databases will be stored in: {self.optuna_storage_dir}")
+
+        except NameError:
+             logger.error("__file__ not defined. Cannot reliably determine project root for default Optuna storage.")
+             # Handle error - maybe fallback to CWD or raise
+             self.optuna_storage_dir = Path("./optuna_db_fallback").resolve()
+             self.optuna_storage_dir.mkdir(parents=True, exist_ok=True)
+             logger.warning(f"Falling back to Optuna storage directory: {self.optuna_storage_dir}")
+        except Exception as e:
+             logger.error(f"CRITICAL ERROR setting up Optuna storage directory: {e}", exc_info=True)
+             raise # Re-raise critical errors
 
         # Early stopping settings
         self.early_stopping = self.cfg.optimizer.get("early_stopping", False)
@@ -56,35 +79,52 @@ class OptunaOptimizer(Optimizer):
     def _setup_trial_logger(self):
         """Setup logging for optimization trials."""
 
+        # Define the logger class internally
         class TrialLogger:
-            def __init__(self, log_path):
-                self.log_path = Path(log_path)
-                self.log_path.parent.mkdir(parents=True, exist_ok=True)
+            def __init__(self):
+                self.log_path = None  # <<< Initialize path as None
 
-                # Initialize with empty file if it doesn't exist
+            def set_path(self, log_path: Path):  # <<< Add method to set path later
+                self.log_path = log_path
+                self.log_path.parent.mkdir(parents=True, exist_ok=True)
+                # Initialize with empty file if it doesn't exist AFTER path is set
                 if not self.log_path.exists():
-                    with open(self.log_path, 'w', encoding='utf-8') as f:
-                        f.write('')
+                    with open(self.log_path, 'w', encoding='utf-8') as f: f.write('')
+                logger.info(f"Trial log (.jsonl) will be saved to: {self.log_path}")
 
             def log(self, data):
-                with open(self.log_path, 'a', encoding='utf-8') as f:
-                    json.dump(data, f)
-                    f.write('\n')
+                if not self.log_path:  # <<< Check if path is set before logging
+                    logger.error("Trial logger path not set. Cannot log trial.")
+                    return
+                try:  # Add error handling for writing
+                    with open(self.log_path, 'a', encoding='utf-8') as f:
+                        json.dump(data, f) # Type: ignore
+                        f.write('\n')
+                except Exception as e:
+                    logger.error(f"Failed to write to trial log {self.log_path}: {e}")
 
             def load_trials(self):
                 """Load trials from log file."""
-                if not self.log_path.exists():
+                if not self.log_path or not self.log_path.exists():  # <<< Check path
                     return []
 
                 trials = []
-                with open(self.log_path, 'r', encoding='utf-8') as f:
-                    for line in f:
-                        line = line.strip()
-                        if line:
-                            trials.append(json.loads(line))
-                return trials
+                try:
+                    with open(self.log_path, 'r', encoding='utf-8') as f:
+                        for line in f:
+                            line = line.strip()
+                            if line:
+                                try:
+                                    trials.append(json.loads(line))
+                                except json.JSONDecodeError as e_json:
+                                    logger.warning(f"Skipping invalid line in trial log: {e_json}")
+                    return trials
+                except Exception as e:
+                    logger.error(f"Failed to load trials log {self.log_path}: {e}")
+                    return []
 
-        return TrialLogger(Path(os.getcwd()) / f"trials_{self.log_name}.jsonl")
+        # Return an instance of the logger class, path will be set later
+        return TrialLogger()
 
     def validate_optimizer_config(self) -> bool:
         """Validate optimizer-specific configuration"""
@@ -248,41 +288,131 @@ class OptunaOptimizer(Optimizer):
                 pruner = SuccessiveHalvingPruner()
                 logger.info("Using Successive Halving Pruner")
 
-        study_name = f"optimization_{self.log_name}"
-        # Use checkpoint dir for storage DB (ensure self.checkpoint_dir is Path)
-        storage_path = self.checkpoint_dir / f'{study_name}.db'
-        storage = f"sqlite:///{storage_path}"
-        logger.info(f"Using Optuna storage: {storage}")
+        # --- Determine Shared DB Name and Path ---
+        storage_path: Path = None
+        storage: str = None
+        db_filename: str = "optuna_fallback.db"
+        try:
+            opt_mode = self.cfg.get("optimization_mode", "unknown_mode")
+            merge_method_name = "N/A" # Default for non-merge modes
+            if opt_mode == "merge":
+                 merge_method_name = self.cfg.get("merge_method", "unknown_method")
+            elif opt_mode == "recipe":
+                 # Maybe use recipe filename base?
+                 recipe_path = self.cfg.recipe_optimization.get("recipe_path")
+                 merge_method_name = f"recipe_{Path(recipe_path).stem}" if recipe_path else "recipe"
+            elif opt_mode == "layer_adjust":
+                 merge_method_name = "layer_adjust"
 
-        # --- Determine if loading or creating ---
-        # Use the common load_log_file flag to indicate resuming
-        # Optuna's load_if_exists=True handles both creating and loading
-        should_load_study = bool(self.cfg.optimizer.get("load_log_file", False))
-        logger.info(f"Attempting to {'load' if should_load_study else 'create'} study '{study_name}'.")
+            scorers = self.cfg.get("scorer_method", ["unknown_scorer"])
+            # Ensure scorers is a list even if single string is given
+            if isinstance(scorers, str): scorers = [scorers]
+            # Sort scorers for consistent naming if list order changes
+            scorer_name_part = "_".join(sorted(scorers))
+
+            # 2. Sanitize names (simple example, might need more robust)
+            def sanitize(name): return "".join(c if c.isalnum() or c in ('_', '-') else '_' for c in str(name))
+
+            db_filename_base = f"optuna_{sanitize(opt_mode)}_{sanitize(merge_method_name)}_{sanitize(scorer_name_part)}"
+            db_filename = f"{db_filename_base}.db"
+
+            # 3. Define storage path using the derived filename
+            if not hasattr(self, 'optuna_storage_dir') or not self.optuna_storage_dir.is_dir():
+                 raise ValueError("Optuna storage directory not initialized correctly.")
+
+            storage_path = self.optuna_storage_dir / db_filename  # <<< Use correct storage dir
+
+            storage = f"sqlite:///{storage_path.resolve()}"
+            logger.info(f"Using Optuna storage file: {storage_path.name}")
+            logger.info(f"Full storage URI: {storage}")
+
+        except Exception as e_name:
+            logger.error(f"Failed to determine Optuna DB name from config: {e_name}. Falling back to default.")
+            # Fallback to a simple default if naming fails
+            db_filename = "optuna_fallback.db"
+            storage_path = self.optuna_storage_dir / db_filename
+            storage = f"sqlite:///{storage_path.resolve()}"
+
+        # --- Check if resuming a specific study ---
+        study_to_resume = self.cfg.optimizer.get("resume_study_name", None) # Get name from config
 
         try:
-            self.study = optuna.create_study(
-                study_name=study_name,
-                storage=storage,
-                sampler=sampler,
-                pruner=pruner,
-                direction="maximize",
-                load_if_exists=True # <<< ALWAYS TRUE: Creates if not exist, loads if exists
-            )
-            # Log whether it was loaded or created
-            if should_load_study and len(self.study.trials) > 0:
-                 logger.info(f"Successfully loaded existing study '{study_name}' with {len(self.study.trials)} trials.")
-            elif not should_load_study and len(self.study.trials) == 0:
-                 logger.info(f"Successfully created new study '{study_name}'.")
-            elif should_load_study and len(self.study.trials) == 0:
-                 logger.warning(f"Load specified, but study '{study_name}' was created new or is empty.")
-            # else: !should_load_study and len > 0 means created new study but somehow got trials? Unlikely.
+            if study_to_resume:
+                logger.info(f"Attempting to load and resume study '{study_to_resume}' from DB '{storage_path.name}'...")
+                self.study = optuna.load_study(
+                    study_name=study_to_resume,
+                    storage=storage,
+                    sampler=sampler, # Pass sampler/pruner in case they need setup? Or load study first? Check Optuna docs.
+                    pruner=pruner
+                )
+                logger.info(f"Successfully loaded study '{study_to_resume}' with {len(self.study.trials)} existing trials.")
+                # Set self.study_name to the resumed name for consistency elsewhere (e.g., dashboard launch)
+                self.study_name = study_to_resume
+            else:
+                # --- Create a NEW, unique study for this run ---
+                timestamp = time.strftime("%Y%m%d_%H%M%S")
+                sampler_type = self.cfg.optimizer.get("sampler", {}).get("type", "tpe").lower()
+                self.study_name = f"run_{timestamp}_{sampler_type}" # Generate NEW name
 
+                logger.info(f"Creating new study '{self.study_name}' in DB '{storage_path.name}'.")
+                self.study = optuna.create_study(
+                    study_name=self.study_name, # Use the NEW unique name
+                    storage=storage,
+                    sampler=sampler,
+                    pruner=pruner,
+                    direction="maximize",
+                    load_if_exists=False # <<< Explicitly FALSE: Do not load even if name conflicts (unlikely)
+                )
+                logger.info(f"Successfully created new study '{self.study_name}'.")
+
+                # --- V-- ADDITION START: Set user attributes only for NEW studies --V ---
+                # Only set these when the study is definitely new to avoid overwriting
+                # attributes from a potentially loaded study if resuming logic changes later.
+                try:
+                    # Get model paths safely, default to empty list
+                    model_paths_list = self.cfg.get("model_paths", [])
+                    # Convert Path objects to strings if they exist
+                    input_model_paths_str = [str(p) for p in model_paths_list]
+
+                    self.study.set_user_attr('config_input_models', str(input_model_paths_str))
+                    self.study.set_user_attr('config_base_model_index', self.cfg.get('base_model_index', -1))
+                    # Store the merge method used ONLY if mode is 'merge'
+                    if self.cfg.get("optimization_mode") == "merge":
+                         self.study.set_user_attr('config_merge_method', self.cfg.get('merge_method', 'N/A'))
+                    else:
+                         self.study.set_user_attr('config_merge_method', 'N/A') # Indicate not applicable
+                    # Add other relevant top-level config for context?
+                    self.study.set_user_attr('config_optimization_mode', self.cfg.get('optimization_mode', 'N/A'))
+                    self.study.set_user_attr('config_scorers', str(self.cfg.get('scorer_method', [])))
+
+                    logger.info(f"Stored initial configuration as user attributes for new study '{self.study_name}'.")
+                except Exception as e_attr:
+                    logger.warning(f"Could not store initial config as study attribute: {e_attr}")
+                # --- V-- ADDITION END --V ---
+
+            # --- V-- MOVED Logger Path Setup Here --V ---
+            # Now self.study_name is guaranteed to be set (either loaded or created)
+            # And os.getcwd() is the correct Hydra run directory
+            try:
+                hydra_run_path = Path(HydraConfig.get().runtime.output_dir) # Get correct run dir
+                trials_log_filename = f"{self.study_name}_trials.jsonl" # Use the unique study name
+                trials_log_path = hydra_run_path / trials_log_filename
+                self.logger.set_path(trials_log_path) # Set the path on the logger instance
+            except Exception as e_log_path:
+                 logger.error(f"Failed to set trial logger path: {e_log_path}")
+                 # Continue without jsonl logging if path fails?
+            # --- V-- END Logger Path Setup --V ---
+
+        except KeyError: # Optuna raises KeyError if study_name not found during load_study
+             logger.error(f"Study name '{study_to_resume}' not found in the database '{storage_path.name}'. Cannot resume.")
+             # Decide behaviour: stop execution or create a new study anyway? Stopping is safer.
+             print(f"ERROR: Could not find the study '{study_to_resume}' to resume in {storage_path.name}.")
+             raise ValueError(f"Failed to resume study '{study_to_resume}'.") # Stop execution
         except Exception as e_study:
-             # Fallback to in-memory might lose history unless we load from JSONL logs
+             # Handle other DB connection/creation errors
              logger.error(f"Failed to create/load study using DB: {e_study}. Check DB path/permissions.")
              logger.info("Attempting fallback to in-memory storage.")
-             self.study = optuna.create_study(study_name=study_name, sampler=sampler, pruner=pruner, direction="maximize")
+             self.study = optuna.create_study(study_name=self.study_name, sampler=sampler, pruner=pruner, direction="maximize")
              self._restore_from_trials_log() # Attempt restore if using in-memory
 
         # --- Calculate remaining trials ---
@@ -290,7 +420,7 @@ class OptunaOptimizer(Optimizer):
         total_trials_planned = self.cfg.optimizer.init_points + self.cfg.optimizer.n_iters
         remaining_trials = max(0, total_trials_planned - completed_trials)
 
-        if completed_trials > 0:
+        if self.study and completed_trials > 0: # Check if study is loaded and has trials
             logger.info(f"Found {completed_trials} completed trials. {remaining_trials} trials remaining.")
 
             # Update best_rolling_score from existing trials
@@ -301,7 +431,6 @@ class OptunaOptimizer(Optimizer):
         # Run optimization if there are trials remaining
         if remaining_trials > 0:
             try:
-                # Run Optuna's synchronous optimize in a separate thread
                 import asyncio
                 await asyncio.to_thread(
                     self.study.optimize,
@@ -309,23 +438,23 @@ class OptunaOptimizer(Optimizer):
                     n_trials=remaining_trials,
                     n_jobs=self.cfg.optimizer.get("n_jobs", 1),
                     show_progress_bar=True,
-                    callbacks=[self._trial_callback, self._checkpoint_callback]
+                    # --- VVV REMOVED _checkpoint_callback VVV ---
+                    callbacks=[self._trial_callback] # Only log trial info
                 )
 
             except KeyboardInterrupt:
-                logger.info("Optimization interrupted by user. Saving current state...")
-                self.save_checkpoint()
+                logger.info("Optimization interrupted by user.")
+                # --- VVV REMOVED self.save_checkpoint() VVV ---
             except Exception as e:
-                logger.error(f"Optimization failed: {e}")
-                self.save_checkpoint()
-                raise
+                logger.error(f"Optimization failed: {e}", exc_info=True) # Log full traceback
+                # --- VVV REMOVED self.save_checkpoint() VVV ---
+                raise # Re-raise the exception
         else:
             logger.info("All trials already completed. Skipping optimization.")
 
-        # Save final checkpoint
-        self.save_checkpoint()
+        # --- VVV REMOVED final self.save_checkpoint() VVV ---
 
-        # Analyze parameter importance
+        # Analyze parameter importance (unchanged)
         self._analyze_parameter_importance()
 
     def _restore_from_trials_log(self):
@@ -353,50 +482,6 @@ class OptunaOptimizer(Optimizer):
                     )
 
         logger.info(f"Restored {len(self.study.trials)} valid trials")
-
-    def save_checkpoint(self):
-        """Save current optimization state."""
-        if not self.study:
-            logger.warning("No study to checkpoint")
-            return
-
-        try:
-            # Create checkpoint directory if it doesn't exist
-            self.checkpoint_dir.mkdir(parents=True, exist_ok=True)
-
-            # Save additional state that isn't captured in the database
-            checkpoint_data = {
-                'best_rolling_score': self.best_rolling_score,
-                'iteration': self.iteration,
-                'timestamp': time.time()
-            }
-
-            checkpoint_file = self.checkpoint_dir / f"optimizer_state_{self.log_name}.pkl"
-            with open(checkpoint_file, 'wb') as f:
-                pickle.dump(checkpoint_data, f)
-
-            logger.info(f"Saved optimizer state to {checkpoint_file}")
-
-            # The main Optuna study state is already saved in the SQLite database
-            # No need to manually save it if using a persistent storage
-
-            # Also create visualization at checkpoint
-            self._create_progress_plots()
-        except Exception as e:
-            logger.error(f"Failed to save checkpoint: {e}")
-
-    def _checkpoint_callback(self, study: Study, trial: Trial):
-        """Callback to periodically save checkpoints."""
-        if trial.number % self.checkpoint_interval == 0 and trial.number > 0:
-            logger.info(f"Creating periodic checkpoint at trial {trial.number}")
-            self.save_checkpoint()
-
-        # Perform garbage collection periodically
-        if trial.number % 5 == 0 and trial.number > 0:
-            import gc
-            gc.collect()
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
 
     def _objective(self, trial: Trial) -> float:
         """Objective function for Optuna optimization."""
@@ -441,16 +526,16 @@ class OptunaOptimizer(Optimizer):
                 elif isinstance(bounds_value, list):
                     # Categorical logic (remains the same)
                     if len(bounds_value) == 1:
-                        suggested_value = bounds_value[0];
-                        trial.set_user_attr(f"fixed_{param_name}", True);
+                        suggested_value = bounds_value[0]
+                        trial.set_user_attr(f"fixed_{param_name}", True)
                         logger.debug(" -> Fixed Categorical")
                     else:
-                        suggested_value = trial.suggest_categorical(param_name, bounds_value);
+                        suggested_value = trial.suggest_categorical(param_name, bounds_value)
                         logger.debug(" -> suggest_categorical")
                 elif isinstance(bounds_value, (int, float)):
                     # Fixed value logic (remains the same)
-                    suggested_value = bounds_value;
-                    trial.set_user_attr(f"fixed_{param_name}", True);
+                    suggested_value = bounds_value
+                    trial.set_user_attr(f"fixed_{param_name}", True)
                     logger.debug(" -> Fixed Value")
                 else:
                     logger.warning(f"Unsupported bound type: {type(bounds_value)} for '{param_name}'.")
@@ -555,7 +640,7 @@ class OptunaOptimizer(Optimizer):
 
             # Save plot
             output_dir = Path(os.getcwd())
-            plt.savefig(output_dir / f"optimization_progress_{self.log_name}.png")
+            plt.savefig(output_dir / f"optimization_progress_{self.study_name}.png")
             plt.close()
 
         except Exception as e:
@@ -592,7 +677,7 @@ class OptunaOptimizer(Optimizer):
 
             # Save visualization
             output_dir = Path(os.getcwd())
-            plt.savefig(output_dir / f"parameter_importance_{self.log_name}.png")
+            plt.savefig(output_dir / f"parameter_importance_{self.study_name}.png")
             plt.close()
 
         except Exception as e:
@@ -664,19 +749,55 @@ class OptunaOptimizer(Optimizer):
                 })
         return history
 
-    def launch_dashboard(self, port=8080):
-        """Launch the Optuna Dashboard for interactive visualization."""
-        storage_path = os.path.join(os.getcwd(), f'optimization_{self.log_name}.db')
+    # --- New Method ---
+    def start_dashboard_background(self, port=8080):
+        """Determines DB path and starts Optuna Dashboard in background."""
+        logger.info("Preparing to launch dashboard in background...")
 
-        print(f"\n{'=' * 80}")
-        print(f"LAUNCHING OPTUNA DASHBOARD")
-        print(f"{'=' * 80}")
-        print(f"Access the dashboard at: http://localhost:{port}")
-        print(f"Press Ctrl+C in this terminal to stop the dashboard when finished")
-        print(f"{'=' * 80}\n")
+        try:
+            # Determine database filename based on current config
+            opt_mode = self.cfg.get("optimization_mode", "unknown_mode")
+            merge_method_name = "N/A" # Default
+            if opt_mode == "merge":
+                 merge_method_name = self.cfg.get("merge_method", "unknown_method")
+            elif opt_mode == "recipe":
+                 recipe_path_str = self.cfg.recipe_optimization.get("recipe_path")
+                 merge_method_name = f"recipe_{Path(recipe_path_str).stem}" if recipe_path_str else "recipe"
+            elif opt_mode == "layer_adjust":
+                 merge_method_name = "layer_adjust"
 
-        # This will block until Ctrl+C
-        os.system(f"optuna-dashboard sqlite:///{storage_path} --port {port}")
+            scorers = self.cfg.get("scorer_method", ["unknown_scorer"])
+            if isinstance(scorers, str): scorers = [scorers]
+            scorer_name_part = "_".join(sorted(scorers))
+
+            def sanitize(name): return "".join(c if c.isalnum() or c in ('_', '-') else '_' for c in str(name))
+
+            db_filename_base = f"optuna_{sanitize(opt_mode)}_{sanitize(merge_method_name)}_{sanitize(scorer_name_part)}"
+            db_filename = f"{db_filename_base}.db"
+
+            # Get storage directory path (should be set in __init__)
+            if not hasattr(self, 'optuna_storage_dir') or not isinstance(self.optuna_storage_dir, Path):
+                 raise ValueError("Optuna storage directory not initialized correctly.")
+            if not self.optuna_storage_dir.is_dir():
+                logger.warning(f"Optuna storage directory {self.optuna_storage_dir} does not exist yet. Creating.")
+                self.optuna_storage_dir.mkdir(parents=True, exist_ok=True)
+
+            storage_path = self.optuna_storage_dir / db_filename
+            storage_uri = f"sqlite:///{storage_path.resolve()}"
+            logger.info(f"Determined database URI for dashboard: {storage_uri}")
+
+            # Check if the file exists *now*. It might not exist before the *first* run
+            # of an experiment category, which is okay. The dashboard command might
+            # handle this or show an empty study initially.
+            if not storage_path.exists():
+                logger.warning(f"Optuna DB file {storage_path} doesn't exist yet. Dashboard might show empty study initially.")
+
+        except Exception as e_name:
+            logger.error(f"Failed to determine Optuna DB path for background dashboard: {e_name}")
+            return None # Return None if path calculation fails
+
+        # Launch dashboard in background using the helper function
+        return run_dashboard_in_background(storage_uri, port)
 
     def create_visualization_report(self, output_dir=None):
         """Generate comprehensive Optuna visualization report."""
@@ -736,3 +857,45 @@ class OptunaOptimizer(Optimizer):
             logger.error("Optuna visualization modules not available. Install with pip install optuna[visualization]")
         except Exception as e:
             logger.error(f"Error generating visualizations: {e}")
+
+
+# --- Helper Function (can be outside the class) ---
+def run_dashboard_in_background(storage_uri, port):
+    """Run the Optuna dashboard as a separate process that won't block."""
+    print(f"\n{'=' * 80}")
+    print(f"LAUNCHING OPTUNA DASHBOARD")
+    print(f"{'=' * 80}")
+    print(f"Access the dashboard at: http://localhost:{port}")
+    print(f"The dashboard will run in the background.")
+    print(f"(Check console running sd_optim.py for dashboard process status/errors on exit)")
+    print(f"{'=' * 80}\n")
+    # Small delay to potentially let prints appear before subprocess output might start
+    time.sleep(0.5)
+
+    # Command list for Popen
+    cmd = ["optuna-dashboard", storage_uri, "--port", str(port)]
+
+    try:
+        # Launch without waiting, pipe output to avoid cluttering main console
+        # Use creationflags on Windows to prevent a new console window flashing
+        creationflags = 0
+        if os.name == 'nt': # Windows
+             creationflags = subprocess.CREATE_NO_WINDOW
+
+        dashboard_process = subprocess.Popen(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            creationflags=creationflags # Prevent console window on Windows
+        )
+        logger.info(f"Launched background dashboard process (PID: {dashboard_process.pid})")
+        return dashboard_process
+    except FileNotFoundError:
+        logger.error(f"Could not find '{cmd[0]}' command. Is optuna-dashboard installed and in PATH?")
+        print(f"ERROR: Failed to launch dashboard - command '{cmd[0]}' not found.")
+        return None
+    except Exception as e:
+         logger.error(f"Failed to launch dashboard process: {e}", exc_info=True)
+         print(f"ERROR: Failed to launch dashboard process: {e}")
+         return None

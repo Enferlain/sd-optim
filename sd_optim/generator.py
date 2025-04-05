@@ -46,13 +46,14 @@ class Generator:
 
         # Route to specific method, PASSING the session
         if webui_lower in ["a1111", "forge", "reforge"]:
-            # Use an async generator comprehension to yield from the inner generator
-            async for image in self.generate_a1111_forge(payload, session): # <<< PASS session
-                yield image
+            async for image in self.generate_a1111_forge(payload, session):
+                yield image # Already yields one by one
         elif webui_lower == "swarm":
-            async for image in self.generate_swarm(payload, session): # <<< PASS session
-                yield image
-        # ... (other webui logic) ...
+            async for image in self.generate_swarm(payload, session):
+                yield image # Already yields one by one
+        elif webui_lower == "comfy":
+            logger.error("ComfyUI generation not implemented in Generator.")
+            raise NotImplementedError("ComfyUI generation not implemented yet")
         else:
             logger.error(f"Unsupported webui type in Generator: {self.webui}")
             raise ValueError(f"Unsupported webui: {self.webui}")

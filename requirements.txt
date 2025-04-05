@@ -13,7 +13,10 @@ sd-mecha                 # Use the latest compatible version, or specify one exp
 # --- Optimization Libraries ---
 bayesian-optimization    # Keep if you want to retain BayesOpt as an option
 optuna                   # ADDED: For Optuna optimizer support
-# hyperopt                 # Keep if you plan to add Hyperopt later
+optuna-dashboard         # Realtime dashboard for optuna
+optuna-fast-fanova       # Optuna docs
+# gunicorn               # Optuna docs, doesn't work on windows
+# hyperopt               # Keep if you plan to add Hyperopt later
 
 # --- Image/Scoring/CLIP Related ---
 Pillow                   # Image processing

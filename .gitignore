@@ -71,6 +71,7 @@ venv.bak/
 .vscode/
 *.swp
 *.swo
+.idea/
 
 # --- Type Checkers ---
 .mypy_cache/

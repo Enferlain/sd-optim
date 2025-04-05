@@ -69,31 +69,45 @@ class Optimizer:
              raise ValueError("Optimization parameter space is empty.")
         logger.info(f"Prepared {len(self.optimizer_pbounds)} parameters for the optimizer.")
 
-    # --- MODIFIED: Async Task for Generating Images (Producer) ---
     async def _produce_image_task(
-        self,
-        payload: Dict,
-        path_info: str,
-        queue: asyncio.Queue,
-        semaphore: asyncio.Semaphore,
-        session: aiohttp.ClientSession # <<< ADD session parameter
+            self,
+            payload: Dict,
+            path_info: str,
+            queue: asyncio.Queue,
+            semaphore: asyncio.Semaphore,
+            session: aiohttp.ClientSession,
+            order_index: int  # <<< ADD order_index parameter
     ):
-        """Async task to generate image(s) for a payload and put them on the queue."""
-        # <<< PASS session to generator >>>
-        img_gen = self.generator.generate(payload, self.cfg, session) # Pass session here
+        """Async task to generate image(s) for a payload and put them on the queue with order index."""
+        img_gen = self.generator.generate(payload, self.cfg, session)
         image_index_in_payload = 0
+        generated_image = None  # Keep track if at least one image was generated
         async with semaphore:
-            logger.info(f"Starting generation for payload '{path_info}'...")
+            # logger.info(f"Starting generation for payload '{path_info}' (Order: {order_index})...") # Optional logging
             try:
                 async for image in img_gen:
-                    unique_path_info = f"{path_info}_{image_index_in_payload}"
-                    logger.debug(f"Putting image for '{unique_path_info}' onto queue.")
-                    await queue.put((image, payload, unique_path_info))
+                    # For now, assume generator yields only one image per call because we set API batch=1
+                    # If it could yield multiple, this needs adjustment
+                    if image_index_in_payload == 0:  # Process only the first image if multiple yielded unexpectedly
+                        unique_path_info = f"{path_info}"  # Use base path_info, index added by consumer now
+                        logger.debug(f"Putting image for Order {order_index} ('{unique_path_info}') onto queue.")
+                        # <<< Put tuple with order_index FIRST >>>
+                        await queue.put((order_index, image, payload, unique_path_info))
+                        generated_image = image  # Mark that we got an image
                     image_index_in_payload += 1
-                logger.info(f"Finished generation task for payload '{path_info}'.")
+                # If loop finishes without yielding any image (generator empty)
+                if generated_image is None:
+                    logger.warning(f"Generation task for Order {order_index} ('{path_info}') yielded no images.")
+                    # Put failure signal if no image was ever generated
+                    await queue.put((order_index, None, payload, path_info))
+
+                # logger.info(f"Finished generation task for Order {order_index} ('{path_info}').") # Optional logging
+
             except Exception as e_gen_task:
-                 logger.error(f"Error in generation task for payload '{path_info}': {e_gen_task}", exc_info=True)
-                 # await queue.put((None, payload, path_info)) # Example of signaling failure
+                logger.error(f"Error in generation task for Order {order_index} ('{path_info}'): {e_gen_task}",
+                             exc_info=True)
+                # <<< Put tuple with order_index FIRST >>>
+                await queue.put((order_index, None, payload, path_info))  # Signal failure
 
     # --- MODIFIED: sd_target_function to create and pass session ---
     async def sd_target_function(self, params: Dict[str, Any]) -> Optional[float]:
@@ -219,63 +233,85 @@ class Optimizer:
 
             # --- Launch Producer Tasks ---
             producer_tasks = []
-            for i, payload in enumerate(payloads):
+            for i, payload in enumerate(payloads): # <<< 'i' is our order_index
                 path_info = target_paths[i]
                 task = asyncio.create_task(
-                    # <<< Pass the created 'session' object >>>
-                    self._produce_image_task(payload, path_info, image_queue, semaphore, session)
+                    # <<< Pass the order_index 'i' >>>
+                    self._produce_image_task(payload, path_info, image_queue, semaphore, session, order_index=i)
                 )
                 producer_tasks.append(task)
 
-            # --- Consumer Loop (Scoring) ---
-            # (The rest of the loop logic remains exactly as you provided)
+            # --- Consumer Loop (Scoring - Modified for Order) ---
             images_processed = 0
-            images_generated = 0 # Track images successfully put on queue
-            avg_score: float = 0.0 # Initialize avg_score
+            images_generated = 0
+            avg_score: float = 0.0
+            processed_order_buffer = {} # <<< Buffer for out-of-order items
+            expected_order_index = 0    # <<< Next index we expect to score
             try:
-                logger.info(f"Waiting to score {total_expected_images} images...")
-                for i in range(total_expected_images):
-                    logger.debug(f"Waiting for image {i+1}/{total_expected_images} from queue...")
+                logger.info(f"Waiting to receive {total_expected_images} images...")
+                # Loop to RECEIVE all expected items from the queue
+                for _ in range(total_expected_images): # Use _ as counter isn't the primary index now
+                    logger.debug(f"Waiting for ANY image from queue...")
                     queue_item = await image_queue.get()
-                    # <<< Use images_generated ONLY for successfully dequeued images >>>
-                    # images_generated += 1 # Moved this line down
+                    images_generated += 1 # Count receiving an item (success or failure signal)
 
-                    if queue_item is None or queue_item[0] is None: # Check for potential error signal
-                         logger.warning(f"Received failure signal from queue for item {i+1}. Skipping.")
-                         image_queue.task_done()
-                         # Don't count as processed if it failed generation
-                         continue
+                    if queue_item is None: # Should be (index, None, ...) now
+                        logger.warning(f"Received failure signal (None item) from queue. Cannot determine order index.")
+                        # We might lose track if this happens, but mark task done
+                        image_queue.task_done()
+                        continue # Skip this item, hope others arrive
 
-                    # Successfully dequeued an image
-                    image, current_payload, current_target_base_name = queue_item
-                    images_generated += 1 # <<< Increment here
+                    # Unpack item including the order index
+                    order_index, image, current_payload, current_target_base_name = queue_item
 
-                    logger.info(f"Scoring image {i+1}/{total_expected_images} ('{current_target_base_name}')...")
-                    score_start_time = time.time()
-                    score = 0.0 # Initialize score for this item
-                    try:
-                        # Score the image (this might block if manual scoring)
-                        score = self.scorer.score(image, current_payload["prompt"], name=current_target_base_name)
-                    except Exception as e_score:
-                        logger.error(f"Error scoring image '{current_target_base_name}': {e_score}", exc_info=True)
-                        score = 0.0 # Assign default score on error
-                    finally:
-                        image_queue.task_done() # <<< Signal task completion for this image
+                    if image is None:
+                        logger.warning(f"Received failure signal for order index {order_index}. Skipping scoring.")
+                        processed_order_buffer[order_index] = (None, current_payload, current_target_base_name) # Store failure signal
+                    else:
+                        logger.debug(f"Received image for order index {order_index} ('{current_target_base_name}'). Storing in buffer.")
+                        processed_order_buffer[order_index] = (image, current_payload, current_target_base_name) # Store received item
 
-                    score_duration = time.time() - score_start_time
-                    logger.debug(f"Scoring image {i+1} took {score_duration:.2f}s.")
+                    image_queue.task_done() # Mark item as received from queue
 
-                    # Store score and weight
-                    weight = current_payload.get("score_weight", 1.0)
-                    scores.append(score)
-                    norm_weights.append(weight)
-                    images_processed += 1 # <<< Increment processed count here
-                    print(f"  Image {i+1}/{total_expected_images} scored: {score:.4f} (Weight: {weight})")
+                    # --- Inner loop: Process items from buffer IN ORDER ---
+                    while expected_order_index in processed_order_buffer:
+                        logger.debug(f"Processing expected index {expected_order_index} from buffer...")
+                        # Get the item for the expected index
+                        image_to_score, payload_to_score, path_to_score = processed_order_buffer.pop(expected_order_index)
 
-                    # Save image (synchronously for simplicity, could be async)
-                    if self.cfg.save_imgs:
-                        # Pass unique name from queue item
-                        self.save_img(image, current_target_base_name, score, self.iteration, i, current_payload)
+                        if image_to_score is None:
+                            logger.warning(f"Skipping scoring for failed generation at index {expected_order_index}.")
+                            # No score to add, maybe handle weights differently? For now, just skip.
+                        else:
+                            logger.info(f"Scoring image {expected_order_index + 1}/{total_expected_images} ('{path_to_score}')...")
+                            score_start_time = time.time()
+                            score = 0.0
+                            try:
+                                # Score the image (blocking happens here if manual)
+                                score = self.scorer.score(image_to_score, payload_to_score["prompt"], name=path_to_score)
+                            except Exception as e_score:
+                                logger.error(f"Error scoring image '{path_to_score}': {e_score}", exc_info=True)
+                                score = 0.0
+                            # No finally/task_done here, it was done when item was received
+
+                            score_duration = time.time() - score_start_time
+                            logger.debug(f"Scoring index {expected_order_index} took {score_duration:.2f}s.")
+
+                            # Store score and weight
+                            weight = payload_to_score.get("score_weight", 1.0)
+                            scores.append(score)
+                            norm_weights.append(weight)
+                            print(f"  Image {expected_order_index + 1}/{total_expected_images} scored: {score:.4f} (Weight: {weight})")
+
+                            # Save image using expected_order_index for consistent naming
+                            if self.cfg.save_imgs:
+                                self.save_img(image_to_score, path_to_score, score, self.iteration, expected_order_index, payload_to_score)
+
+                            images_processed += 1 # Increment processed count here
+
+                        # Move to the next expected index
+                        expected_order_index += 1
+                    # --- End inner processing loop ---
 
             except asyncio.CancelledError:
                  logger.warning("Scoring loop cancelled.")
@@ -283,8 +319,9 @@ class Optimizer:
                 logger.error(f"Error during image scoring loop: {e_consume}", exc_info=True)
             finally:
                 # --- Wait for Producers and Queue ---
+                # (This part remains the same - wait for queue empty, then gather tasks)
                 logger.info("Waiting for all generation tasks to complete...")
-                await image_queue.join()
+                await image_queue.join() # Should be empty if outer loop finished
                 logger.debug("Image queue joined.")
                 results = await asyncio.gather(*producer_tasks, return_exceptions=True)
                 for idx, result in enumerate(results):
@@ -322,33 +359,32 @@ class Optimizer:
 
     # --- save_img, image_path, update_best_score remain the same ---
     def save_img(
-        self, image: Image.Image, name: str, score: float, it: int, batch_n: int, payload: Dict
+        self,
+        image: Image.Image,
+        name: str, # This is the original payload name base (e.g., 'noob6')
+        score: float,
+        it: int,
+        img_order_index: int, # <<< Use the order index here
+        payload: Dict,
     ) -> Optional[Path]:
         # Use batch_n as the image index within the iteration
-        img_path = self.image_path(name, score, it, batch_n)
-        pnginfo = PngImagePlugin.PngInfo()
-        # Ensure payload items are strings for PNG info
-        for k, v in payload.items():
-            try:
-                pnginfo.add_text(str(k), str(v))
-            except Exception as e_png:
-                logger.warning(f"Could not add key '{k}' to PNG info: {e_png}")
+        img_path = self.image_path(name, score, it, img_order_index)
 
+        pnginfo = PngImagePlugin.PngInfo()
+        for k, v in payload.items():
+            try: pnginfo.add_text(str(k), str(v))
+            except Exception as e_png: logger.warning(f"Could not add key '{k}' to PNG info: {e_png}")
         try:
-            # Ensure the directory exists
             img_path.parent.mkdir(parents=True, exist_ok=True)
             image.save(img_path, pnginfo=pnginfo)
-            # logger.debug(f"Saved image to {img_path}") # More detailed log if needed
-        except (OSError, IOError) as e:
-            logger.error(f"Error saving image to {img_path}: {e}")
-            return None
+        except (OSError, IOError) as e: logger.error(f"Error saving image to {img_path}: {e}"); return None
         return img_path
 
-    def image_path(self, name: str, score: float, it: int, img_idx: int) -> Path:
-        # Use img_idx from the consumer loop
+    def image_path(self, name: str, score: float, it: int, img_order_index: int) -> Path: # <<< Use order index
         base_dir = Path(HydraConfig.get().runtime.output_dir)
         imgs_sub_dir = base_dir / "imgs"
-        return imgs_sub_dir / f"{it:03}-{img_idx:02}-{name}-{score:4.3f}.png"
+        # Use img_order_index as the sequence number within the iteration
+        return imgs_sub_dir / f"{it:03}-{img_order_index:02}-{name}-{score:4.3f}.png"
 
     def update_best_score(self, params: Dict, avg_score: float):
         logger.info(f"{'-' * 10}\nRun score: {avg_score}")

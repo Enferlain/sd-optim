@@ -76,7 +76,6 @@ class Optimizer:
             payloads: List[Dict],
             target_paths: List[str],
             queue: asyncio.Queue,
-            semaphore: asyncio.Semaphore,
             session: aiohttp.ClientSession,
             interrupt_event: asyncio.Event # Shared event for interruption
     ):
@@ -97,27 +96,27 @@ class Optimizer:
             current_target_base_name = target_paths[i]
             generated_image = None
 
-            async with semaphore: # Acquire semaphore before generating
-                logger.info(f"Producer: Requesting generation {i+1}/{total_payloads} ('{current_target_base_name}')...")
-                try:
-                    # Await the generator for image 'i'
-                    img_gen = self.generator.generate(current_payload, self.cfg, session)
-                    async for image in img_gen:
-                        logger.debug(f"Producer: Received image {i} ('{current_target_base_name}'). Putting onto queue.")
-                        await queue.put((i, image, current_payload, current_target_base_name))
-                        generated_image = image
-                        break # Assume batch_size=1 in generator/payload
-                    if generated_image is None:
-                        logger.warning(f"Producer: Generation task {i} ('{current_target_base_name}') yielded no images.")
-                        await queue.put((i, None, current_payload, current_target_base_name))
+            # --- REMOVED: async with semaphore: block ---
+            logger.info(f"Producer: Requesting generation {i + 1}/{total_payloads} ('{current_target_base_name}')...")
+            try:
+                img_gen = self.generator.generate(current_payload, self.cfg, session)
+                async for image in img_gen:
+                    logger.debug(f"Producer: Received image {i} ('{current_target_base_name}'). Putting onto queue.")
+                    await queue.put((i, image, current_payload, current_target_base_name))
+                    generated_image = image
+                    break
+                if generated_image is None:
+                    logger.warning(f"Producer: Generation task {i} ('{current_target_base_name}') yielded no images.")
+                    await queue.put((i, None, current_payload, current_target_base_name))
 
-                except asyncio.CancelledError:
-                     logger.info(f"Producer: Generation task {i} cancelled.")
-                     # Don't put anything on queue if cancelled mid-gen
-                     break # Stop producing if cancelled
-                except Exception as e_gen_task:
-                    logger.error(f"Producer: Error during generation task {i} ('{current_target_base_name}'): {e_gen_task}", exc_info=True)
-                    await queue.put((i, None, current_payload, current_target_base_name)) # Signal failure
+            except asyncio.CancelledError:
+                logger.info(f"Producer: Generation task {i} cancelled.")
+                break
+            except Exception as e_gen_task:
+                logger.error(f"Producer: Error during generation task {i} ('{current_target_base_name}'): {e_gen_task}",
+                             exc_info=True)
+                await queue.put((i, None, current_payload, current_target_base_name))
+            # --- End removal of semaphore block ---
 
             # Extra check after generation i completes
             if interrupt_event.is_set():
@@ -213,19 +212,17 @@ class Optimizer:
 
         # Determine queue size: number of concurrent generators + maybe 1 buffer slot
         concurrency_limit = self.cfg.get("generator_concurrency_limit", 2)
-        image_queue = asyncio.Queue(maxsize=concurrency_limit + 1)
+        image_queue = asyncio.Queue(maxsize=concurrency_limit)
         interrupt_event = asyncio.Event() # Event for interrupt signal
         total_expected_images = len(payloads)
         final_score_for_optimizer = 0.0 # Default score
         interrupt_triggered = False
         fake_score_value = 0.0 # Value entered by user on override
 
-        semaphore = asyncio.Semaphore(concurrency_limit)
-
         # Configure aiohttp session (remains the same)
         keepalive_interval = self.cfg.get("generator_keepalive_interval", 60)
         connector = aiohttp.TCPConnector(
-            limit=concurrency_limit + 5,
+            limit=concurrency_limit,
             limit_per_host=concurrency_limit,
             keepalive_timeout=keepalive_interval,
         )
@@ -246,7 +243,11 @@ class Optimizer:
                 # Launch ONE Sequential Producer Task
                 producer_task = asyncio.create_task(
                     self._sequential_producer(
-                        payloads, target_paths, image_queue, semaphore, session, interrupt_event
+                        payloads,
+                        target_paths,
+                        image_queue,
+                        session,
+                        interrupt_event
                     )
                 )
 

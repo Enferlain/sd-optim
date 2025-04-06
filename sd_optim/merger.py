@@ -50,13 +50,15 @@ class Merger:
         representative_model_path_str = cfg.model_paths[0]
         logger.info(f"Merger: Inferring base ModelConfig from: {representative_model_path_str}")
         try:
-            # models_dir determined from representative model path
+            # Store models_dir resolved relative to the representative model path
             self.models_dir = Path(representative_model_path_str).resolve().parent
-            if not self.models_dir.is_dir(): raise FileNotFoundError(f"Merger: Dir not found: {self.models_dir}")
+            if not self.models_dir.is_dir():
+                 raise FileNotFoundError(f"Merger: Determined models directory not found: {self.models_dir}")
+            logger.info(f"Merger: Determined models directory: {self.models_dir}")
 
-            rep_model_node = sd_mecha.model(representative_model_path_str)
-            # Use open_input_dicts on the SINGLE node
-            with sd_mecha.open_input_dicts(rep_model_node, [self.models_dir]):
+            # Infer base config using the determined models_dir
+            rep_model_node = sd_mecha.model(representative_model_path_str) # Use absolute path for inference check
+            with sd_mecha.open_input_dicts(rep_model_node, [self.models_dir]): # Pass models_dir context
                 if rep_model_node.state_dict:
                     inferred_configs = sd_mecha.infer_model_configs(rep_model_node.state_dict.keys())
                     if inferred_configs:
@@ -65,9 +67,8 @@ class Merger:
                     else: raise ValueError(f"Merger: Cannot infer ModelConfig for {representative_model_path_str}")
                 else: raise ValueError(f"Merger: Cannot load dictionary for {representative_model_path_str}")
         except Exception as e:
-             logger.error(f"Merger: Error inferring base config: {e}", exc_info=True)
-             # Decide if this is fatal - likely yes if subsequent steps need it.
-             raise ValueError("Merger could not determine base ModelConfig.") from e
+             logger.error(f"Merger: Error inferring base config or models_dir: {e}", exc_info=True)
+             raise ValueError("Merger could not determine base ModelConfig or models directory.") from e
         # --- End Base Config Inference ---
 
         # --- Load Custom Config (depends on successful base inference if needed later) ---
@@ -122,25 +123,47 @@ class Merger:
         if not hasattr(self.cfg, 'save_dtype') or self.cfg.save_dtype not in precision_mapping:
              raise ValueError(f"Invalid or missing 'save_dtype': {self.cfg.get('save_dtype')}. Must be one of {list(precision_mapping.keys())}")
 
-    # _create_model_nodes remains the same, uses self.models_dir
+    # --- MODIFIED: _create_model_nodes to use relative paths ---
     def _create_model_nodes(self) -> List[ModelRecipeNode]:
+        """
+        Creates sd_mecha ModelRecipeNodes using paths relative to the
+        determined models_dir.
+        """
         model_nodes = []
-        if not self.models_dir: # Should be set by __init__
-             logger.error("Cannot create model nodes: models_dir not set.")
-             return []
-        models_dir_path = self.models_dir.resolve()
-        for model_path_str in self.cfg.get("model_paths", []):
-            model_path = Path(model_path_str)
-            # Resolve relative to models_dir_path if not absolute
-            if not model_path.is_absolute():
-                 test_path = models_dir_path / model_path
-                 if test_path.exists(): # Check if resolving makes it exist
-                      model_path = test_path
-                 # else: use original path, might be handled by sd-mecha later if relative to CWD
+        if not self.models_dir or not self.models_dir.is_dir():
+             logger.error("Cannot create model nodes: valid models_dir is not set.")
+             return [] # Return empty list if base directory isn't valid
 
-            # Create node using the potentially resolved path
-            model_nodes.append(sd_mecha.model(str(model_path))) # Pass string path
-        logger.info(f"Merger: Created {len(model_nodes)} ModelRecipeNodes.")
+        logger.info(f"Creating model nodes relative to base directory: {self.models_dir}")
+
+        for model_path_str in self.cfg.get("model_paths", []):
+            original_path = Path(model_path_str)
+            # Resolve the absolute path first to ensure it exists relative to something
+            # (It might be absolute already, or relative to CWD, or relative to models_dir)
+            if original_path.is_absolute() and original_path.exists():
+                 resolved_path = original_path.resolve()
+            elif (self.models_dir / original_path).exists():
+                 resolved_path = (self.models_dir / original_path).resolve()
+            elif original_path.exists(): # Check relative to CWD as last resort
+                 resolved_path = original_path.resolve()
+            else:
+                 logger.error(f"Model path not found: {model_path_str}. Cannot create node.")
+                 continue # Skip this model if path is invalid
+
+            # Calculate the path relative to the determined models_dir
+            try:
+                relative_path_str = os.path.relpath(resolved_path, self.models_dir)
+                logger.debug(f"  Original: '{model_path_str}', Resolved: '{resolved_path}', Relative: '{relative_path_str}'")
+            except ValueError:
+                # This happens if paths are on different drives on Windows
+                logger.warning(f"  Cannot create relative path for {resolved_path} (likely different drive than {self.models_dir}). Using absolute path instead.")
+                relative_path_str = str(resolved_path) # Fallback to absolute path string
+
+            # Create the node using the relative path string
+            # We don't need to detect LoRAs here anymore, sd_mecha.convert handles it later
+            model_nodes.append(sd_mecha.model(relative_path_str))
+
+        logger.info(f"Merger: Created {len(model_nodes)} ModelRecipeNodes using relative paths.")
         return model_nodes
 
     def _create_model_output_name(self, it: int = 0, best: bool = False) -> Path:

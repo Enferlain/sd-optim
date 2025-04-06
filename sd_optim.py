@@ -199,21 +199,30 @@ def main(cfg: DictConfig) -> None:
             logger.warning("Optimizer instance was not created, cannot run postprocessing.")
         # --- END Added Postprocessing Section ---
 
-        # --- Dashboard Termination ---
+        # --- Dashboard Termination (Improved) ---
         if dashboard_process is not None:
-            logger.info("Attempting to terminate background dashboard process...")
+            logger.info(f"Attempting to terminate background dashboard process (PID: {dashboard_process.pid}) launched by this run...")
             try:
-                dashboard_process.terminate()
-                try:
-                    dashboard_process.wait(timeout=3)
-                    logger.info(f"Dashboard process terminated with code: {dashboard_process.returncode}")
-                except subprocess.TimeoutExpired:
-                    logger.warning("Dashboard process did not terminate after 3s, sending kill signal.")
-                    dashboard_process.kill()
-                    dashboard_process.wait()
-                    logger.info("Dashboard process killed.")
+                # Check if process hasn't already finished using poll()
+                if dashboard_process.poll() is None:
+                    dashboard_process.terminate() # SIGTERM first
+                    try:
+                        dashboard_process.wait(timeout=3) # Wait briefly
+                        logger.info(f"Dashboard process terminated gracefully with code: {dashboard_process.returncode}")
+                    except subprocess.TimeoutExpired:
+                        logger.warning("Dashboard process did not terminate after 3s, sending kill signal (SIGKILL).")
+                        dashboard_process.kill() # Force kill
+                        dashboard_process.wait() # Wait for kill
+                        logger.info("Dashboard process killed.")
+                else:
+                     # Log if it already finished before finally block reached it
+                     logger.info(f"Dashboard process already exited before termination attempt with code: {dashboard_process.returncode}")
             except Exception as e_term:
-                logger.error(f"Error during dashboard process termination: {e_term}")
+                # Catch errors during terminate/wait/kill
+                logger.error(f"Error during dashboard process termination: {e_term}", exc_info=True)
+        else:
+             # Log if no dashboard was launched by this specific run
+             logger.info("No dashboard process was launched by this run to terminate.")
         # --- End Dashboard Termination ---
 
         logger.info("==================================================")

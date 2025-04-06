@@ -46,7 +46,7 @@ class Optimizer:
         self.merger = Merger(self.cfg)
         self.scorer = AestheticScorer(self.cfg, {}, {}, {})
         self.prompter = Prompter(self.cfg)
-        self.iteration = 0
+        self.iteration = -1
         self.best_model_path = None
         self.cache = {}
 #        from sd_optim.artist import Artist

@@ -891,30 +891,28 @@ class OptunaOptimizer(Optimizer):
     # --- New Method ---
     def start_dashboard_background(self, port=8080):
         """Determines DB path and starts Optuna Dashboard in background."""
-        logger.info("Preparing to launch dashboard in background...")
+        logger.info("Preparing to launch Optuna Dashboard in background...")
+        storage_uri = None
+        storage_path = None
 
         try:
-            # Determine database filename based on current config
+            # --- Determine database filename based on CURRENT config ---
             opt_mode = self.cfg.get("optimization_mode", "unknown_mode")
-            merge_method_name = "N/A" # Default
-            if opt_mode == "merge":
-                 merge_method_name = self.cfg.get("merge_method", "unknown_method")
+            merge_method_name = "N/A"
+            if opt_mode == "merge": merge_method_name = self.cfg.get("merge_method", "unknown_method")
             elif opt_mode == "recipe":
-                 recipe_path_str = self.cfg.recipe_optimization.get("recipe_path")
-                 merge_method_name = f"recipe_{Path(recipe_path_str).stem}" if recipe_path_str else "recipe"
-            elif opt_mode == "layer_adjust":
-                 merge_method_name = "layer_adjust"
+                recipe_path_str = self.cfg.recipe_optimization.get("recipe_path")
+                merge_method_name = f"recipe_{Path(recipe_path_str).stem}" if recipe_path_str else "recipe"
+            elif opt_mode == "layer_adjust": merge_method_name = "layer_adjust"
 
-            scorers = self.cfg.get("scorer_method", ["unknown_scorer"])
-            if isinstance(scorers, str): scorers = [scorers]
-            scorer_name_part = "_".join(sorted(scorers))
-
+            scorers_list = self.cfg.get("scorer_method", ["unknown_scorer"])
+            if isinstance(scorers_list, str): scorers_list = [scorers_list]
+            scorer_name_part = "_".join(sorted(scorers_list))
             def sanitize(name): return "".join(c if c.isalnum() or c in ('_', '-') else '_' for c in str(name))
-
             db_filename_base = f"optuna_{sanitize(opt_mode)}_{sanitize(merge_method_name)}_{sanitize(scorer_name_part)}"
             db_filename = f"{db_filename_base}.db"
+            # --- End db filename logic ---
 
-            # Get storage directory path (should be set in __init__)
             if not hasattr(self, 'optuna_storage_dir') or not isinstance(self.optuna_storage_dir, Path):
                  raise ValueError("Optuna storage directory not initialized correctly.")
             if not self.optuna_storage_dir.is_dir():
@@ -923,19 +921,16 @@ class OptunaOptimizer(Optimizer):
 
             storage_path = self.optuna_storage_dir / db_filename
             storage_uri = f"sqlite:///{storage_path.resolve()}"
+            # <<< ADDED: Explicit logging of target DB >>>
             logger.info(f"Determined database URI for dashboard: {storage_uri}")
-
-            # Check if the file exists *now*. It might not exist before the *first* run
-            # of an experiment category, which is okay. The dashboard command might
-            # handle this or show an empty study initially.
             if not storage_path.exists():
-                logger.warning(f"Optuna DB file {storage_path} doesn't exist yet. Dashboard might show empty study initially.")
+                logger.warning(f"Target Optuna DB file {storage_path} doesn't exist yet. Dashboard might show empty study initially.")
 
         except Exception as e_name:
             logger.error(f"Failed to determine Optuna DB path for background dashboard: {e_name}")
-            return None # Return None if path calculation fails
+            return None
 
-        # Launch dashboard in background using the helper function
+        # Launch dashboard using the determined URI via the helper
         return run_dashboard_in_background(storage_uri, port)
 
 

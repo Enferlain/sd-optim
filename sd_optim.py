@@ -113,10 +113,10 @@ def main(cfg: DictConfig) -> None:
 
     # --- Initialize and Run Optimizer ---
     optim_instance = None
-    dashboard_process = None # <<< Initialize variable for dashboard process
+    dashboard_process = None
     try:
         logger.info(f"--- Initializing {optimizer_name} ---")
-        optim_instance = optimizer_class(cfg)  # Pass the full config
+        optim_instance = optimizer_class(cfg)
 
         logger.info("Validating optimizer configuration...")
         if not optim_instance.validate_optimizer_config():
@@ -128,13 +128,11 @@ def main(cfg: DictConfig) -> None:
         if isinstance(optim_instance, OptunaOptimizer) and cfg.optimizer.optuna_config.get("launch_dashboard", False):
             dashboard_port = cfg.optimizer.optuna_config.get("dashboard_port", 8080)
             logger.info(f"--- Attempting to launch Optuna Dashboard in background (Port: {dashboard_port}) ---")
-            # Call the new background launch method
             dashboard_process = optim_instance.start_dashboard_background(port=dashboard_port)
             if dashboard_process is None:
                 logger.warning("Failed to start dashboard process. Continuing without background dashboard.")
             else:
                 logger.info("Background dashboard process launch initiated.")
-        # --- End Dashboard Launch ---
 
         init_points = cfg.optimizer.get('init_points', 0)
         n_iters = cfg.optimizer.get('n_iters', 0)
@@ -144,39 +142,75 @@ def main(cfg: DictConfig) -> None:
         # Run the main optimization loop
         asyncio.run(optim_instance.optimize())
 
-        # Run postprocessing
-        logger.info("--- Optimization Finished: Running Postprocessing ---")
-        asyncio.run(optim_instance.postprocess())
-
-        # --- Old dashboard launch logic is removed from here ---
+        # --- Postprocessing after NORMAL completion ---
+        # This is now handled by the finally block to ensure it runs even after interrupts/errors
+        # logger.info("--- Optimization Finished: Running Postprocessing ---")
+        # asyncio.run(optim_instance.postprocess()) # <<< COMMENTED OUT / REMOVED
 
     except KeyboardInterrupt:
         logger.info("\n--- Optimization interrupted by user (Ctrl+C) ---")
-        # No specific checkpoint saving for Optuna here anymore
-        if isinstance(optim_instance, BayesOptimizer) and hasattr(optim_instance, 'save_checkpoint'):
-            logger.info("Attempting to save BayesOpt checkpoint...")
-            # optim_instance.save_checkpoint() # Call BayesOpt specific save if needed
+        # Let finally block handle postprocessing attempt
 
     except ValueError as val_err:
         logger.error(f"Configuration or Setup Error: {val_err}", exc_info=True)
         logger.error("Halting execution.")
-        sys.exit(1)
+        # Let finally block handle postprocessing attempt (if instance exists)
+        # sys.exit(1) # Consider if you truly want to exit *before* finally
+
     except Exception as e:
         logger.error("--- An Unexpected Error Occurred During Optimization ---", exc_info=True)
+        # Let finally block handle postprocessing attempt
+
     finally:
-        # --- Add Dashboard Termination ---
+        # --- ADDED: Attempt Postprocessing ---
+        logger.info("--- Attempting Postprocessing (Finally Block) ---")
+        if optim_instance is not None:
+            # Check if the specific optimizer subclass needs postprocessing visuals
+            if isinstance(optim_instance, (OptunaOptimizer, BayesOptimizer)):  # Add other types if needed
+                try:
+                    # Check for results before calling postprocess
+                    should_run_postprocess = False
+                    if isinstance(optim_instance, OptunaOptimizer):
+                        if optim_instance.study and optim_instance.study.trials:
+                            should_run_postprocess = True
+                        else:
+                            logger.warning("Optuna study has no trials, skipping postprocessing.")
+                    elif isinstance(optim_instance, BayesOptimizer):
+                        if optim_instance.optimizer and hasattr(optim_instance.optimizer,
+                                                                'res') and optim_instance.optimizer.res:
+                            should_run_postprocess = True
+                        else:
+                            logger.warning("Bayes optimizer has no results, skipping postprocessing.")
+                    # Add checks for other optimizer types here if necessary
+
+                    if should_run_postprocess:
+                        logger.info(f"Running postprocess for {type(optim_instance).__name__}...")
+                        # Use asyncio.run since postprocess is async
+                        asyncio.run(optim_instance.postprocess())
+                        logger.info(f"Postprocessing for {type(optim_instance).__name__} finished.")
+                    else:
+                        logger.info("No results found for postprocessing.")
+
+                except Exception as e_post:
+                    logger.error(f"Error during postprocessing in finally block: {e_post}", exc_info=True)
+            else:
+                logger.info("Optimizer type does not require specific postprocessing visuals.")
+        else:
+            logger.warning("Optimizer instance was not created, cannot run postprocessing.")
+        # --- END Added Postprocessing Section ---
+
+        # --- Dashboard Termination ---
         if dashboard_process is not None:
             logger.info("Attempting to terminate background dashboard process...")
             try:
-                dashboard_process.terminate()  # Send SIGTERM
-                # Optionally wait briefly and check return code
+                dashboard_process.terminate()
                 try:
-                    dashboard_process.wait(timeout=3)  # Wait max 3 seconds
+                    dashboard_process.wait(timeout=3)
                     logger.info(f"Dashboard process terminated with code: {dashboard_process.returncode}")
                 except subprocess.TimeoutExpired:
                     logger.warning("Dashboard process did not terminate after 3s, sending kill signal.")
-                    dashboard_process.kill()  # Send SIGKILL if needed
-                    dashboard_process.wait()  # Wait for kill to complete
+                    dashboard_process.kill()
+                    dashboard_process.wait()
                     logger.info("Dashboard process killed.")
             except Exception as e_term:
                 logger.error(f"Error during dashboard process termination: {e_term}")

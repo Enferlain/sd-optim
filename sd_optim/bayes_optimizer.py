@@ -16,6 +16,7 @@ from bayes_opt.domain_reduction import SequentialDomainReductionTransformer
 from hydra.core.hydra_config import HydraConfig
 from scipy.stats import qmc
 
+from sd_optim.artist import Artist
 from sd_optim.optimizer import Optimizer
 
 logger = logging.getLogger(__name__)
@@ -25,6 +26,7 @@ logging.basicConfig(level=logging.DEBUG)
 class BayesOptimizer(Optimizer):
     def __post_init__(self) -> None:
         super().__post_init__()
+        self.artist = Artist(self)
         self.setup_logging()
         self.optimizer: Optional[BayesianOptimization] = None # Initialize optimizer attribute
         self.optimization_start_time: Optional[float] = None # Track start time
@@ -240,45 +242,78 @@ class BayesOptimizer(Optimizer):
             logger.error(f"Failed to save Bayesian Optimization checkpoint: {e}", exc_info=True)
 
 
-    async def postprocess(self) -> None: # Changed to async
-        logger.info("\nRecap!")
-        if not self.optimizer or not self.optimizer.res:
-            logger.warning("No optimization results to display.")
-            return
+    async def postprocess(self) -> None: # Keep async
+        logger.info("\nBayesOpt Recap!")
 
-        # Log optimization statistics
-        total_trials = len(self.optimizer.res)
-        logger.info(f"Total Trials: {total_trials}")
+        # --- Step 1: Check if results exist ---
+        if not self.optimizer or not hasattr(self.optimizer, 'res') or not self.optimizer.res:
+            logger.warning("No Bayesian Optimization results found to process or display.")
+            return # Exit early if no results
+
+        # --- Step 2: Log statistics from existing results ---
+        results = self.optimizer.res # Get the results list
+        total_trials = len(results)
+        logger.info(f"Total Trials Run: {total_trials}")
+
         if self.optimization_start_time:
              total_runtime = time.time() - self.optimization_start_time
              hours, remainder = divmod(total_runtime, 3600)
              minutes, seconds = divmod(remainder, 60)
              logger.info(f"Total runtime: {int(hours):02}:{int(minutes):02}:{int(seconds):02}")
-             logger.info(f"Average time per trial: {total_runtime/max(1, total_trials):.2f} seconds")
+             if total_trials > 0:
+                 logger.info(f"Average time per trial: {total_runtime/total_trials:.2f} seconds")
 
         # Log top trials
-        logger.info("\nTop 5 Trials:")
-        sorted_results = sorted(self.optimizer.res, key=lambda x: x["target"], reverse=True)
+        logger.info("\nTop 5 BayesOpt Trials:")
+        # Sort the results list directly
+        sorted_results = sorted(results, key=lambda x: x["target"], reverse=True)
         for i, res in enumerate(sorted_results[:5]):
             logger.info(f"Rank {i + 1}:")
             logger.info(f"\tTarget: {res['target']:.4f}")
-            logger.info(f"\tParams: {res['params']}")
+            # Ensure params are logged, might need careful formatting if complex
+            param_str = ", ".join(f"{k}={v:.4f}" if isinstance(v, float) else f"{k}={v}" for k, v in res['params'].items())
+            logger.info(f"\tParams: {{{param_str}}}")
 
         # Log best trial
-        logger.info("\nBest Trial:")
-        best_trial = self.optimizer.max
-        logger.info(f"\tTarget: {best_trial['target']:.4f}")
-        logger.info(f"\tParams: {best_trial['params']}")
+        if hasattr(self.optimizer, 'max') and self.optimizer.max:
+            best_trial = self.optimizer.max
+            logger.info("\nBest BayesOpt Trial Found:")
+            logger.info(f"\tTarget: {best_trial['target']:.4f}")
+            param_str = ", ".join(f"{k}={v:.4f}" if isinstance(v, float) else f"{k}={v}" for k, v in best_trial['params'].items())
+            logger.info(f"\tParams: {{{param_str}}}")
+        else:
+             logger.warning("Could not determine the best trial from optimizer results.")
 
-        # Visualization (assuming self.artist handles async if needed)
+        # --- Step 3: Prepare data for Artist plot ---
+        iterations = list(range(1, total_trials + 1)) # Simple trial numbers
+        scores = [res["target"] for res in results]   # Extract scores
+
+        # Calculate rolling best scores from the results
+        best_scores = []
+        current_best = -float('inf')
+        for res in results: # Iterate through results in the order they happened
+            current_best = max(current_best, res["target"])
+            best_scores.append(current_best)
+
+        # --- Step 4: Populate the Artist instance ---
+        # Check if artist was initialized (should be in BayesOpt __post_init__)
+        if not hasattr(self, 'artist'):
+             logger.error("Artist object not found on BayesOptimizer. Cannot generate plot.")
+             return
+
+        self.artist.iterations = iterations
+        self.artist.scores = scores
+        self.artist.best_scores = best_scores
+        # Optionally populate parameters if needed by future artist plots
+        # self.artist.parameters = [res["params"] for res in results]
+
+        # --- Step 5: Generate Visualization using Artist ---
+        logger.info("Generating convergence plot via Artist...")
         try:
-            # If artist.visualize_optimization needs await:
-            # await self.artist.visualize_optimization()
-            # If it's synchronous but potentially blocking:
-            await asyncio.to_thread(self.artist.visualize_optimization)
+            # Since visualize_optimization now calls plot_convergence which is async
+            await self.artist.visualize_optimization()
         except Exception as e:
-             logger.error(f"Failed to create visualization: {e}", exc_info=True)
-
+             logger.error(f"Failed to create visualization via Artist: {e}", exc_info=True)
 
     def get_best_parameters(self) -> Dict:
         """Return best parameters found during optimization."""

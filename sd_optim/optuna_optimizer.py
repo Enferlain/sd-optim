@@ -7,7 +7,7 @@ import json
 import logging
 import pickle
 import numpy as np
-import matplotlib.pyplot as plt
+import optuna.visualization as vis
 import torch
 import optuna
 
@@ -23,7 +23,6 @@ from optuna.samplers import (
 )
 from optuna.pruners import MedianPruner, SuccessiveHalvingPruner
 from sd_optim.optimizer import Optimizer
-
 
 logger = logging.getLogger(__name__)
 
@@ -609,79 +608,94 @@ class OptunaOptimizer(Optimizer):
         if trial.number % 10 == 0 and trial.number > 0:
             self._create_progress_plots()
 
+    # --- MODIFIED: _create_progress_plots ---
     def _create_progress_plots(self):
-        """Create plots showing optimization progress."""
+        """Create plot showing optimization progress using Optuna's Plotly backend."""
+        if not self.study or not self.study.trials:
+            logger.warning("_create_progress_plots: No study or trials available.")
+            return
+
+        # Check if enough trials exist for the plot
+        completed_trials = [t for t in self.study.trials if t.state == TrialState.COMPLETE and t.value is not None]
+        if len(completed_trials) < 1: # History plot needs at least one point
+            logger.debug("_create_progress_plots: Not enough completed trials yet.")
+            return
+
         try:
-            if not self.study or not self.study.trials:
-                return
+            # Generate the plot using Optuna's function
+            fig = vis.plot_optimization_history(self.study)
 
-            # Create optimization history plot
-            plt.figure(figsize=(12, 6))
+            # Determine output directory using Hydra
+            try:
+                 run_dir = Path(HydraConfig.get().runtime.output_dir)
+            except ValueError:
+                 logger.error("_create_progress_plots: Hydra context unavailable. Cannot determine save path.")
+                 return
+            # Maybe save periodic plots to a sub-folder?
+            output_dir = run_dir / "visualizations" / "periodic"
+            output_dir.mkdir(parents=True, exist_ok=True)
 
-            # Extract data
-            values = [t.value for t in self.study.trials if t.value is not None]
-            if not values:
-                return
+            # Save plot using write_image
+            save_path = output_dir / f"optuna_history_trial_{self.study.trials[-1].number:04d}.png"
+            try:
+                fig.write_image(str(save_path))
+                logger.info(f"Saved periodic progress plot to {save_path}")
+            except ValueError as ve:
+                if "kaleido" in str(ve).lower(): logger.error(f"Failed to save periodic plot: Kaleido missing/broken.")
+                else: logger.error(f"ValueError saving periodic plot: {ve}.")
+            except Exception as e_write: logger.error(f"Error saving periodic plot: {e_write}.")
 
-            # Create running best curve
-            x = list(range(1, len(values) + 1))
-            running_best = [max(values[:i + 1]) for i in range(len(values))]
+        except ImportError: logger.error("Optuna visualization module not available for periodic plots.")
+        except Exception as e: logger.error(f"Failed to create periodic progress plot: {e}", exc_info=True)
 
-            # Plot results
-            plt.plot(x, values, 'o-', alpha=0.5, label='Trial Value')
-            plt.plot(x, running_best, 'r-', linewidth=2, label='Best Value')
-
-            plt.title('Optimization Progress')
-            plt.xlabel('Trial Number')
-            plt.ylabel('Score')
-            plt.legend()
-            plt.grid(True, alpha=0.3)
-            plt.tight_layout()
-
-            # Save plot
-            output_dir = Path(os.getcwd())
-            plt.savefig(output_dir / f"optimization_progress_{self.study_name}.png")
-            plt.close()
-
-        except Exception as e:
-            logger.error(f"Failed to create progress plots: {e}")
-
+    # --- MODIFIED: _analyze_parameter_importance ---
     def _analyze_parameter_importance(self):
-        """Analyze importance of each parameter in the optimization."""
+        """Analyze and plot importance of parameters using Optuna's functions."""
+        # This method might be redundant if postprocess already generates the importance plot.
+        # Keeping it updated for consistency or potential separate use.
+        if not self.study or len(self.study.trials) < 2: # Importance usually needs >= 2 trials
+            logger.warning("_analyze_parameter_importance: Not enough trials.")
+            return
+
         try:
-            if not self.study or len(self.study.trials) < 5:
-                logger.warning("Not enough trials to analyze parameter importance")
-                return
+            # --- Get importance data (remains the same) ---
+            try:
+                 # Calculate importance (might raise error if no completed trials or issue with metric)
+                 importance = optuna.importance.get_param_importances(self.study)
+                 logger.info("\nParameter Importance Analysis:")
+                 for param_name, score in importance.items():
+                     logger.info(f"  {param_name}: {score:.4f}")
+            except Exception as e_imp:
+                 logger.error(f"Could not calculate parameter importance: {e_imp}")
+                 return # Cannot plot if calculation fails
 
-            # Use Optuna's built-in importance analyzer
-            importance = optuna.importance.get_param_importances(self.study)
+            # --- Generate plot using Optuna's function ---
+            fig = vis.plot_param_importances(self.study)
 
-            logger.info("\nParameter Importance:")
-            for param_name, score in importance.items():
-                logger.info(f"{param_name}: {score:.4f}")
+            # Determine output directory using Hydra
+            try:
+                 run_dir = Path(HydraConfig.get().runtime.output_dir)
+            except ValueError:
+                 logger.error("_analyze_parameter_importance: Hydra context unavailable. Cannot determine save path.")
+                 return
+            output_dir = run_dir / "visualizations" # Save with other postprocess plots
+            output_dir.mkdir(parents=True, exist_ok=True)
 
-            # Create visualization
-            plt.figure(figsize=(12, 8))
-            param_names = list(importance.keys())
-            scores = list(importance.values())
+            # Save plot using write_image
+            save_path = output_dir / f"optuna_param_importances_{self.study_name}.png"
+            try:
+                fig.write_image(str(save_path))
+                logger.info(f"Saved parameter importance plot to {save_path}")
+            except ValueError as ve:
+                if "kaleido" in str(ve).lower(): logger.error(f"Failed to save importance plot: Kaleido missing/broken.")
+                else: logger.error(f"ValueError saving importance plot: {ve}.")
+            except Exception as e_write: logger.error(f"Error saving importance plot: {e_write}.")
 
-            # Sort by importance
-            sorted_indices = np.argsort(scores)
-            param_names = [param_names[i] for i in sorted_indices]
-            scores = [scores[i] for i in sorted_indices]
-
-            plt.barh(param_names, scores)
-            plt.xlabel('Importance Score')
-            plt.title('Parameter Importance')
-            plt.tight_layout()
-
-            # Save visualization
-            output_dir = Path(os.getcwd())
-            plt.savefig(output_dir / f"parameter_importance_{self.study_name}.png")
-            plt.close()
-
+        except ImportError as imp_err:
+             # Handle missing optional dependencies like scikit-learn
+             logger.error(f"Could not generate importance plot due to missing dependency: {imp_err}")
         except Exception as e:
-            logger.error(f"Failed to analyze parameter importance: {e}")
+            logger.error(f"Failed to analyze/plot parameter importance: {e}", exc_info=True)
 
     async def postprocess(self) -> None:
         """Perform post-optimization analysis and reporting."""
@@ -723,11 +737,73 @@ class OptunaOptimizer(Optimizer):
         logger.info(f"Value: {self.study.best_value:.4f}")
         logger.info(f"Parameters: {self.study.best_params}")
 
-        # Create visualization
+        # --- ADD Optuna Plot Generation ---
+        logger.info("Generating Optuna visualizations...")
+        if len(self.study.trials) < 2:
+            logger.warning("Not enough trials (need >= 2) for most Optuna visualizations.")
+            return
+
         try:
-            await self.artist.visualize_optimization()
-        except Exception as e:
-            logger.error(f"Failed to create visualization: {e}")
+            # Define output directory using Hydra's run directory
+            try:
+                run_dir = Path(HydraConfig.get().runtime.output_dir)
+            except ValueError:
+                 logger.error("Hydra context not available. Cannot determine output directory for plots.")
+                 return
+            output_dir = run_dir / "visualizations"
+            output_dir.mkdir(parents=True, exist_ok=True)
+            logger.info(f"Saving Optuna plots to: {output_dir}")
+
+            # Dictionary of plot functions to call {name: function}
+            # Using optuna.visualization (defaults to Plotly)
+            plot_functions = {
+                "optimization_history": vis.plot_optimization_history,
+                "param_importances": vis.plot_param_importances,
+                "slice": vis.plot_slice,
+                "parallel_coordinate": vis.plot_parallel_coordinate,
+                # Add others if desired and handle potential errors (like contour needing >1 param)
+                # "contour": vis.plot_contour,
+                # "edf": vis.plot_edf,
+                # "rank": vis.plot_rank,
+            }
+
+            for name, plot_func in plot_functions.items():
+                try:
+                    fig = plot_func(self.study) # Generate Plotly figure
+                    save_path = output_dir / f"optuna_{name}_{self.study_name}.png"
+
+                    # Save using write_image (requires kaleido)
+                    try:
+                        fig.write_image(str(save_path))
+                        logger.info(f"  Successfully saved Optuna plot: {name}")
+                    except ValueError as ve:
+                        if "kaleido" in str(ve).lower():
+                             logger.error(f"  Failed to save Plotly plot '{name}': Kaleido engine not found or not functional. Please install with 'pip install -U kaleido'. Skipping save.")
+                        else:
+                             logger.error(f"  ValueError saving Plotly plot '{name}': {ve}. Skipping save.")
+                    except Exception as e_write:
+                         logger.error(f"  Unexpected error saving Plotly plot '{name}': {e_write}. Skipping save.")
+
+                except (ValueError, TypeError) as plot_err:
+                     # Handle errors like not enough parameters for contour, etc.
+                     logger.warning(f"  Could not generate Optuna plot '{name}': {plot_err}. Skipping.")
+                except ImportError as imp_err:
+                     # Handle missing optional dependencies like scikit-learn for importance
+                     logger.warning(f"  Could not generate Optuna plot '{name}' due to missing dependency: {imp_err}. Skipping.")
+                except Exception as e_gen:
+                     logger.error(f"  Unexpected error generating Optuna plot '{name}': {e_gen}", exc_info=True)
+
+        except ImportError:
+            # Should not happen if Optuna is installed, but good practice
+            logger.error("Optuna library seems to be missing? Cannot generate visualizations.")
+        except Exception as e_vis:
+            logger.error(f"An error occurred during Optuna visualization generation: {e_vis}", exc_info=True)
+
+        logger.info("=" * 50)
+        logger.info("Optuna Postprocessing Finished")
+        logger.info("=" * 50)
+        # --- END Optuna Plot Generation ---
+
 
     def get_best_parameters(self) -> Dict:
         """Return best parameters found during optimization."""
@@ -748,6 +824,69 @@ class OptunaOptimizer(Optimizer):
                     "datetime": trial.datetime_start.isoformat() if trial.datetime_start else None
                 })
         return history
+
+    # --- MODIFIED: create_visualization_report ---
+    def create_visualization_report(self, output_dir=None):
+        """Generate comprehensive Optuna visualization report using Plotly."""
+        if not self.study or len(self.study.trials) < 2:
+            logger.warning("Not enough trials for visualization report.")
+            return
+
+        # Determine output directory
+        if output_dir is None:
+            try:
+                run_dir = Path(HydraConfig.get().runtime.output_dir)
+            except ValueError:
+                 logger.error("Hydra context not available. Cannot determine default output directory for report.")
+                 # Fallback or raise error
+                 output_dir = Path("./optuna_visualizations_report") # Example fallback
+                 logger.warning(f"Using fallback directory for report: {output_dir}")
+            else:
+                 output_dir = run_dir / "visualizations_report" # Use a separate folder? Or same as postprocess?
+
+        output_dir = Path(output_dir)
+        output_dir.mkdir(parents=True, exist_ok=True)
+        logger.info(f"Generating Optuna visualization report in: {output_dir}")
+
+        try:
+            # Use default Plotly backend
+            import optuna.visualization as vis
+
+            # List of all desired plots (add/remove as needed)
+            report_plots = {
+                "optimization_history": vis.plot_optimization_history,
+                "param_importances": vis.plot_param_importances,
+                "slice": vis.plot_slice,
+                "parallel_coordinate": vis.plot_parallel_coordinate,
+                "contour": vis.plot_contour,
+                "edf": vis.plot_edf,
+                "rank": vis.plot_rank,
+                # Add timeline, intermediate_values etc. if useful
+                # "timeline": vis.plot_timeline,
+                # "intermediate_values": vis.plot_intermediate_values,
+            }
+
+            for name, plot_func in report_plots.items():
+                try:
+                    fig = plot_func(self.study)
+                    save_path = output_dir / f"optuna_{name}_{self.study_name}.png" # Use study_name
+                    # Save using write_image
+                    try:
+                        fig.write_image(str(save_path))
+                        logger.info(f"  Report: Saved plot '{name}'")
+                    except ValueError as ve:
+                        if "kaleido" in str(ve).lower(): logger.error(f"  Report: Failed to save '{name}': Kaleido missing/broken. Skipping.")
+                        else: logger.error(f"  Report: ValueError saving '{name}': {ve}. Skipping.")
+                    except Exception as e_write: logger.error(f"  Report: Error saving '{name}': {e_write}. Skipping.")
+
+                except (ValueError, TypeError) as plot_err: logger.warning(f"  Report: Cannot generate plot '{name}': {plot_err}. Skipping.")
+                except ImportError as imp_err: logger.warning(f"  Report: Cannot generate plot '{name}', missing dependency: {imp_err}. Skipping.")
+                except Exception as e_gen: logger.error(f"  Report: Unexpected error generating plot '{name}': {e_gen}", exc_info=True)
+
+            logger.info(f"Visualization report generation finished.")
+
+        except ImportError: logger.error("Optuna library seems missing? Cannot generate report.")
+        except Exception as e: logger.error(f"Error generating visualization report: {e}", exc_info=True)
 
     # --- New Method ---
     def start_dashboard_background(self, port=8080):
@@ -798,65 +937,6 @@ class OptunaOptimizer(Optimizer):
 
         # Launch dashboard in background using the helper function
         return run_dashboard_in_background(storage_uri, port)
-
-    def create_visualization_report(self, output_dir=None):
-        """Generate comprehensive Optuna visualization report."""
-        if not self.study or len(self.study.trials) < 2:
-            logger.warning("Not enough trials for visualization")
-            return
-
-        if output_dir is None:
-            output_dir = Path(os.getcwd()) / "optuna_visualizations"
-
-        output_dir = Path(output_dir)
-        output_dir.mkdir(parents=True, exist_ok=True)
-
-        try:
-            import optuna.visualization as vis
-            from optuna.visualization import matplotlib as vis_mpl
-
-            # 1. Optimization history plot
-            fig = vis_mpl.plot_optimization_history(self.study)
-            fig.savefig(output_dir / "optimization_history.png")
-            plt.close(fig)
-
-            # 2. Parameter importance plot
-            fig = vis_mpl.plot_param_importances(self.study)
-            fig.savefig(output_dir / "param_importances.png")
-            plt.close(fig)
-
-            # 3. Slice plot for each parameter
-            fig = vis_mpl.plot_slice(self.study)
-            fig.savefig(output_dir / "param_slices.png")
-            plt.close(fig)
-
-            # 4. Contour plot for top parameters
-            try:
-                fig = vis_mpl.plot_contour(self.study)
-                fig.savefig(output_dir / "param_contour.png")
-                plt.close(fig)
-            except:
-                logger.info("Could not generate contour plot (requires at least 2 parameters)")
-
-            # 5. Parallel coordinate plot
-            fig = vis_mpl.plot_parallel_coordinate(self.study)
-            fig.savefig(output_dir / "parallel_coordinate.png")
-            plt.close(fig)
-
-            # 6. EDF (Empirical Distribution Function) plot
-            try:
-                fig = vis_mpl.plot_edf(self.study)
-                fig.savefig(output_dir / "edf.png")
-                plt.close(fig)
-            except:
-                logger.info("Could not generate EDF plot")
-
-            logger.info(f"Visualization report generated at {output_dir}")
-
-        except ImportError:
-            logger.error("Optuna visualization modules not available. Install with pip install optuna[visualization]")
-        except Exception as e:
-            logger.error(f"Error generating visualizations: {e}")
 
 
 # --- Helper Function (can be outside the class) ---

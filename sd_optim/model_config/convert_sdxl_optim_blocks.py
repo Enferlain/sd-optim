@@ -67,8 +67,8 @@ def convert_sdxl_optim_blocks_to_sdxl_sgm(
 
     # Example: Handle VAE only IF VAE_ALL is defined in the YAML
     # (Comment this out if VAE_ALL is not in your sdxl-optim-blocks.yaml)
-    # elif target_key.startswith("first_stage_model."):
-    #     block_name = "VAE_ALL"
+    elif target_key.startswith("first_stage_model."):
+         block_name = "VAE_ALL"
 
     # --- Check if a mapping was found AND if the block exists in the input dict ---
     if block_name is not None:

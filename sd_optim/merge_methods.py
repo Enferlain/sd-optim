@@ -1142,272 +1142,272 @@ class MergeMethods:
     #         ]
     #
     #         return torch.cat(diverse_inputs, dim=0)
-    #
-    # @staticmethod
-    # @merge_method
-    # def butterfly_merge(
-    #         a: Parameter(Tensor, "weight"),
-    #         b: Parameter(Tensor, "weight"),
-    #         *,
-    #         alpha: Parameter(Tensor) =0.5,
-    #         rank_ratio: float = 0.25,
-    #         lora_dim: int = 64,
-    #         constraint: float = 0.05,
-    #         **kwargs
-    # ) -> Return(Tensor):
-    #     """
-    #     Merges tensors 'a' and 'b' using butterfly orthogonalization.
-    #
-    #     Args:
-    #         a: First input tensor.
-    #         b: Second input tensor.
-    #         alpha: Interpolation factor.
-    #         rank_ratio: The ratio of the dimensions to keep.
-    #         lora_dim: Controls complexity of butterfly factorization. If -1, auto-selected.
-    #         constraint: Controls orthogonality constraint (0-1).
-    #         **kwargs: Keyword arguments, including 'key' for layer identification.
-    #
-    #     Returns:
-    #         Merged tensor, reshaped to original shape of 'a'.
-    #     """
-    #     original_shape = a.shape
-    #     key = kwargs["key"]
-    #
-    #     if "token_embedding" in key or len(original_shape) <= 1:
-    #         return (1 - alpha) * a + alpha * b
-    #
-    #     # Reshape based on layer type and key
-    #     if "token_embedding" in key:  # CLIP text embedding
-    #         a_2d = a
-    #         b_2d = b
-    #     elif len(original_shape) == 4:  # Convolutional layers
-    #         if original_shape[2] == 1 and original_shape[3] == 1:  # 1x1 conv
-    #             a_2d = a.reshape(original_shape[0], -1)
-    #             b_2d = b.reshape(original_shape[0], -1)
-    #         else:  # Assume 3x3 (or other) conv
-    #             a_2d = a.reshape(original_shape[0], -1)
-    #             b_2d = b.reshape(original_shape[0], -1)
-    #     elif len(original_shape) == 2:  # Linear layers
-    #         a_2d = a
-    #         b_2d = b
-    #     else:
-    #         # Fallback for unexpected shapes
-    #         a_2d = a.reshape(original_shape[0], -1)
-    #         b_2d = b.reshape(original_shape[0], -1)
-    #
-    #     # Auto-select lora_dim if not specified
-    #     if lora_dim <= 0:
-    #         dimension = a_2d.shape[0]
-    #         if dimension < 768:
-    #             lora_dim = 4
-    #         elif dimension < 1536:
-    #             lora_dim = 8
-    #         elif dimension < 4096:
-    #             lora_dim = 16
-    #         else:
-    #             lora_dim = 32
-    #
-    #     # Apply butterfly orthogonalization
-    #     Q_a = MergeMethods.butterfly_orthogonalize(a_2d, lora_dim, constraint, a.device)
-    #
-    #     # Project the difference using the butterfly orthogonal basis
-    #     diff = b_2d - a_2d
-    #     projected_diff = Q_a @ (Q_a.T @ diff)
-    #
-    #     # Apply butterfly orthogonalization to the projected difference
-    #     Q_diff = MergeMethods.butterfly_orthogonalize(projected_diff, lora_dim, constraint, a.device)
-    #
-    #     # Low-rank approximation
-    #     rank = max(1, int(min(projected_diff.shape) * rank_ratio))
-    #     Q_diff_trunc = Q_diff[:, :rank]
-    #     R_diff_trunc = Q_diff_trunc.T @ projected_diff
-    #
-    #     # Merge
-    #     merged = a_2d + alpha * (Q_diff_trunc @ R_diff_trunc)
-    #
-    #     return merged.reshape(original_shape)
-    #
-    # def butterfly_orthogonalize(x, lora_dim=4, constraint=0.01, device=None):
-    #     """
-    #     Creates an orthogonal basis for matrix x using butterfly factorization.
-    #
-    #     Args:
-    #         x: Input tensor to orthogonalize
-    #         lora_dim: Controls the complexity of the butterfly factorization
-    #         constraint: Controls the orthogonality constraint (0.0 = no constraint)
-    #         device: Device to use for computation
-    #
-    #     Returns:
-    #         Q: Orthogonal matrix that forms a basis for x
-    #     """
-    #     if device is None:
-    #         device = x.device
-    #
-    #     # Get dimensions
-    #     out_dim = x.shape[0]
-    #
-    #     # Determine butterfly factorization parameters (with safety checks)
-    #     try:
-    #         block_size, block_num = MergeMethods.butterfly_factor(out_dim, lora_dim)
-    #         # Calculate butterfly stages
-    #         boft_m = sum(int(i) for i in f"{block_num - 1:b}") + 1
-    #     except Exception as e:
-    #         print(f"Falling back to QR for dimension {out_dim}: {str(e)}")
-    #         # Fall back to QR if butterfly factorization fails
-    #         Q, _ = torch.linalg.qr(x, mode='reduced')
-    #         return Q
-    #
-    #     # Initialize butterfly blocks
-    #     oft_blocks = MergeMethods.initialize_butterfly_blocks(x, boft_m, block_num, block_size, device)
-    #
-    #     # Apply butterfly orthogonalization
-    #     return MergeMethods.apply_butterfly_transform(x, oft_blocks, boft_m, block_size, block_num, constraint, device)
-    #
-    # def butterfly_factor(dimension: int, factor: int = -1) -> tuple[int, int]:
-    #     """
-    #     Factorize dimension into butterfly-compatible factors.
-    #     Returns (block_size, block_num) where block_num is a power of 2.
-    #     """
-    #     # If factor is negative, use a reasonable default
-    #     if factor <= 0:
-    #         factor = 2 ** max(1, int(math.log2(dimension) / 4))
-    #
-    #     # Find a factorization where both factors are powers of 2 if possible
-    #     # This is different from the original algorithm and better handles odd dimensions
-    #
-    #     # Find largest power of 2 less than or equal to dimension
-    #     n = 1
-    #     while n * 2 <= dimension:
-    #         n *= 2
-    #
-    #     # If dimension is a power of 2, split it evenly
-    #     if n == dimension:
-    #         block_size = max(2, n // factor) if factor > 0 else int(math.sqrt(n))
-    #         block_num = dimension // block_size
-    #         return block_size, block_num
-    #
-    #     # Otherwise, find valid factorization
-    #     if dimension % 2 == 0:
-    #         # For even dimensions, find a power-of-2 block_num that divides dimension
-    #         block_num = 1
-    #         while block_num * 2 <= factor and dimension % (block_num * 2) == 0:
-    #             block_num *= 2
-    #
-    #         block_size = dimension // block_num
-    #         return block_size, block_num
-    #     else:
-    #         # For odd dimensions, block_size must be the dimension itself
-    #         # This is a special case that doesn't use butterfly structure
-    #         # but allows the algorithm to work with any dimension
-    #         return dimension, 1
-    #
-    # def initialize_butterfly_blocks(x, boft_m, block_num, block_size, device):
-    #     """
-    #     Initialize butterfly blocks efficiently.
-    #     """
-    #     # Initialize anti-symmetric matrices (Q = -Q^T) with small random values
-    #     blocks = torch.zeros(boft_m, block_num, block_size, block_size, device=device)
-    #
-    #     with torch.no_grad():
-    #         # Scale initialization based on input tensor norm
-    #         norm = torch.norm(x) / (x.shape[0] * math.sqrt(boft_m * block_num))
-    #         scale = min(0.01, norm * 0.1)  # Limit scale to avoid numerical issues
-    #
-    #         for i in range(boft_m):
-    #             for j in range(block_num):
-    #                 # Create small random values scaled appropriately
-    #                 random_vals = torch.randn(block_size, block_size, device=device) * scale
-    #
-    #                 # Make it anti-symmetric (Q = -Q^T)
-    #                 blocks[i, j] = (random_vals - random_vals.T) / 2.0
-    #
-    #     return blocks
-    #
-    # def apply_butterfly_transform(x, oft_blocks, boft_m, block_size, block_num, constraint, device):
-    #     """
-    #     Apply butterfly orthogonal transformation to input x, preserving the
-    #     elegant approach from the original BOFT implementation.
-    #     """
-    #     import torch
-    #
-    #     # Identity matrix for Cayley transform
-    #     I = torch.eye(block_size, device=device)
-    #
-    #     # Make blocks anti-symmetric and normalize if constrained
-    #     q = oft_blocks - oft_blocks.transpose(-1, -2)
-    #
-    #     if constraint > 0:
-    #         q_norm = torch.norm(q) + 1e-8
-    #         constraint_value = constraint * x.shape[0]
-    #         if q_norm > constraint_value:
-    #             q = q * constraint_value / q_norm
-    #
-    #     # Convert to orthogonal matrices via Cayley transform: R = (I+Q)(I-Q)^-1
-    #     r = (I + q) @ torch.inverse(I - q + 1e-10 * I)
-    #
-    #     # Create padded identity matrix to handle arbitrary dimensions
-    #     out_dim = x.shape[0]
-    #     padded_dim = block_size * block_num
-    #
-    #     if out_dim > padded_dim:
-    #         # If matrix is bigger than our factorization allows, we need to extend
-    #         result = torch.eye(out_dim, device=device)
-    #         # We'll only transform the first padded_dim rows/columns
-    #         transform_size = padded_dim
-    #     else:
-    #         # If matrix is smaller, we'll pad it temporarily
-    #         result = torch.eye(padded_dim, device=device)
-    #         transform_size = out_dim
-    #
-    #     # Apply butterfly transformation using original approach
-    #     for i in range(boft_m):
-    #         bi = r[i]  # [block_num, block_size, block_size]
-    #         g = 2
-    #         k = 2 ** i * (block_size // 2)
-    #
-    #         # Only transform the active part of the matrix
-    #         active = result[:transform_size, :transform_size]
-    #
-    #         # Reshape for butterfly application - with proper padding handling
-    #         try:
-    #             # Try the elegant reshape approach
-    #             reshaped = active.unflatten(-1, (-1, g, k))
-    #             reshaped = reshaped.transpose(-2, -1).flatten(-3)
-    #             reshaped = reshaped.unflatten(-1, (-1, block_size))
-    #
-    #             # Apply the butterfly block - only to blocks that fit
-    #             valid_blocks = min(reshaped.shape[-2], bi.shape[0])
-    #             transformed = torch.zeros_like(reshaped)
-    #             transformed[..., :valid_blocks, :] = torch.einsum(
-    #                 "b i j, b j ... -> b i ...",
-    #                 bi[:valid_blocks],
-    #                 reshaped[..., :valid_blocks, :]
-    #             )
-    #
-    #             # Reshape back
-    #             transformed = transformed.flatten(-2)
-    #             transformed = transformed.unflatten(-1, (-1, k, g))
-    #             transformed = transformed.transpose(-2, -1).flatten(-3)
-    #
-    #             # Update the result
-    #             result[:transform_size, :transform_size] = transformed
-    #
-    #         except RuntimeError:
-    #             # If reshape fails due to dimension issues, fall back to block-by-block
-    #             # This preserves the correct transformation even when dimensions don't align perfectly
-    #             for j in range(min(block_num, transform_size // block_size)):
-    #                 start = j * block_size
-    #                 end = min((j + 1) * block_size, transform_size)
-    #                 if end <= start:
-    #                     continue
-    #
-    #                 # Apply transformation to this block
-    #                 block = result[start:end, start:end]
-    #                 result[start:end, start:end] = bi[j % bi.shape[0], :end - start, :end - start] @ block
-    #
-    #     # Return only the part corresponding to original dimensions
-    #     return result[:out_dim, :out_dim].to(x.dtype)
-    #
+
+    @staticmethod
+    @merge_method
+    def butterfly_merge(
+            a: Parameter(Tensor),
+            b: Parameter(Tensor),
+            *,
+            alpha: Parameter(float) =0.5,
+            rank_ratio: Parameter(float) = 0.25,
+            lora_dim: Parameter(int) = 64,
+            constraint: Parameter(float) = 0.05,
+            **kwargs
+    ) -> Return(Tensor):
+        """
+        Merges tensors 'a' and 'b' using butterfly orthogonalization.
+
+        Args:
+            a: First input tensor.
+            b: Second input tensor.
+            alpha: Interpolation factor.
+            rank_ratio: The ratio of the dimensions to keep.
+            lora_dim: Controls complexity of butterfly factorization. If -1, auto-selected.
+            constraint: Controls orthogonality constraint (0-1).
+            **kwargs: Keyword arguments, including 'key' for layer identification.
+
+        Returns:
+            Merged tensor, reshaped to original shape of 'a'.
+        """
+        original_shape = a.shape
+        key = kwargs["key"]
+
+        if "token_embedding" in key or len(original_shape) <= 1:
+            return (1 - alpha) * a + alpha * b
+
+        # Reshape based on layer type and key
+        if "token_embedding" in key:  # CLIP text embedding
+            a_2d = a
+            b_2d = b
+        elif len(original_shape) == 4:  # Convolutional layers
+            if original_shape[2] == 1 and original_shape[3] == 1:  # 1x1 conv
+                a_2d = a.reshape(original_shape[0], -1)
+                b_2d = b.reshape(original_shape[0], -1)
+            else:  # Assume 3x3 (or other) conv
+                a_2d = a.reshape(original_shape[0], -1)
+                b_2d = b.reshape(original_shape[0], -1)
+        elif len(original_shape) == 2:  # Linear layers
+            a_2d = a
+            b_2d = b
+        else:
+            # Fallback for unexpected shapes
+            a_2d = a.reshape(original_shape[0], -1)
+            b_2d = b.reshape(original_shape[0], -1)
+
+        # Auto-select lora_dim if not specified
+        if lora_dim <= 0:
+            dimension = a_2d.shape[0]
+            if dimension < 768:
+                lora_dim = 4
+            elif dimension < 1536:
+                lora_dim = 8
+            elif dimension < 4096:
+                lora_dim = 16
+            else:
+                lora_dim = 32
+
+        # Apply butterfly orthogonalization
+        Q_a = MergeMethods.butterfly_orthogonalize(a_2d, lora_dim, constraint, a.device)
+
+        # Project the difference using the butterfly orthogonal basis
+        diff = b_2d - a_2d
+        projected_diff = Q_a @ (Q_a.T @ diff)
+
+        # Apply butterfly orthogonalization to the projected difference
+        Q_diff = MergeMethods.butterfly_orthogonalize(projected_diff, lora_dim, constraint, a.device)
+
+        # Low-rank approximation
+        rank = max(1, int(min(projected_diff.shape) * rank_ratio))
+        Q_diff_trunc = Q_diff[:, :rank]
+        R_diff_trunc = Q_diff_trunc.T @ projected_diff
+
+        # Merge
+        merged = a_2d + alpha * (Q_diff_trunc @ R_diff_trunc)
+
+        return merged.reshape(original_shape)
+
+    def butterfly_orthogonalize(x, lora_dim=4, constraint=0.01, device=None):
+        """
+        Creates an orthogonal basis for matrix x using butterfly factorization.
+
+        Args:
+            x: Input tensor to orthogonalize
+            lora_dim: Controls the complexity of the butterfly factorization
+            constraint: Controls the orthogonality constraint (0.0 = no constraint)
+            device: Device to use for computation
+
+        Returns:
+            Q: Orthogonal matrix that forms a basis for x
+        """
+        if device is None:
+            device = x.device
+
+        # Get dimensions
+        out_dim = x.shape[0]
+
+        # Determine butterfly factorization parameters (with safety checks)
+        try:
+            block_size, block_num = MergeMethods.butterfly_factor(out_dim, lora_dim)
+            # Calculate butterfly stages
+            boft_m = sum(int(i) for i in f"{block_num - 1:b}") + 1
+        except Exception as e:
+            print(f"Falling back to QR for dimension {out_dim}: {str(e)}")
+            # Fall back to QR if butterfly factorization fails
+            Q, _ = torch.linalg.qr(x, mode='reduced')
+            return Q
+
+        # Initialize butterfly blocks
+        oft_blocks = MergeMethods.initialize_butterfly_blocks(x, boft_m, block_num, block_size, device)
+
+        # Apply butterfly orthogonalization
+        return MergeMethods.apply_butterfly_transform(x, oft_blocks, boft_m, block_size, block_num, constraint, device)
+
+    def butterfly_factor(dimension: int, factor: int = -1) -> tuple[int, int]:
+        """
+        Factorize dimension into butterfly-compatible factors.
+        Returns (block_size, block_num) where block_num is a power of 2.
+        """
+        # If factor is negative, use a reasonable default
+        if factor <= 0:
+            factor = 2 ** max(1, int(math.log2(dimension) / 4))
+
+        # Find a factorization where both factors are powers of 2 if possible
+        # This is different from the original algorithm and better handles odd dimensions
+
+        # Find largest power of 2 less than or equal to dimension
+        n = 1
+        while n * 2 <= dimension:
+            n *= 2
+
+        # If dimension is a power of 2, split it evenly
+        if n == dimension:
+            block_size = max(2, n // factor) if factor > 0 else int(math.sqrt(n))
+            block_num = dimension // block_size
+            return block_size, block_num
+
+        # Otherwise, find valid factorization
+        if dimension % 2 == 0:
+            # For even dimensions, find a power-of-2 block_num that divides dimension
+            block_num = 1
+            while block_num * 2 <= factor and dimension % (block_num * 2) == 0:
+                block_num *= 2
+
+            block_size = dimension // block_num
+            return block_size, block_num
+        else:
+            # For odd dimensions, block_size must be the dimension itself
+            # This is a special case that doesn't use butterfly structure
+            # but allows the algorithm to work with any dimension
+            return dimension, 1
+
+    def initialize_butterfly_blocks(x, boft_m, block_num, block_size, device):
+        """
+        Initialize butterfly blocks efficiently.
+        """
+        # Initialize anti-symmetric matrices (Q = -Q^T) with small random values
+        blocks = torch.zeros(boft_m, block_num, block_size, block_size, device=device)
+
+        with torch.no_grad():
+            # Scale initialization based on input tensor norm
+            norm = torch.norm(x) / (x.shape[0] * math.sqrt(boft_m * block_num))
+            scale = min(0.01, norm * 0.1)  # Limit scale to avoid numerical issues
+
+            for i in range(boft_m):
+                for j in range(block_num):
+                    # Create small random values scaled appropriately
+                    random_vals = torch.randn(block_size, block_size, device=device) * scale
+
+                    # Make it anti-symmetric (Q = -Q^T)
+                    blocks[i, j] = (random_vals - random_vals.T) / 2.0
+
+        return blocks
+
+    def apply_butterfly_transform(x, oft_blocks, boft_m, block_size, block_num, constraint, device):
+        """
+        Apply butterfly orthogonal transformation to input x, preserving the
+        elegant approach from the original BOFT implementation.
+        """
+        import torch
+
+        # Identity matrix for Cayley transform
+        I = torch.eye(block_size, device=device)
+
+        # Make blocks anti-symmetric and normalize if constrained
+        q = oft_blocks - oft_blocks.transpose(-1, -2)
+
+        if constraint > 0:
+            q_norm = torch.norm(q) + 1e-8
+            constraint_value = constraint * x.shape[0]
+            if q_norm > constraint_value:
+                q = q * constraint_value / q_norm
+
+        # Convert to orthogonal matrices via Cayley transform: R = (I+Q)(I-Q)^-1
+        r = (I + q) @ torch.inverse(I - q + 1e-10 * I)
+
+        # Create padded identity matrix to handle arbitrary dimensions
+        out_dim = x.shape[0]
+        padded_dim = block_size * block_num
+
+        if out_dim > padded_dim:
+            # If matrix is bigger than our factorization allows, we need to extend
+            result = torch.eye(out_dim, device=device)
+            # We'll only transform the first padded_dim rows/columns
+            transform_size = padded_dim
+        else:
+            # If matrix is smaller, we'll pad it temporarily
+            result = torch.eye(padded_dim, device=device)
+            transform_size = out_dim
+
+        # Apply butterfly transformation using original approach
+        for i in range(boft_m):
+            bi = r[i]  # [block_num, block_size, block_size]
+            g = 2
+            k = 2 ** i * (block_size // 2)
+
+            # Only transform the active part of the matrix
+            active = result[:transform_size, :transform_size]
+
+            # Reshape for butterfly application - with proper padding handling
+            try:
+                # Try the elegant reshape approach
+                reshaped = active.unflatten(-1, (-1, g, k))
+                reshaped = reshaped.transpose(-2, -1).flatten(-3)
+                reshaped = reshaped.unflatten(-1, (-1, block_size))
+
+                # Apply the butterfly block - only to blocks that fit
+                valid_blocks = min(reshaped.shape[-2], bi.shape[0])
+                transformed = torch.zeros_like(reshaped)
+                transformed[..., :valid_blocks, :] = torch.einsum(
+                    "b i j, b j ... -> b i ...",
+                    bi[:valid_blocks],
+                    reshaped[..., :valid_blocks, :]
+                )
+
+                # Reshape back
+                transformed = transformed.flatten(-2)
+                transformed = transformed.unflatten(-1, (-1, k, g))
+                transformed = transformed.transpose(-2, -1).flatten(-3)
+
+                # Update the result
+                result[:transform_size, :transform_size] = transformed
+
+            except RuntimeError:
+                # If reshape fails due to dimension issues, fall back to block-by-block
+                # This preserves the correct transformation even when dimensions don't align perfectly
+                for j in range(min(block_num, transform_size // block_size)):
+                    start = j * block_size
+                    end = min((j + 1) * block_size, transform_size)
+                    if end <= start:
+                        continue
+
+                    # Apply transformation to this block
+                    block = result[start:end, start:end]
+                    result[start:end, start:end] = bi[j % bi.shape[0], :end - start, :end - start] @ block
+
+        # Return only the part corresponding to original dimensions
+        return result[:out_dim, :out_dim].to(x.dtype)
+
     # @staticmethod
     # @merge_method
     # def add_difference_var_clip(

@@ -49,13 +49,13 @@ class Optimizer:
         self.iteration = 0
         self.best_model_path = None
         self.cache = {}
-        from sd_optim.artist import Artist
-        self.artist = Artist(self)
+#        from sd_optim.artist import Artist
+#        self.artist = Artist(self)
 
     def setup_parameter_space(self):
         """Generates parameter info and extracts bounds for the optimizer."""
         logger.info("Setting up optimization parameter space...")
-        self.param_info = self.bounds_initializer.get_bounds(
+        self.param_info, self.optimizer_pbounds = self.bounds_initializer.get_bounds(
             self.cfg.optimization_guide.get("custom_bounds")
         )
         self.optimizer_pbounds = {}
@@ -65,10 +65,13 @@ class Optimizer:
                  logger.warning(f"Parameter '{param_name}' missing 'bounds' in info. Skipping for optimizer.")
                  continue
             self.optimizer_pbounds[param_name] = bounds_value
+
+        # Optional: Check if optimizer_pbounds is empty and raise error
         if not self.optimizer_pbounds:
-             logger.error("No optimization bounds were generated. Check optimization_guide.yaml and merge method.")
-             raise ValueError("Optimization parameter space is empty.")
-        logger.info(f"Prepared {len(self.optimizer_pbounds)} parameters for the optimizer.")
+             logger.error("No optimization bounds were generated for the optimizer. Check optimization_guide.yaml and merge method.")
+             # Decide if this should be fatal or just a warning depending on the optimizer
+             raise ValueError("Optimization parameter space for the optimizer is empty.")
+        logger.info(f"Prepared {len(self.optimizer_pbounds)} parameters for the optimizer with specific bounds.")
 
     # --- ADDED: Sequential Producer Coroutine ---
     async def _sequential_producer(
@@ -163,7 +166,10 @@ class Optimizer:
             start_merge_time = time.time()
             if self.cfg.optimization_mode == "merge":
                 model_path = self.merger.merge(
-                    params=params, param_info=self.param_info, cache=self.cache, iteration=self.iteration
+                    params=params,
+                    param_info=self.param_info, # <<< PASS param_info HERE
+                    cache=self.cache,
+                    iteration=self.iteration
                 )
             elif self.cfg.optimization_mode == "layer_adjust":
                 model_path = self.merger.layer_adjust(params, self.cfg)
@@ -371,7 +377,7 @@ class Optimizer:
         self.update_best_score(params, avg_score)
 
         # --- Collect Data for Artist ---
-        self.artist.collect_data(avg_score, params)
+ #       self.artist.collect_data(avg_score, params)
 
         iteration_duration = time.time() - iteration_start_time
         logger.info(f"Iteration {self.iteration} finished. Final Score for Optimizer: {avg_score:.4f}. Duration: {iteration_duration:.2f}s")

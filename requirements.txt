@@ -14,8 +14,8 @@ sd-mecha                 # Use the latest compatible version, or specify one exp
 bayesian-optimization    # Keep if you want to retain BayesOpt as an option
 optuna                   # ADDED: For Optuna optimizer support
 optuna-dashboard         # Realtime dashboard for optuna
-optuna-fast-fanova       # Optuna docs
-# gunicorn               # Optuna docs, doesn't work on windows
+optuna-fast-fanova       # Recommended Optuna dependency
+# gunicorn               # REMOVED/Confirmed Commented: Causes issues on Windows for optuna-dashboard
 # hyperopt               # Keep if you plan to add Hyperopt later
 
 # --- Image/Scoring/CLIP Related ---
@@ -29,9 +29,9 @@ hpsv2                    # Pulled via pip install hpsv2 directly
 # Other potential scorer dependencies might be pulled automatically by the scorer libraries themselves
 
 # --- Plotting & Visualization ---
-matplotlib               # Basic plotting (used by Optuna/Artist)
-seaborn                  # Statistical data visualization (might be used by Artist)
-plotly                   # Interactive plots (used by Optuna visualizations)
+# matplotlib             # Commented Out: Not directly used in Artist/OptunaOptimizer plots anymore. May still be needed as an indirect dependency of Optuna/other libs. Keep commented unless issues arise.
+# seaborn                # Commented Out: Seems unused in the provided code.
+plotly                   # Interactive plots (used by Optuna visualizations & Artist)
 kaleido                  # Needed to save Plotly figures as static images
 
 # --- sd-mecha Specific Dependencies (from its requirements.txt) ---
@@ -47,7 +47,7 @@ scikit-learn             # Used by some ML tasks, possibly by a scorer? Review i
 tensordict               # Appears related to PyTorch/distributed? Review if needed by models/scorers.
 timm                     # Image models library, possibly used by a scorer? Review if needed.
 fairscale                # Distributed training/sharding library. Unlikely needed unless doing specific advanced things.
-# pynput                   # REMOVED: Was for old hotkey system, we'll use asyncio/other methods
+# pynput                 # REMOVED: Was for old hotkey system, we'll use asyncio/other methods
 
 # --- Testing ---
 # pytest                   # Keep if you have tests or plan to add them

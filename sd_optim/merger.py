@@ -350,7 +350,7 @@ class Merger:
             except FileNotFoundError as e_dir:
                 logger.error(f"LoRA check failed: models_dir '{self.models_dir}' invalid? Error: {e_dir}")
             except AttributeError:
-                # This can happen if current_node.model_config remains None after open_input_dicts
+                # This can happen if current_node.model_configs remains None after open_input_dicts
                 logger.warning(f"Could not access model_config for {current_node.path} during LoRA check.")
             except Exception as e_inf:
                 logger.warning(f"Error during LoRA check for {current_node.path}: {e_inf}. Assuming not a LoRA.")
@@ -443,6 +443,10 @@ class Merger:
 
         # --- Step 1b: Create sd-mecha nodes for Strategy-Based Parameters ---
         target_model_node = self._select_base_model() or (self.models[0] if self.models else None)
+        if not target_model_node:
+             logger.error("Cannot prepare parameter nodes: Target/Base model node is missing.")
+             # Decide how to handle this - maybe return empty dict?
+             return {} # Return empty if no target model context
 
         # Create nodes for block-targeted parameters (e.g., alpha, constraint in the example)
         for base_param, block_dict in block_based_values_per_param.items():
@@ -451,7 +455,11 @@ class Merger:
              if not target_model_node: logger.error(f"Cannot make convert node for '{base_param}': target model missing."); continue
              try:
                  literal_node = sd_mecha.literal(block_dict, config=self.custom_block_config.identifier)
-                 converted_node = sd_mecha.convert(literal_node, target_model_node)
+                 converted_node = sd_mecha.convert(
+                     literal_node,
+                     target_model_node,
+                     model_dirs=[self.models_dir]  # <<< ADD THIS ARGUMENT
+                 )
                  final_param_nodes[base_param] = converted_node # Use base_param name as key
                  logger.debug(f"Created CONVERT node for '{base_param}' ({len(block_dict)} blocks).")
              except Exception as e: logger.error(f"Failed creating block/convert node for '{base_param}': {e}", exc_info=True)
@@ -498,7 +506,6 @@ class Merger:
 
         logger.info(f"Prepared {len(final_param_nodes)} final parameter nodes for merge method '{merge_method.identifier}'.")
         return final_param_nodes
-
 
     # V1.1 - Added handling for fallback_model_index, including -1/None check.
     def _execute_recipe(self, final_recipe_node: recipe_nodes.RecipeNode, model_path: Path):
@@ -567,7 +574,6 @@ class Merger:
          except Exception as e:
               logger.error(f"Error during post-merge saving operations: {e}")
 
-
     # V1.1 - Accepts param_info metadata
     def merge(
             self,
@@ -589,6 +595,21 @@ class Merger:
              model_path = self.models_dir / f"merge_output_default_{cfg.merge_method}.safetensors"
              logger.warning(f"Using default output path: {model_path}")
              self.output_file = model_path # Attempt to set it
+
+        try:
+            api_url = f"{self.cfg.url}/sd_optim/unload-model"
+            # Add timeout to synchronous requests
+            response = requests.post(api_url, params={"webui": self.cfg.webui,
+                                                      "target_url": self.cfg.url if self.cfg.webui == 'swarm' else None},
+                                     timeout=30)
+            response.raise_for_status()
+            logger.info("Unload model request sent successfully.")
+        except requests.exceptions.Timeout:
+            logger.warning(f"Timeout sending unload request to {api_url}. Continuing...")
+        except requests.exceptions.RequestException as e:
+            logger.warning(f"Failed to send unload request to {api_url}: {e}. Continuing...")
+        except Exception as e_unl:
+            logger.error(f"Unexpected error during unload request: {e_unl}", exc_info=True)
 
         # --- Recipe Building ---
         logger.debug(f"Building merge recipe for method: {cfg.merge_method}")

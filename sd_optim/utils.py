@@ -12,8 +12,8 @@ import pkgutil
 import re
 import sys
 import textwrap
-from fnmatch import fnmatch
-
+import argparse
+import optuna
 import torch
 import safetensors.torch
 import sd_mecha
@@ -23,6 +23,7 @@ import torch
 import yaml
 import threading
 
+from fnmatch import fnmatch
 from pathlib import Path
 from typing import List, Tuple, TypeVar, Dict, Set, Union, Any, ClassVar, Optional, MutableMapping, Mapping
 from dataclasses import field, dataclass
@@ -161,6 +162,118 @@ def resolve_merge_method(merge_method_name: str) -> MergeMethod:
                     raise ValueError(f"Local method '{merge_method_name}' exists but is not a valid sd-mecha MergeMethod and couldn't be wrapped: {wrap_e}")
         else:
             raise ValueError(f"Merge method '{merge_method_name}' not found in sd-mecha built-ins or local MergeMethods.")
+
+
+#############################
+### Generate optuna notes ###
+#############################
+# def load_config(run_dir):
+#     # Logic to find and load .hydra/config.yaml or config.yaml
+#     # Return the loaded config dictionary/omegaconf object
+#     pass
+#
+# def load_optuna_study(config, run_dir):
+#     # Logic to determine DB path and study name from config
+#     # Call optuna.load_study
+#     # Return study object
+#     pass
+#
+# def load_bayes_results(config, run_dir):
+#     # Logic to find and parse .jsonl or .pkl
+#     # Return list of results
+#     pass
+#
+# def format_markdown(config, study_or_results, run_dir):
+#     # --- Extract data ---
+#     run_name = config.get('run_name', 'Unknown')
+#     models = config.get('model_paths', [])
+#     # ... extract all needed info ...
+#     best_trial = study_or_results.best_trial # Example for Optuna
+#     best_score = best_trial.value
+#     best_params_str = json.dumps(best_trial.params, indent=4) # Format params nicely
+#     num_trials = len(study_or_results.trials)
+#     # ... etc ...
+#
+#     # --- Build Markdown String ---
+#     md = f"""
+# # Notes: Optuna Run - {run_name}
+#
+# **Date:** {run_dir.name[:10]} # Extract from dir name? Or get current date?
+#
+# **Setup:**
+# *   **Study Name:** {study_or_results.study_name}
+# *   **Models:** {', '.join(models)}
+# *   **Merge Method:** {config.get('merge_method', 'N/A')}
+# *   **Scorer(s):** {config.get('scorer_method', [])}
+# *   **Optimizer:** {config.get('optimizer', {})} # Display optimizer type/settings
+# *   **Plan:** {config.optimizer.get('init_points', '?')} init + {config.optimizer.get('n_iters', '?')} iters
+#
+# **Run Status:**
+# *   Completed Trials: {num_trials}
+# *   Status: [TODO: Add status - Finished / Interrupted / Crashed?]
+#
+# **Performance Summary:**
+# *   **Best Score:** {best_score:.5f} (Trial {best_trial.number})
+# *   **Score Range (EDF):** [TODO: Add min/max or describe EDF shape]
+# *   **Convergence Trend:** [TODO: Describe history plot]
+#
+# **Best Trial (#{best_trial.number}) Analysis:**
+# *   **Parameters:**
+#     ```json
+#     {best_params_str}
+#     ```
+# *   **Observations:** [TODO: Add manual analysis]
+#
+# **Issues Encountered:**
+# *   [TODO: Check logs or add manually - e.g., butterfly_merge error?]
+# *   [TODO: e.g., tkinter errors?]
+# *   [TODO: e.g., Background check failures?]
+#
+# **Potential Next Steps:**
+# *   [TODO: e.g., Resume run?]
+# *   [TODO: e.g., Fix issues?]
+# *   [TODO: e.g., Refine search space?]
+# """
+#     return md
+#
+# if __name__ == "__main__":
+#     parser = argparse.ArgumentParser(description="Generate notes template for sd-optim run.")
+#     parser.add_argument("run_dir", type=str, help="Path to the Hydra run directory.")
+#     args = parser.parse_args()
+#
+#     run_directory = Path(args.run_dir).resolve()
+#     if not run_directory.is_dir():
+#         print(f"Error: Directory not found: {run_directory}")
+#         exit(1)
+#
+#     try:
+#         # Chdir might be needed if using HydraConfig relative paths
+#         # os.chdir(run_directory) # Or load config relative to run_directory
+#         cfg = load_config(run_directory) # Implement this
+#         if cfg.optimizer.get("optuna"):
+#             study = load_optuna_study(cfg, run_directory) # Implement this
+#             results_obj = study
+#         elif cfg.optimizer.get("bayes"):
+#             results = load_bayes_results(cfg, run_directory) # Implement this
+#             # Need to structure Bayes results similarly or adapt formatting
+#             results_obj = results # Placeholder
+#         else:
+#             raise ValueError("Unknown optimizer type in config")
+#
+#         markdown_content = format_markdown(cfg, results_obj, run_directory)
+#
+#         output_path = run_directory / "run_notes_template.md"
+#         with open(output_path, "w", encoding="utf-8") as f:
+#             f.write(markdown_content)
+#         print(f"Successfully generated notes template: {output_path}")
+#
+#     except Exception as e:
+#         print(f"An error occurred: {e}")
+#         # Print traceback for debugging
+#         import traceback
+#         traceback.print_exc()
+
+
 
 
 ### ------------- old functions that haven't been updated to new mecha yet ------------ ###
@@ -552,13 +665,13 @@ def resolve_merge_method(merge_method_name: str) -> MergeMethod:
 #         # ==============================================
 #
 #         # Get model configuration
-#         model_config = recipe.accept(sd_mecha.model_detection.DetermineConfigVisitor())
+#         model_configs = recipe.accept(sd_mecha.model_detection.DetermineConfigVisitor())
 #
 #         # Normalize output
 #         output = self._RecipeMerger__normalize_output_to_dict(
 #             output,
-#             model_config.get_minimal_dummy_header(),
-#             model_config.get_keys_to_merge(),
+#             model_configs.get_minimal_dummy_header(),
+#             model_configs.get_keys_to_merge(),
 #             recipe_serializer.serialize(recipe),
 #             buffer_size_per_file // threads,
 #             save_dtype,
@@ -589,14 +702,14 @@ def resolve_merge_method(merge_method_name: str) -> MergeMethod:
 #             return False  # Default: skip merge
 #
 #         thread_local_data = threading.local()
-#         progress = self._RecipeMerger__tqdm(total=len(model_config.keys()), desc="Merging recipe")
+#         progress = self._RecipeMerger__tqdm(total=len(model_configs.keys()), desc="Merging recipe")
 #         with sd_mecha.recipe_merger.ThreadPoolExecutor(max_workers=threads) as executor:
 #             futures = []
-#             for key in model_config.keys():
+#             for key in model_configs.keys():
 #                 if not _should_merge_key(key, merge_keys):
 #                     if default_behavior == "zero":
 #                         print(f"Skipping merge for key: {key}, setting to zero")
-#                         shape = model_config.get_shape(key)
+#                         shape = model_configs.get_shape(key)
 #                         if shape is not None:
 #                             output[key] = torch.zeros(shape, dtype=save_dtype, device=save_device)
 #                         else:
@@ -616,9 +729,9 @@ def resolve_merge_method(merge_method_name: str) -> MergeMethod:
 #                         progress.update()
 #                         continue
 #
-#                 key_merger = model_config.get_key_merger(key, recipe, fallback_model, self._RecipeMerger__default_device, self._RecipeMerger__default_dtype)
+#                 key_merger = model_configs.get_key_merger(key, recipe, fallback_model, self._RecipeMerger__default_device, self._RecipeMerger__default_dtype)
 #                 key_merger = self._RecipeMerger__track_output(key_merger, output, key, save_dtype, save_device)
-#                 key_merger = self._RecipeMerger__track_progress(key_merger, key, model_config.get_shape(key), progress)
+#                 key_merger = self._RecipeMerger__track_progress(key_merger, key, model_configs.get_shape(key), progress)
 #                 key_merger = self._RecipeMerger__wrap_thread_context(key_merger, thread_local_data)
 #                 futures.append(executor.submit(key_merger))
 #

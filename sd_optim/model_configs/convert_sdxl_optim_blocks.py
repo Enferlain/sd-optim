@@ -41,7 +41,7 @@ def convert_sdxl_optim_blocks_to_sdxl_sgm(
     # in the sdxl-optim_blocks.yaml config.
     if target_key.startswith("model.diffusion_model."):
         if ".time_embed" in target_key: block_name = "UNET_TIME_EMBED"
-        elif ".label_emb" in target_key: block_name = "UNET_TIME_EMBED" # Group label_emb here too
+        elif ".label_emb" in target_key: block_name = "UNET_LABEL_EMBED" # Group label_emb here too
         elif ".out." in target_key: block_name = "UNET_OUT_FINAL"
         elif m := re_inp.search(target_key):
             block_num = int(m.group(1)); block_name = f"UNET_IN{block_num:02d}" if 0 <= block_num <= 8 else None

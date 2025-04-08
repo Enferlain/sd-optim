@@ -1,0 +1,51 @@
+defaults:
+  - cargo:
+    - negeuler1
+    - negeuler2
+    - negeuler3
+    - negeuler4
+    - noob5
+    - noob6
+#    - negeuler5
+#    - negeuler6
+    - negeuler7
+    - negeuler8
+    - noob1
+    - noob2
+    - noob3
+    
+score_weight: 1.0
+
+# Mapping your parameters to SwarmUI equivalents:
+prompt:
+  value:
+  # id: prompt (from the JSON data - you can optionally include this for clarity)
+negative_prompt:
+  value:
+  # id: negativeprompt
+steps:
+  value: 28
+  # id: steps
+cfg_scale:
+  value: 5.218
+  # id: cfgscale
+width:
+  value: 768
+  # id: width
+height:
+  value: 1344
+  # id: height
+sampler: # Using 'sampler' instead of 'sampler_name' as per SwarmUI's id
+  value: "euler_ancestral" # Note: You used "Euler Negative Dy", I'm mapping to "Euler" and scheduler to "Align Your Steps" based on the description
+  # id: sampler
+scheduler:
+  value: "align_your_steps"
+  # id: scheduler
+
+# You can add other SwarmUI parameters here if needed, for example:
+# model:
+#   value: "your_preferred_model.safetensors"
+#   id: model
+# batchsize: # Using 'batchsize' instead of 'batch size' as per SwarmUI's id
+#   value: 1
+#   id: batchsize

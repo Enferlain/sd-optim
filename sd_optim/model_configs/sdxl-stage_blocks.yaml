@@ -1,0 +1,22 @@
+identifier: sdxl-stage_blocks
+
+components:
+  unet:
+    UNET_EMBED: {shape: [], dtype: float32} # Time, Label embeddings
+    UNET_DOWN: {shape: [], dtype: float32}  # All input blocks (0-8) grouped together
+    UNET_MID: {shape: [], dtype: float32}   # Middle block (0-2)
+    UNET_UP: {shape: [], dtype: float32}    # All output blocks (0-8) grouped together
+    UNET_FINAL: {shape: [], dtype: float32} # Final output convolution block (out.*)
+
+  clip_l:
+    CLIP_L_EMBED: {shape: [], dtype: float32}
+    CLIP_L_LAYERS: {shape: [], dtype: float32} # Group all layers
+    CLIP_L_FINAL: {shape: [], dtype: float32}
+
+  clip_g:
+    CLIP_G_EMBED: {shape: [], dtype: float32}
+    CLIP_G_LAYERS: {shape: [], dtype: float32} # Group all layers
+    CLIP_G_FINAL: {shape: [], dtype: float32}
+
+  vae:
+    VAE_ALL: {shape: [], dtype: float32}

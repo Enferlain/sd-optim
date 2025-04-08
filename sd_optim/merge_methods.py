@@ -31,6 +31,39 @@ EPSILON = 1e-10
 
 class MergeMethods:
 
+    @merge_method
+    def orthonorm(
+            a: Parameter(Tensor, merge_space="delta"),  # orig_model - base
+            *models: Parameter(Tensor, merge_space="delta"),  # b,c,d... - base
+            iterative_alpha: Parameter(float) = 0.0,
+            **kwargs,
+    ) -> Return(Tensor, merge_space="delta"):  # Returns A with models perpendicularly added in their given order.
+        """
+        Projects the model diff g to be orthogonal to the current diff w.
+
+        g_orth = g - ( (w·g)/(w·w + eps) ) * w
+
+        And then re-scales g_orth to have the same norm as g.
+
+        Modified function to use atan2 instead of an epsilon
+        """
+        total_res = torch.zeros_like(a)  # 0
+        alpha = iterative_alpha
+        if alpha == 0:
+            alpha = 1 / (math.sqrt(len(models)))
+
+        for m in models:
+            w = (a + total_res).view(-1)
+            g = m.view(-1)
+
+            proj = torch.dot(w, g).atan2_(torch.dot(w, w)).mul_(1.27323954474)  # Scale by 1 / atan(1) (~1.27)
+            g_orth = g.to(dtype=torch.float32, copy=True).sub_(w, alpha=proj)
+            g_orth_scaled = g_orth.mul_(g.norm(2).clamp_min_(1e-6).div_(g_orth.norm(2).clamp_min_(1e-6)))
+
+            total_res += g_orth_scaled.view(m.shape) * alpha
+        # print(total_res)
+        return total_res
+
     # V1.0 - Updated to use @sd_mecha.merge_method and type hints
     @staticmethod
     @merge_method # Explicit identifier recommended
@@ -1149,7 +1182,7 @@ class MergeMethods:
             a: Parameter(Tensor),
             b: Parameter(Tensor),
             *,
-            alpha: Parameter(float) =0.5,
+            alpha: Parameter(float) = 0.5,
             rank_ratio: Parameter(float) = 0.25,
             lora_dim: Parameter(int) = 64,
             constraint: Parameter(float) = 0.05,
@@ -1165,22 +1198,34 @@ class MergeMethods:
             rank_ratio: The ratio of the dimensions to keep.
             lora_dim: Controls complexity of butterfly factorization. If -1, auto-selected.
             constraint: Controls orthogonality constraint (0-1).
+            epsilon: Small value for numerical stability.
             **kwargs: Keyword arguments, including 'key' for layer identification.
 
         Returns:
             Merged tensor, reshaped to original shape of 'a'.
         """
         original_shape = a.shape
-        key = kwargs["key"]
+        key = kwargs.get("key", "")
+
+        if key.endswith(("in_proj_weight", "in_proj_bias")):
+            # workaround for concatenated attention projection layers
+            vs = []
+            for i, k in enumerate(("to_q", "to_k", "to_v")):
+                k_kwargs = kwargs.copy()
+                k_kwargs["key"] = key.replace("in_proj_", f"{k}.")
+                dim = a.shape[0] // 3
+                t_start = dim * i
+                t_end = dim * (i + 1)
+                k_a = a[t_start:t_end]
+                k_b = b[t_start:t_end]
+                vs.append(MergeMethods.butterfly_merge.__wrapped__(k_a, k_b, **k_kwargs))
+            return torch.cat(vs)
 
         if "token_embedding" in key or len(original_shape) <= 1:
             return (1 - alpha) * a + alpha * b
 
-        # Reshape based on layer type and key
-        if "token_embedding" in key:  # CLIP text embedding
-            a_2d = a
-            b_2d = b
-        elif len(original_shape) == 4:  # Convolutional layers
+        # Reshape based on layer type
+        if len(original_shape) == 4:  # Convolutional layers
             if original_shape[2] == 1 and original_shape[3] == 1:  # 1x1 conv
                 a_2d = a.reshape(original_shape[0], -1)
                 b_2d = b.reshape(original_shape[0], -1)

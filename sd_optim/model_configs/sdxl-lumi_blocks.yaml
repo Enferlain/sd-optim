@@ -1,0 +1,81 @@
+identifier: sdxl-lumi_blocks
+
+components:
+  unet:
+    # --- Conditioning & Initial/Final Layers ---
+    UNET_TIME_EMBED: {shape: [], dtype: float32} # time_embed.*, label_emb.*
+    UNET_INPUT_CONV: {shape: [], dtype: float32} # input_blocks.0.0.*
+    UNET_OUTPUT_CONV: {shape: [], dtype: float32} # out.*
+
+    # --- Downsampling Path (Input Blocks by Stage) ---
+    UNET_DOWN_BLOCK_0: {shape: [], dtype: float32} # input_blocks.1 & 2 (ResNet, 320 channels)
+    UNET_DOWN_CONV_0: {shape: [], dtype: float32} # input_blocks.3 (Downsampling Conv 320->320 stride 2)
+    UNET_DOWN_BLOCK_1: {shape: [], dtype: float32} # input_blocks.4 & 5 (ResNet + Transformer, 640 channels)
+    UNET_DOWN_CONV_1: {shape: [], dtype: float32} # input_blocks.6 (Downsampling Conv 640->640 stride 2)
+    UNET_DOWN_BLOCK_2: {shape: [], dtype: float32} # input_blocks.7 & 8 (ResNet + Transformer, 1280 channels)
+
+    # --- Middle Block ---
+    UNET_MID_BLOCK: {shape: [], dtype: float32} # middle_block.0, 1, 2 (ResNet, Transformer, ResNet, 1280 channels)
+
+    # --- Upsampling Path (Output Blocks by Stage) ---
+    # Bundles ResNet, Transformer, and Upsampling Conv for the stage
+    UNET_UP_BLOCK_2: {shape: [], dtype: float32} # output_blocks.0, 1, 2 (1280 channels -> 640 up)
+    UNET_UP_BLOCK_1: {shape: [], dtype: float32} # output_blocks.3, 4, 5 (640 channels -> 320 up)
+    UNET_UP_BLOCK_0: {shape: [], dtype: float32} # output_blocks.6, 7, 8 (320 channels)
+
+  clip_l:
+    # (Using optim/lumi structure for CLIP is generally good)
+    CLIP_L_EMBEDDINGS: {shape: [], dtype: float32}
+    CLIP_L_LAYER_00: {shape: [], dtype: float32}
+    CLIP_L_LAYER_01: {shape: [], dtype: float32}
+    CLIP_L_LAYER_02: {shape: [], dtype: float32}
+    CLIP_L_LAYER_03: {shape: [], dtype: float32}
+    CLIP_L_LAYER_04: {shape: [], dtype: float32}
+    CLIP_L_LAYER_05: {shape: [], dtype: float32}
+    CLIP_L_LAYER_06: {shape: [], dtype: float32}
+    CLIP_L_LAYER_07: {shape: [], dtype: float32}
+    CLIP_L_LAYER_08: {shape: [], dtype: float32}
+    CLIP_L_LAYER_09: {shape: [], dtype: float32}
+    CLIP_L_LAYER_10: {shape: [], dtype: float32}
+    CLIP_L_LAYER_11: {shape: [], dtype: float32}
+    CLIP_L_FINAL_NORM: {shape: [], dtype: float32}
+
+  clip_g:
+    CLIP_G_EMBEDDINGS: {shape: [], dtype: float32}
+    CLIP_G_LAYER_00: {shape: [], dtype: float32}
+    CLIP_G_LAYER_01: {shape: [], dtype: float32}
+    CLIP_G_LAYER_02: {shape: [], dtype: float32}
+    CLIP_G_LAYER_03: {shape: [], dtype: float32}
+    CLIP_G_LAYER_04: {shape: [], dtype: float32}
+    CLIP_G_LAYER_05: {shape: [], dtype: float32}
+    CLIP_G_LAYER_06: {shape: [], dtype: float32}
+    CLIP_G_LAYER_07: {shape: [], dtype: float32}
+    CLIP_G_LAYER_08: {shape: [], dtype: float32}
+    CLIP_G_LAYER_09: {shape: [], dtype: float32}
+    CLIP_G_LAYER_10: {shape: [], dtype: float32}
+    CLIP_G_LAYER_11: {shape: [], dtype: float32}
+    CLIP_G_LAYER_12: {shape: [], dtype: float32}
+    CLIP_G_LAYER_13: {shape: [], dtype: float32}
+    CLIP_G_LAYER_14: {shape: [], dtype: float32}
+    CLIP_G_LAYER_15: {shape: [], dtype: float32}
+    CLIP_G_LAYER_16: {shape: [], dtype: float32}
+    CLIP_G_LAYER_17: {shape: [], dtype: float32}
+    CLIP_G_LAYER_18: {shape: [], dtype: float32}
+    CLIP_G_LAYER_19: {shape: [], dtype: float32}
+    CLIP_G_LAYER_20: {shape: [], dtype: float32}
+    CLIP_G_LAYER_21: {shape: [], dtype: float32}
+    CLIP_G_LAYER_22: {shape: [], dtype: float32}
+    CLIP_G_LAYER_23: {shape: [], dtype: float32}
+    CLIP_G_LAYER_24: {shape: [], dtype: float32}
+    CLIP_G_LAYER_25: {shape: [], dtype: float32}
+    CLIP_G_LAYER_26: {shape: [], dtype: float32}
+    CLIP_G_LAYER_27: {shape: [], dtype: float32}
+    CLIP_G_LAYER_28: {shape: [], dtype: float32}
+    CLIP_G_LAYER_29: {shape: [], dtype: float32}
+    CLIP_G_LAYER_30: {shape: [], dtype: float32}
+    CLIP_G_LAYER_31: {shape: [], dtype: float32}
+    CLIP_G_FINAL_NORM: {shape: [], dtype: float32}
+    CLIP_G_TEXT_PROJECTION: {shape: [], dtype: float32}
+
+  vae:
+    VAE_ALL: {shape: [], dtype: float32}

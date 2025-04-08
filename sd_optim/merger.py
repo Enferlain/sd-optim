@@ -16,9 +16,9 @@ from pathlib import Path
 from typing import Dict, Optional, List, Tuple, Any
 
 from omegaconf import DictConfig, open_dict
-from sd_mecha import recipe_serializer, extensions, recipe_nodes
+from sd_mecha import serialization, extensions, recipe_nodes
 from sd_mecha.extensions.merge_methods import MergeMethod, RecipeNodeOrValue
-from sd_mecha.recipe_nodes import RecipeNodeOrValue, ModelRecipeNode
+from sd_mecha.recipe_nodes import RecipeNodeOrValue, ModelRecipeNode, RecipeNode
 from sd_mecha.extensions import model_configs # Import model_configs
 
 # Assuming utils contains MergeMethodCodeSaver and add_extra_keys
@@ -40,35 +40,53 @@ precision_mapping = {
 
 @dataclass
 class Merger:
-    # V1.1 - Corrected base config inference logic
     def __init__(self, cfg: DictConfig):
         self.cfg = cfg
         if not cfg.model_paths: raise ValueError("'model_paths' cannot be empty.")
 
-        # --- Base Config Inference (Corrected) ---
+        # --- Base Config Inference (Corrected for infer_model_configs return type) ---
         self.base_model_config: Optional[model_configs.ModelConfig] = None
         representative_model_path_str = cfg.model_paths[0]
         logger.info(f"Merger: Inferring base ModelConfig from: {representative_model_path_str}")
         try:
-            # Store models_dir resolved relative to the representative model path
             self.models_dir = Path(representative_model_path_str).resolve().parent
             if not self.models_dir.is_dir():
                  raise FileNotFoundError(f"Merger: Determined models directory not found: {self.models_dir}")
             logger.info(f"Merger: Determined models directory: {self.models_dir}")
 
-            # Infer base config using the determined models_dir
-            rep_model_node = sd_mecha.model(representative_model_path_str) # Use absolute path for inference check
-            with sd_mecha.open_input_dicts(rep_model_node, [self.models_dir]): # Pass models_dir context
-                if rep_model_node.state_dict:
-                    inferred_configs = sd_mecha.infer_model_configs(rep_model_node.state_dict.keys())
-                    if inferred_configs:
-                        self.base_model_config = inferred_configs[0]
-                        logger.info(f"Merger: Inferred base ModelConfig: {self.base_model_config.identifier}")
-                    else: raise ValueError(f"Merger: Cannot infer ModelConfig for {representative_model_path_str}")
-                else: raise ValueError(f"Merger: Cannot load dictionary for {representative_model_path_str}")
-        except Exception as e:
-             logger.error(f"Merger: Error inferring base config or models_dir: {e}", exc_info=True)
-             raise ValueError("Merger could not determine base ModelConfig or models directory.") from e
+            # Use temporary node for inference check
+            rep_model_node = sd_mecha.model(representative_model_path_str)
+            with sd_mecha.open_input_dicts(rep_model_node, [self.models_dir]):
+                # Check isinstance AND state_dict exists before accessing keys
+                if isinstance(rep_model_node, ModelRecipeNode) and rep_model_node.state_dict: # <<< Added isinstance check here too
+                    # --- APPLY SAME FIX AS IN ParameterHandler ---
+                    inferred_sets = sd_mecha.infer_model_configs(rep_model_node.state_dict.keys())
+                    if inferred_sets:
+                         best_set = inferred_sets[0]
+                         if len(best_set) == 1:
+                              self.base_model_config = next(iter(best_set))
+                              logger.info(f"Merger: Inferred base ModelConfig: {self.base_model_config.identifier}")
+                         else:
+                              config_names = {c.identifier for c in best_set}
+                              logger.warning(f"Merger: Ambiguous base ModelConfig inferred for {representative_model_path_str}. Possible matches: {config_names}. Picking first one arbitrarily.")
+                              self.base_model_config = next(iter(best_set)) # Pick first
+                    # --- END FIX ---
+                    else:
+                        # This path is taken if infer_model_configs returns empty list
+                        raise ValueError(f"Merger: Cannot infer ModelConfig for {representative_model_path_str} (no matching configs found).")
+                else:
+                     # This path is taken if rep_model_node isn't ModelRecipeNode or state_dict is None
+                     raise ValueError(f"Merger: Cannot load state dictionary for {representative_model_path_str} to infer config.")
+
+        except FileNotFoundError as fnf_e: # Catch specific error
+            logger.error(f"Merger: Model file or directory not found during init: {fnf_e}")
+            raise ValueError("Merger could not initialize due to missing file/directory.") from fnf_e
+        except ValueError as val_e: # Catch ValueErrors raised above
+             logger.error(f"Merger: Error during configuration inference: {val_e}")
+             raise # Re-raise ValueErrors as they indicate critical config issues
+        except Exception as e: # Catch other unexpected errors
+             logger.error(f"Merger: Unexpected error during init: {e}", exc_info=True)
+             raise ValueError("Merger failed to initialize.") from e
         # --- End Base Config Inference ---
 
         # --- Load Custom Config (depends on successful base inference if needed later) ---
@@ -124,7 +142,7 @@ class Merger:
              raise ValueError(f"Invalid or missing 'save_dtype': {self.cfg.get('save_dtype')}. Must be one of {list(precision_mapping.keys())}")
 
     # --- MODIFIED: _create_model_nodes to use relative paths ---
-    def _create_model_nodes(self) -> List[ModelRecipeNode]:
+    def _create_model_nodes(self) -> List[RecipeNode]:
         """
         Creates sd_mecha ModelRecipeNodes using paths relative to the
         determined models_dir.
@@ -137,27 +155,18 @@ class Merger:
         logger.info(f"Creating model nodes relative to base directory: {self.models_dir}")
 
         for model_path_str in self.cfg.get("model_paths", []):
+            resolved_path : Path # Type hint for clarity
             original_path = Path(model_path_str)
-            # Resolve the absolute path first to ensure it exists relative to something
-            # (It might be absolute already, or relative to CWD, or relative to models_dir)
-            if original_path.is_absolute() and original_path.exists():
-                 resolved_path = original_path.resolve()
-            elif (self.models_dir / original_path).exists():
-                 resolved_path = (self.models_dir / original_path).resolve()
-            elif original_path.exists(): # Check relative to CWD as last resort
-                 resolved_path = original_path.resolve()
-            else:
-                 logger.error(f"Model path not found: {model_path_str}. Cannot create node.")
-                 continue # Skip this model if path is invalid
+            if original_path.is_absolute() and original_path.exists(): resolved_path = original_path.resolve()
+            elif (self.models_dir / original_path).exists(): resolved_path = (self.models_dir / original_path).resolve()
+            elif original_path.exists(): resolved_path = original_path.resolve()
+            else: logger.error(f"Model path not found: {model_path_str}. Skipping node."); continue
 
-            # Calculate the path relative to the determined models_dir
             try:
                 relative_path_str = os.path.relpath(resolved_path, self.models_dir)
-                logger.debug(f"  Original: '{model_path_str}', Resolved: '{resolved_path}', Relative: '{relative_path_str}'")
             except ValueError:
-                # This happens if paths are on different drives on Windows
-                logger.warning(f"  Cannot create relative path for {resolved_path} (likely different drive than {self.models_dir}). Using absolute path instead.")
-                relative_path_str = str(resolved_path) # Fallback to absolute path string
+                logger.warning(f"Cannot create relative path for {resolved_path}. Using absolute path.")
+                relative_path_str = str(resolved_path)
 
             # Create the node using the relative path string
             # We don't need to detect LoRAs here anymore, sd_mecha.convert handles it later
@@ -308,7 +317,7 @@ class Merger:
         recipe_file_path = recipes_dir / f"{iteration_file_name}.mecha"
 
         try:
-            serialized_recipe = sd_mecha.recipe_serializer.serialize(final_recipe_node)
+            serialized_recipe = sd_mecha.serialization.serialize(final_recipe_node)
             with open(recipe_file_path, "w", encoding="utf-8") as f:
                 f.write(serialized_recipe)
             logger.info(f"Saved recipe to {recipe_file_path}")
@@ -550,6 +559,7 @@ class Merger:
                 output_dtype=precision_mapping.get(self.cfg.save_dtype), # Get dtype object
                 threads=self.cfg.get("threads"),
                 model_dirs=effective_model_dirs, # Use the directory containing models
+                check_mandatory_keys=False,
                 # Add other relevant sd_mecha.merge options as needed:
                 # strict_weight_space=True, check_finite=True, etc.
             )
@@ -595,21 +605,6 @@ class Merger:
              model_path = self.models_dir / f"merge_output_default_{cfg.merge_method}.safetensors"
              logger.warning(f"Using default output path: {model_path}")
              self.output_file = model_path # Attempt to set it
-
-        try:
-            api_url = f"{self.cfg.url}/sd_optim/unload-model"
-            # Add timeout to synchronous requests
-            response = requests.post(api_url, params={"webui": self.cfg.webui,
-                                                      "target_url": self.cfg.url if self.cfg.webui == 'swarm' else None},
-                                     timeout=30)
-            response.raise_for_status()
-            logger.info("Unload model request sent successfully.")
-        except requests.exceptions.Timeout:
-            logger.warning(f"Timeout sending unload request to {api_url}. Continuing...")
-        except requests.exceptions.RequestException as e:
-            logger.warning(f"Failed to send unload request to {api_url}: {e}. Continuing...")
-        except Exception as e_unl:
-            logger.error(f"Unexpected error during unload request: {e_unl}", exc_info=True)
 
         # --- Recipe Building ---
         logger.debug(f"Building merge recipe for method: {cfg.merge_method}")

@@ -1,0 +1,25 @@
+identifier: sdxl-attn_blocks
+
+components:
+  unet:
+    # --- UNet Attention Components ---
+    UNET_SELF_ATTN_QKV: {shape: [], dtype: float32}   # q, k, v projections for self-attention (attn1)
+    UNET_SELF_ATTN_PROJ: {shape: [], dtype: float32}  # Output projection for self-attention (attn1)
+    UNET_CROSS_ATTN_Q: {shape: [], dtype: float32}    # q projection for cross-attention (attn2)
+    UNET_CROSS_ATTN_KV: {shape: [], dtype: float32}   # k, v projections for cross-attention (attn2)
+    UNET_CROSS_ATTN_PROJ: {shape: [], dtype: float32} # Output projection for cross-attention (attn2)
+    UNET_ATTN_FF: {shape: [], dtype: float32}         # Feed-forward layers within Transformer blocks
+    UNET_ATTN_NORM: {shape: [], dtype: float32}       # LayerNorms within Transformer blocks
+
+    # --- Other UNet parts grouped broadly ---
+    UNET_RES_CONV_NORM: {shape: [], dtype: float32} # All ResNet blocks, Convolutions, and their GroupNorms
+    UNET_EMBED: {shape: [], dtype: float32}         # Time and Label embeddings
+
+  clip_l:
+    CLIP_L_ALL: {shape: [], dtype: float32} # Simplified for this example
+
+  clip_g:
+    CLIP_G_ALL: {shape: [], dtype: float32} # Simplified for this example
+
+  vae:
+    VAE_ALL: {shape: [], dtype: float32}

@@ -1,0 +1,210 @@
+identifier: sdxl-type_structure_blocks
+
+components:
+  unet:
+    # --- Conditioning & IO ---
+    UNET_EMBED_TIME: {shape: [], dtype: float32}       # time_embed.*
+    UNET_EMBED_LABEL: {shape: [], dtype: float32}      # label_emb.*
+    UNET_CONV_INPUT: {shape: [], dtype: float32}       # input_blocks.0.0.*
+    UNET_CONV_OUTPUT: {shape: [], dtype: float32}      # out.* (except norm)
+    UNET_NORM_OUTPUT: {shape: [], dtype: float32}      # out.0.* (final norm)
+
+    # --- Down Path ---
+    # Stage 0: input_blocks.1 & 2 (ResNet Blocks) + input_blocks.3 (Down Conv)
+    UNET_DOWN0_RES: {shape: [], dtype: float32}        # input_blocks.1.0/2.0: in_layers.2, out_layers.3, emb_layers.1 weights/biases (core ResNet)
+    UNET_DOWN0_NORM: {shape: [], dtype: float32}       # input_blocks.1.0/2.0: in_layers.0, out_layers.0 weights/biases (GroupNorms)
+    UNET_DOWN0_CONV_DOWN: {shape: [], dtype: float32}  # input_blocks.3.0.op.* (Downsampling Conv)
+
+    # Stage 1: input_blocks.4 & 5 (ResNet + Transformer Blocks) + input_blocks.6 (Down Conv)
+    UNET_DOWN1_RES: {shape: [], dtype: float32}        # input_blocks.4.0/5.0: in_layers.2, out_layers.3, emb_layers.1; input_blocks.4.1/5.1: proj_in, proj_out (ResNet + Attn Framing)
+    UNET_DOWN1_NORM: {shape: [], dtype: float32}       # input_blocks.4.0/5.0: in_layers.0, out_layers.0; input_blocks.4.1/5.1: norm, transformer_blocks.*.norm1/2/3 (All Norms in stage)
+    UNET_DOWN1_ATTN_SELF: {shape: [], dtype: float32}  # input_blocks.4.1/5.1: transformer_blocks.*.attn1.* (Self-Attention QKV, Proj)
+    UNET_DOWN1_ATTN_CROSS: {shape: [], dtype: float32} # input_blocks.4.1/5.1: transformer_blocks.*.attn2.* (Cross-Attention QKV, Proj)
+    UNET_DOWN1_FF: {shape: [], dtype: float32}         # input_blocks.4.1/5.1: transformer_blocks.*.ff.* (FeedForward in Transformer)
+    UNET_DOWN1_SKIP: {shape: [], dtype: float32}       # input_blocks.4.0/5.0: skip_connection.* (Skip Connection Layers)
+    UNET_DOWN1_CONV_DOWN: {shape: [], dtype: float32}  # input_blocks.6.0.op.* (Downsampling Conv)
+
+    # Stage 2: input_blocks.7 & 8 (ResNet + Transformer Blocks) -> To Middle
+    UNET_DOWN2_RES: {shape: [], dtype: float32}        # input_blocks.7.0/8.0: in_layers.2, out_layers.3, emb_layers.1; input_blocks.7.1/8.1: proj_in, proj_out
+    UNET_DOWN2_NORM: {shape: [], dtype: float32}       # input_blocks.7.0/8.0: in_layers.0, out_layers.0; input_blocks.7.1/8.1: norm, transformer_blocks.*.norm1/2/3
+    UNET_DOWN2_ATTN_SELF: {shape: [], dtype: float32}  # input_blocks.7.1/8.1: transformer_blocks.*.attn1.*
+    UNET_DOWN2_ATTN_CROSS: {shape: [], dtype: float32} # input_blocks.7.1/8.1: transformer_blocks.*.attn2.*
+    UNET_DOWN2_FF: {shape: [], dtype: float32}         # input_blocks.7.1/8.1: transformer_blocks.*.ff.*
+    UNET_DOWN2_SKIP: {shape: [], dtype: float32}       # input_blocks.7.0/8.0: skip_connection.*
+
+    # --- Middle Path: middle_block.0 (Res), .1 (Transformer), .2 (Res) ---
+    UNET_MID_RES: {shape: [], dtype: float32}          # middle_block.0/2: in_layers.2, out_layers.3, emb_layers.1; middle_block.1: proj_in, proj_out
+    UNET_MID_NORM: {shape: [], dtype: float32}         # middle_block.0/2: in_layers.0, out_layers.0; middle_block.1: norm, transformer_blocks.*.norm1/2/3
+    UNET_MID_ATTN_SELF: {shape: [], dtype: float32}    # middle_block.1: transformer_blocks.*.attn1.*
+    UNET_MID_ATTN_CROSS: {shape: [], dtype: float32}   # middle_block.1: transformer_blocks.*.attn2.*
+    UNET_MID_FF: {shape: [], dtype: float32}           # middle_block.1: transformer_blocks.*.ff.*
+
+    # --- Up Path ---
+    # Stage 2: output_blocks.0, 1, 2 (ResNet + Transformer Blocks + Upsample Conv)
+    UNET_UP2_RES: {shape: [], dtype: float32}          # output_blocks.0.0/1.0/2.0: in_layers.2, out_layers.3, emb_layers.1; output_blocks.0.1/1.1/2.1: proj_in, proj_out; output_blocks.2.2.conv.* (ResNet + Attn Framing + Upsample Conv)
+    UNET_UP2_NORM: {shape: [], dtype: float32}         # output_blocks.0.0/1.0/2.0: in_layers.0, out_layers.0; output_blocks.0.1/1.1/2.1: norm, transformer_blocks.*.norm1/2/3
+    UNET_UP2_ATTN_SELF: {shape: [], dtype: float32}    # output_blocks.0.1/1.1/2.1: transformer_blocks.*.attn1.*
+    UNET_UP2_ATTN_CROSS: {shape: [], dtype: float32}   # output_blocks.0.1/1.1/2.1: transformer_blocks.*.attn2.*
+    UNET_UP2_FF: {shape: [], dtype: float32}           # output_blocks.0.1/1.1/2.1: transformer_blocks.*.ff.*
+    UNET_UP2_SKIP: {shape: [], dtype: float32}         # output_blocks.0.0/1.0/2.0: skip_connection.*
+
+    # Stage 1: output_blocks.3, 4, 5 (ResNet + Transformer Blocks + Upsample Conv)
+    UNET_UP1_RES: {shape: [], dtype: float32}          # output_blocks.3.0/4.0/5.0: in_layers.2, out_layers.3, emb_layers.1; output_blocks.3.1/4.1/5.1: proj_in, proj_out; output_blocks.5.2.conv.*
+    UNET_UP1_NORM: {shape: [], dtype: float32}         # output_blocks.3.0/4.0/5.0: in_layers.0, out_layers.0; output_blocks.3.1/4.1/5.1: norm, transformer_blocks.*.norm1/2/3
+    UNET_UP1_ATTN_SELF: {shape: [], dtype: float32}    # output_blocks.3.1/4.1/5.1: transformer_blocks.*.attn1.*
+    UNET_UP1_ATTN_CROSS: {shape: [], dtype: float32}   # output_blocks.3.1/4.1/5.1: transformer_blocks.*.attn2.*
+    UNET_UP1_FF: {shape: [], dtype: float32}           # output_blocks.3.1/4.1/5.1: transformer_blocks.*.ff.*
+    UNET_UP1_SKIP: {shape: [], dtype: float32}         # output_blocks.3.0/4.0/5.0: skip_connection.*
+
+    # Stage 0: output_blocks.6, 7, 8 (ResNet Blocks)
+    UNET_UP0_RES: {shape: [], dtype: float32}          # output_blocks.6.0/7.0/8.0: in_layers.2, out_layers.3, emb_layers.1
+    UNET_UP0_NORM: {shape: [], dtype: float32}         # output_blocks.6.0/7.0/8.0: in_layers.0, out_layers.0
+    UNET_UP0_SKIP: {shape: [], dtype: float32}         # output_blocks.6.0/7.0/8.0: skip_connection.*
+
+  clip_l: # OpenCLIP ViT-L/14
+    CLIP_L_EMBED_TOKEN: {shape: [], dtype: float32}     # embeddings.token_embedding.*
+    CLIP_L_EMBED_POS: {shape: [], dtype: float32}       # embeddings.position_embedding.*, embeddings.position_ids
+    CLIP_L_L00_ATTN: {shape: [], dtype: float32}        # layers.0.self_attn.*
+    CLIP_L_L00_MLP: {shape: [], dtype: float32}         # layers.0.mlp.*
+    CLIP_L_L00_NORM: {shape: [], dtype: float32}        # layers.0.layer_norm*.*
+    CLIP_L_L01_ATTN: {shape: [], dtype: float32}        # layers.1.self_attn.*
+    CLIP_L_L01_MLP: {shape: [], dtype: float32}         # layers.1.mlp.*
+    CLIP_L_L01_NORM: {shape: [], dtype: float32}        # layers.1.layer_norm*.*
+    CLIP_L_L02_ATTN: {shape: [], dtype: float32}        # layers.2.*
+    CLIP_L_L02_MLP: {shape: [], dtype: float32}
+    CLIP_L_L02_NORM: {shape: [], dtype: float32}
+    CLIP_L_L03_ATTN: {shape: [], dtype: float32}        # layers.3.*
+    CLIP_L_L03_MLP: {shape: [], dtype: float32}
+    CLIP_L_L03_NORM: {shape: [], dtype: float32}
+    CLIP_L_L04_ATTN: {shape: [], dtype: float32}        # layers.4.*
+    CLIP_L_L04_MLP: {shape: [], dtype: float32}
+    CLIP_L_L04_NORM: {shape: [], dtype: float32}
+    CLIP_L_L05_ATTN: {shape: [], dtype: float32}        # layers.5.*
+    CLIP_L_L05_MLP: {shape: [], dtype: float32}
+    CLIP_L_L05_NORM: {shape: [], dtype: float32}
+    CLIP_L_L06_ATTN: {shape: [], dtype: float32}        # layers.6.*
+    CLIP_L_L06_MLP: {shape: [], dtype: float32}
+    CLIP_L_L06_NORM: {shape: [], dtype: float32}
+    CLIP_L_L07_ATTN: {shape: [], dtype: float32}        # layers.7.*
+    CLIP_L_L07_MLP: {shape: [], dtype: float32}
+    CLIP_L_L07_NORM: {shape: [], dtype: float32}
+    CLIP_L_L08_ATTN: {shape: [], dtype: float32}        # layers.8.*
+    CLIP_L_L08_MLP: {shape: [], dtype: float32}
+    CLIP_L_L08_NORM: {shape: [], dtype: float32}
+    CLIP_L_L09_ATTN: {shape: [], dtype: float32}        # layers.9.*
+    CLIP_L_L09_MLP: {shape: [], dtype: float32}
+    CLIP_L_L09_NORM: {shape: [], dtype: float32}
+    CLIP_L_L10_ATTN: {shape: [], dtype: float32}        # layers.10.*
+    CLIP_L_L10_MLP: {shape: [], dtype: float32}
+    CLIP_L_L10_NORM: {shape: [], dtype: float32}
+    CLIP_L_L11_ATTN: {shape: [], dtype: float32}        # layers.11.*
+    CLIP_L_L11_MLP: {shape: [], dtype: float32}
+    CLIP_L_L11_NORM: {shape: [], dtype: float32}
+    CLIP_L_NORM_FINAL: {shape: [], dtype: float32}      # final_layer_norm.*
+
+  clip_g: # OpenCLIP ViT-bigG/14
+    CLIP_G_EMBED_TOKEN: {shape: [], dtype: float32}     # conditioner.embedders.1.model.token_embedding.*
+    CLIP_G_EMBED_POS: {shape: [], dtype: float32}       # conditioner.embedders.1.model.positional_embedding
+    CLIP_G_L00_ATTN: {shape: [], dtype: float32}        # conditioner.embedders.1.model.transformer.resblocks.0.attn.*
+    CLIP_G_L00_MLP: {shape: [], dtype: float32}         # conditioner.embedders.1.model.transformer.resblocks.0.mlp.*
+    CLIP_G_L00_NORM: {shape: [], dtype: float32}        # conditioner.embedders.1.model.transformer.resblocks.0.ln_*.*
+    CLIP_G_L01_ATTN: {shape: [], dtype: float32}        # conditioner.embedders.1.model.transformer.resblocks.1.attn.*
+    CLIP_G_L01_MLP: {shape: [], dtype: float32}         # conditioner.embedders.1.model.transformer.resblocks.1.mlp.*
+    CLIP_G_L01_NORM: {shape: [], dtype: float32}        # conditioner.embedders.1.model.transformer.resblocks.1.ln_*.*
+    CLIP_G_L02_ATTN: {shape: [], dtype: float32}        # conditioner.embedders.1.model.transformer.resblocks.2.attn.*
+    CLIP_G_L02_MLP: {shape: [], dtype: float32}         # conditioner.embedders.1.model.transformer.resblocks.2.mlp.*
+    CLIP_G_L02_NORM: {shape: [], dtype: float32}        # conditioner.embedders.1.model.transformer.resblocks.2.ln_*.*
+    CLIP_G_L03_ATTN: {shape: [], dtype: float32}        # conditioner.embedders.1.model.transformer.resblocks.3.attn.*
+    CLIP_G_L03_MLP: {shape: [], dtype: float32}         # conditioner.embedders.1.model.transformer.resblocks.3.mlp.*
+    CLIP_G_L03_NORM: {shape: [], dtype: float32}        # conditioner.embedders.1.model.transformer.resblocks.3.ln_*.*
+    CLIP_G_L04_ATTN: {shape: [], dtype: float32}        # conditioner.embedders.1.model.transformer.resblocks.4.attn.*
+    CLIP_G_L04_MLP: {shape: [], dtype: float32}         # conditioner.embedders.1.model.transformer.resblocks.4.mlp.*
+    CLIP_G_L04_NORM: {shape: [], dtype: float32}        # conditioner.embedders.1.model.transformer.resblocks.4.ln_*.*
+    CLIP_G_L05_ATTN: {shape: [], dtype: float32}        # conditioner.embedders.1.model.transformer.resblocks.5.attn.*
+    CLIP_G_L05_MLP: {shape: [], dtype: float32}         # conditioner.embedders.1.model.transformer.resblocks.5.mlp.*
+    CLIP_G_L05_NORM: {shape: [], dtype: float32}        # conditioner.embedders.1.model.transformer.resblocks.5.ln_*.*
+    CLIP_G_L06_ATTN: {shape: [], dtype: float32}        # conditioner.embedders.1.model.transformer.resblocks.6.attn.*
+    CLIP_G_L06_MLP: {shape: [], dtype: float32}         # conditioner.embedders.1.model.transformer.resblocks.6.mlp.*
+    CLIP_G_L06_NORM: {shape: [], dtype: float32}        # conditioner.embedders.1.model.transformer.resblocks.6.ln_*.*
+    CLIP_G_L07_ATTN: {shape: [], dtype: float32}        # conditioner.embedders.1.model.transformer.resblocks.7.attn.*
+    CLIP_G_L07_MLP: {shape: [], dtype: float32}         # conditioner.embedders.1.model.transformer.resblocks.7.mlp.*
+    CLIP_G_L07_NORM: {shape: [], dtype: float32}        # conditioner.embedders.1.model.transformer.resblocks.7.ln_*.*
+    CLIP_G_L08_ATTN: {shape: [], dtype: float32}        # conditioner.embedders.1.model.transformer.resblocks.8.attn.*
+    CLIP_G_L08_MLP: {shape: [], dtype: float32}         # conditioner.embedders.1.model.transformer.resblocks.8.mlp.*
+    CLIP_G_L08_NORM: {shape: [], dtype: float32}        # conditioner.embedders.1.model.transformer.resblocks.8.ln_*.*
+    CLIP_G_L09_ATTN: {shape: [], dtype: float32}        # conditioner.embedders.1.model.transformer.resblocks.9.attn.*
+    CLIP_G_L09_MLP: {shape: [], dtype: float32}         # conditioner.embedders.1.model.transformer.resblocks.9.mlp.*
+    CLIP_G_L09_NORM: {shape: [], dtype: float32}        # conditioner.embedders.1.model.transformer.resblocks.9.ln_*.*
+    CLIP_G_L10_ATTN: {shape: [], dtype: float32}        # conditioner.embedders.1.model.transformer.resblocks.10.attn.*
+    CLIP_G_L10_MLP: {shape: [], dtype: float32}         # conditioner.embedders.1.model.transformer.resblocks.10.mlp.*
+    CLIP_G_L10_NORM: {shape: [], dtype: float32}        # conditioner.embedders.1.model.transformer.resblocks.10.ln_*.*
+    CLIP_G_L11_ATTN: {shape: [], dtype: float32}        # conditioner.embedders.1.model.transformer.resblocks.11.attn.*
+    CLIP_G_L11_MLP: {shape: [], dtype: float32}         # conditioner.embedders.1.model.transformer.resblocks.11.mlp.*
+    CLIP_G_L11_NORM: {shape: [], dtype: float32}        # conditioner.embedders.1.model.transformer.resblocks.11.ln_*.*
+    CLIP_G_L12_ATTN: {shape: [], dtype: float32}        # conditioner.embedders.1.model.transformer.resblocks.12.attn.*
+    CLIP_G_L12_MLP: {shape: [], dtype: float32}         # conditioner.embedders.1.model.transformer.resblocks.12.mlp.*
+    CLIP_G_L12_NORM: {shape: [], dtype: float32}        # conditioner.embedders.1.model.transformer.resblocks.12.ln_*.*
+    CLIP_G_L13_ATTN: {shape: [], dtype: float32}        # conditioner.embedders.1.model.transformer.resblocks.13.attn.*
+    CLIP_G_L13_MLP: {shape: [], dtype: float32}         # conditioner.embedders.1.model.transformer.resblocks.13.mlp.*
+    CLIP_G_L13_NORM: {shape: [], dtype: float32}        # conditioner.embedders.1.model.transformer.resblocks.13.ln_*.*
+    CLIP_G_L14_ATTN: {shape: [], dtype: float32}        # conditioner.embedders.1.model.transformer.resblocks.14.attn.*
+    CLIP_G_L14_MLP: {shape: [], dtype: float32}         # conditioner.embedders.1.model.transformer.resblocks.14.mlp.*
+    CLIP_G_L14_NORM: {shape: [], dtype: float32}        # conditioner.embedders.1.model.transformer.resblocks.14.ln_*.*
+    CLIP_G_L15_ATTN: {shape: [], dtype: float32}        # conditioner.embedders.1.model.transformer.resblocks.15.attn.*
+    CLIP_G_L15_MLP: {shape: [], dtype: float32}         # conditioner.embedders.1.model.transformer.resblocks.15.mlp.*
+    CLIP_G_L15_NORM: {shape: [], dtype: float32}        # conditioner.embedders.1.model.transformer.resblocks.15.ln_*.*
+    CLIP_G_L16_ATTN: {shape: [], dtype: float32}        # conditioner.embedders.1.model.transformer.resblocks.16.attn.*
+    CLIP_G_L16_MLP: {shape: [], dtype: float32}         # conditioner.embedders.1.model.transformer.resblocks.16.mlp.*
+    CLIP_G_L16_NORM: {shape: [], dtype: float32}        # conditioner.embedders.1.model.transformer.resblocks.16.ln_*.*
+    CLIP_G_L17_ATTN: {shape: [], dtype: float32}        # conditioner.embedders.1.model.transformer.resblocks.17.attn.*
+    CLIP_G_L17_MLP: {shape: [], dtype: float32}         # conditioner.embedders.1.model.transformer.resblocks.17.mlp.*
+    CLIP_G_L17_NORM: {shape: [], dtype: float32}        # conditioner.embedders.1.model.transformer.resblocks.17.ln_*.*
+    CLIP_G_L18_ATTN: {shape: [], dtype: float32}        # conditioner.embedders.1.model.transformer.resblocks.18.attn.*
+    CLIP_G_L18_MLP: {shape: [], dtype: float32}         # conditioner.embedders.1.model.transformer.resblocks.18.mlp.*
+    CLIP_G_L18_NORM: {shape: [], dtype: float32}        # conditioner.embedders.1.model.transformer.resblocks.18.ln_*.*
+    CLIP_G_L19_ATTN: {shape: [], dtype: float32}        # conditioner.embedders.1.model.transformer.resblocks.19.attn.*
+    CLIP_G_L19_MLP: {shape: [], dtype: float32}         # conditioner.embedders.1.model.transformer.resblocks.19.mlp.*
+    CLIP_G_L19_NORM: {shape: [], dtype: float32}        # conditioner.embedders.1.model.transformer.resblocks.19.ln_*.*
+    CLIP_G_L20_ATTN: {shape: [], dtype: float32}        # conditioner.embedders.1.model.transformer.resblocks.20.attn.*
+    CLIP_G_L20_MLP: {shape: [], dtype: float32}         # conditioner.embedders.1.model.transformer.resblocks.20.mlp.*
+    CLIP_G_L20_NORM: {shape: [], dtype: float32}        # conditioner.embedders.1.model.transformer.resblocks.20.ln_*.*
+    CLIP_G_L21_ATTN: {shape: [], dtype: float32}        # conditioner.embedders.1.model.transformer.resblocks.21.attn.*
+    CLIP_G_L21_MLP: {shape: [], dtype: float32}         # conditioner.embedders.1.model.transformer.resblocks.21.mlp.*
+    CLIP_G_L21_NORM: {shape: [], dtype: float32}        # conditioner.embedders.1.model.transformer.resblocks.21.ln_*.*
+    CLIP_G_L22_ATTN: {shape: [], dtype: float32}        # conditioner.embedders.1.model.transformer.resblocks.22.attn.*
+    CLIP_G_L22_MLP: {shape: [], dtype: float32}         # conditioner.embedders.1.model.transformer.resblocks.22.mlp.*
+    CLIP_G_L22_NORM: {shape: [], dtype: float32}        # conditioner.embedders.1.model.transformer.resblocks.22.ln_*.*
+    CLIP_G_L23_ATTN: {shape: [], dtype: float32}        # conditioner.embedders.1.model.transformer.resblocks.23.attn.*
+    CLIP_G_L23_MLP: {shape: [], dtype: float32}         # conditioner.embedders.1.model.transformer.resblocks.23.mlp.*
+    CLIP_G_L23_NORM: {shape: [], dtype: float32}        # conditioner.embedders.1.model.transformer.resblocks.23.ln_*.*
+    CLIP_G_L24_ATTN: {shape: [], dtype: float32}        # conditioner.embedders.1.model.transformer.resblocks.24.attn.*
+    CLIP_G_L24_MLP: {shape: [], dtype: float32}         # conditioner.embedders.1.model.transformer.resblocks.24.mlp.*
+    CLIP_G_L24_NORM: {shape: [], dtype: float32}        # conditioner.embedders.1.model.transformer.resblocks.24.ln_*.*
+    CLIP_G_L25_ATTN: {shape: [], dtype: float32}        # conditioner.embedders.1.model.transformer.resblocks.25.attn.*
+    CLIP_G_L25_MLP: {shape: [], dtype: float32}         # conditioner.embedders.1.model.transformer.resblocks.25.mlp.*
+    CLIP_G_L25_NORM: {shape: [], dtype: float32}        # conditioner.embedders.1.model.transformer.resblocks.25.ln_*.*
+    CLIP_G_L26_ATTN: {shape: [], dtype: float32}        # conditioner.embedders.1.model.transformer.resblocks.26.attn.*
+    CLIP_G_L26_MLP: {shape: [], dtype: float32}         # conditioner.embedders.1.model.transformer.resblocks.26.mlp.*
+    CLIP_G_L26_NORM: {shape: [], dtype: float32}        # conditioner.embedders.1.model.transformer.resblocks.26.ln_*.*
+    CLIP_G_L27_ATTN: {shape: [], dtype: float32}        # conditioner.embedders.1.model.transformer.resblocks.27.attn.*
+    CLIP_G_L27_MLP: {shape: [], dtype: float32}         # conditioner.embedders.1.model.transformer.resblocks.27.mlp.*
+    CLIP_G_L27_NORM: {shape: [], dtype: float32}        # conditioner.embedders.1.model.transformer.resblocks.27.ln_*.*
+    CLIP_G_L28_ATTN: {shape: [], dtype: float32}        # conditioner.embedders.1.model.transformer.resblocks.28.attn.*
+    CLIP_G_L28_MLP: {shape: [], dtype: float32}         # conditioner.embedders.1.model.transformer.resblocks.28.mlp.*
+    CLIP_G_L28_NORM: {shape: [], dtype: float32}        # conditioner.embedders.1.model.transformer.resblocks.28.ln_*.*
+    CLIP_G_L29_ATTN: {shape: [], dtype: float32}        # conditioner.embedders.1.model.transformer.resblocks.29.attn.*
+    CLIP_G_L29_MLP: {shape: [], dtype: float32}         # conditioner.embedders.1.model.transformer.resblocks.29.mlp.*
+    CLIP_G_L29_NORM: {shape: [], dtype: float32}        # conditioner.embedders.1.model.transformer.resblocks.29.ln_*.*
+    CLIP_G_L30_ATTN: {shape: [], dtype: float32}        # conditioner.embedders.1.model.transformer.resblocks.30.attn.*
+    CLIP_G_L30_MLP: {shape: [], dtype: float32}         # conditioner.embedders.1.model.transformer.resblocks.30.mlp.*
+    CLIP_G_L30_NORM: {shape: [], dtype: float32}        # conditioner.embedders.1.model.transformer.resblocks.30.ln_*.*
+    CLIP_G_L31_ATTN: {shape: [], dtype: float32}        # conditioner.embedders.1.model.transformer.resblocks.31.attn.*
+    CLIP_G_L31_MLP: {shape: [], dtype: float32}         # conditioner.embedders.1.model.transformer.resblocks.31.mlp.*
+    CLIP_G_L31_NORM: {shape: [], dtype: float32}        # conditioner.embedders.1.model.transformer.resblocks.31.ln_*.*
+    CLIP_G_NORM_FINAL: {shape: [], dtype: float32}      # conditioner.embedders.1.model.ln_final.*
+    CLIP_G_PROJ: {shape: [], dtype: float32}            # conditioner.embedders.1.model.text_projection.*
+    # CLIP_G_LOGIT_SCALE: {shape: [], dtype: float32}  # conditioner.embedders.1.model.logit_scale (Usually excluded)
+
+  vae:
+    # Keeping VAE simple unless VAE merging is a specific goal
+    VAE_ALL: {shape: [], dtype: float32}

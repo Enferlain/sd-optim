@@ -1,0 +1,22 @@
+identifier: sdxl-resolution_blocks
+
+components:
+  unet:
+    UNET_EMBED: {shape: [], dtype: float32}           # Time, Label embeds
+    UNET_RES_INITIAL: {shape: [], dtype: float32}     # Highest Res Input Stage (input_blocks.0-2)
+    UNET_RES_MID1: {shape: [], dtype: float32}        # Mid Res Stage 1 (input_blocks.3-5)
+    UNET_RES_MID2: {shape: [], dtype: float32}        # Mid Res Stage 2 (input_blocks.6-8)
+    UNET_RES_BOTTLENECK: {shape: [], dtype: float32}  # Lowest Res Stage (middle_block.0-2)
+    UNET_RES_UP2: {shape: [], dtype: float32}         # Upsampling to Mid Res 2 (output_blocks.0-2)
+    UNET_RES_UP1: {shape: [], dtype: float32}         # Upsampling to Mid Res 1 (output_blocks.3-5)
+    UNET_RES_FINAL: {shape: [], dtype: float32}       # Upsampling to Initial Res (output_blocks.6-8)
+    UNET_OUT: {shape: [], dtype: float32}             # Final output convolution (out.*)
+
+  clip_l:
+    CLIP_L_ALL: {shape: [], dtype: float32} # Simplified
+
+  clip_g:
+    CLIP_G_ALL: {shape: [], dtype: float32} # Simplified
+
+  vae:
+    VAE_ALL: {shape: [], dtype: float32}

@@ -672,7 +672,7 @@ def resolve_merge_method(merge_method_name: str) -> MergeMethod:
 #             output,
 #             model_configs.get_minimal_dummy_header(),
 #             model_configs.get_keys_to_merge(),
-#             recipe_serializer.serialize(recipe),
+#             serialization.serialize(recipe),
 #             buffer_size_per_file // threads,
 #             save_dtype,
 #         )

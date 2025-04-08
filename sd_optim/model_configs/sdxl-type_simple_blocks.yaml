@@ -1,0 +1,25 @@
+identifier: sdxl-type_simple_blocks
+
+components:
+  unet:
+    UNET_ATTN: {shape: [], dtype: float32}  # All Attention/Transformer related layers (Self+Cross QKV, Proj, FF)
+    UNET_RES: {shape: [], dtype: float32}   # All ResNet block related layers (excluding norms/convs handled below)
+    UNET_CONV: {shape: [], dtype: float32}  # All Convolutions (input, down, up, output, ResNet internal convs)
+    UNET_NORM: {shape: [], dtype: float32}  # All GroupNorms and LayerNorms
+    UNET_EMBED: {shape: [], dtype: float32} # Time and Label embeddings
+
+  clip_l:
+    CLIP_L_ATTN: {shape: [], dtype: float32} # Attention weights (q,k,v,out_proj)
+    CLIP_L_MLP: {shape: [], dtype: float32}  # MLP weights (fc1, fc2)
+    CLIP_L_NORM: {shape: [], dtype: float32} # LayerNorm weights
+    CLIP_L_EMBED: {shape: [], dtype: float32} # Embedding weights
+
+  clip_g:
+    CLIP_G_ATTN: {shape: [], dtype: float32} # Attention weights (in_proj, out_proj)
+    CLIP_G_MLP: {shape: [], dtype: float32}  # MLP weights (c_fc, c_proj)
+    CLIP_G_NORM: {shape: [], dtype: float32} # LayerNorm weights
+    CLIP_G_EMBED: {shape: [], dtype: float32} # Embedding weights
+    CLIP_G_PROJ: {shape: [], dtype: float32} # Text projection weights
+
+  vae:
+    VAE_ALL: {shape: [], dtype: float32}

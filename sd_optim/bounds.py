@@ -248,15 +248,15 @@ class ParameterHandler:
                             if temp_items_for_group:
                                 generated_param_name = f"{group_name}_{base_param_name}"
                                 # Add group param info only if not already added by another param in this strategy run
-                                if group_name not in processed_groups_in_component:
-                                    params_info[generated_param_name] = {
-                                        **base_metadata,
-                                        "strategy": "group", # Ensure strategy is set correctly
-                                        "group_name": group_name,
-                                        "items_covered": list(set(temp_items_for_group)), # Use unique list
-                                        "bounds": default_bounds_tuple
-                                    }
-                                    processed_groups_in_component.add(group_name) # Mark group as processed
+                                # if group_name not in processed_groups_in_component: # <<< DELETE THIS LINE
+                                params_info[generated_param_name] = { # <<< INDENT THIS BLOCK BACK
+                                    **base_metadata,
+                                    "strategy": "group", # Ensure strategy is set correctly
+                                    "group_name": group_name,
+                                    "items_covered": list(set(temp_items_for_group)), # Use unique list
+                                    "bounds": default_bounds_tuple
+                                }
+                                # processed_groups_in_component.add(group_name)  # <<< DELETE THIS LINE
 
                                 # Mark all items as assigned by this group
                                 for item_name in temp_items_for_group:

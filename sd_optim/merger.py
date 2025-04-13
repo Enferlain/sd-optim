@@ -15,7 +15,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, Optional, List, Tuple, Any
 
-from omegaconf import DictConfig, open_dict
+from omegaconf import DictConfig, open_dict, ListConfig
 from sd_mecha import serialization, extensions, recipe_nodes
 from sd_mecha.extensions.merge_methods import MergeMethod, RecipeNodeOrValue
 from sd_mecha.recipe_nodes import RecipeNodeOrValue, ModelRecipeNode, RecipeNode
@@ -107,7 +107,7 @@ class Merger:
 
         # --- Initialize other Merger attributes ---
         # Create ModelRecipeNode objects for ALL models AFTER determining models_dir
-        self.models = self._create_model_nodes() # Moved node creation here
+        self.models: List[ModelRecipeNode] = self._create_model_nodes() # Hint as specific type initially
         self.output_file: Optional[Path] = None
         self.best_output_file: Optional[Path] = None
         self.create_model_out_name() # Set initial output name
@@ -141,39 +141,94 @@ class Merger:
         if not hasattr(self.cfg, 'save_dtype') or self.cfg.save_dtype not in precision_mapping:
              raise ValueError(f"Invalid or missing 'save_dtype': {self.cfg.get('save_dtype')}. Must be one of {list(precision_mapping.keys())}")
 
-    # --- MODIFIED: _create_model_nodes to use relative paths ---
-    def _create_model_nodes(self) -> List[RecipeNode]:
+    # --- Fully Written _create_model_nodes Function ---
+    def _create_model_nodes(self) -> List[ModelRecipeNode]:
         """
         Creates sd_mecha ModelRecipeNodes using paths relative to the
-        determined models_dir.
+        determined models_dir, ensuring only ModelRecipeNodes are returned.
         """
-        model_nodes = []
-        if not self.models_dir or not self.models_dir.is_dir():
-             logger.error("Cannot create model nodes: valid models_dir is not set.")
+        # Hint the list we are building as the specific type
+        model_nodes: List[ModelRecipeNode] = []
+
+        # Check if models_dir was successfully determined in __init__
+        if not hasattr(self, 'models_dir') or not self.models_dir or not self.models_dir.is_dir():
+             logger.error("Cannot create model nodes: valid models_dir is not set or invalid.")
              return [] # Return empty list if base directory isn't valid
 
         logger.info(f"Creating model nodes relative to base directory: {self.models_dir}")
 
-        for model_path_str in self.cfg.get("model_paths", []):
-            resolved_path : Path # Type hint for clarity
-            original_path = Path(model_path_str)
-            if original_path.is_absolute() and original_path.exists(): resolved_path = original_path.resolve()
-            elif (self.models_dir / original_path).exists(): resolved_path = (self.models_dir / original_path).resolve()
-            elif original_path.exists(): resolved_path = original_path.resolve()
-            else: logger.error(f"Model path not found: {model_path_str}. Skipping node."); continue
+        # Safely get model_paths list from config, default to empty list
+        model_paths_list = self.cfg.get("model_paths", [])
+        # --- MODIFIED CHECK ---
+        if not isinstance(model_paths_list, (list, ListConfig)):  # Check for list OR ListConfig
+            logger.warning(
+                f"'model_paths' in config is not a list or ListConfig ({type(model_paths_list)}). Treating as empty.")
+            model_paths_list = []
+        # --- END MODIFIED CHECK ---
+        else:
+            # Optional: Convert ListConfig to plain list for easier processing later if needed
+            model_paths_list = list(model_paths_list)
+
+        for model_path_str in model_paths_list:
+            if not isinstance(model_path_str, str):
+                logger.warning(f"Skipping non-string path in model_paths: {model_path_str}")
+                continue
 
             try:
-                relative_path_str = os.path.relpath(resolved_path, self.models_dir)
-            except ValueError:
-                logger.warning(f"Cannot create relative path for {resolved_path}. Using absolute path.")
-                relative_path_str = str(resolved_path)
+                resolved_path: Path # Type hint for clarity
+                original_path = Path(model_path_str)
 
-            # Create the node using the relative path string
-            # We don't need to detect LoRAs here anymore, sd_mecha.convert handles it later
-            model_nodes.append(sd_mecha.model(relative_path_str))
+                # Attempt to resolve the path
+                if original_path.is_absolute():
+                    if original_path.exists():
+                        resolved_path = original_path.resolve()
+                    else:
+                        logger.error(f"Absolute model path not found: {original_path}. Skipping node.")
+                        continue
+                else:
+                    # Try relative to models_dir
+                    path_relative_to_models_dir = self.models_dir / original_path
+                    if path_relative_to_models_dir.exists():
+                        resolved_path = path_relative_to_models_dir.resolve()
+                    # Maybe try relative to current working directory as a fallback?
+                    elif original_path.exists():
+                         logger.warning(f"Model path '{original_path}' not found relative to models_dir, but found relative to current working directory. Using absolute path.")
+                         resolved_path = original_path.resolve()
+                    else:
+                        logger.error(f"Relative model path not found: '{original_path}' (checked in '{self.models_dir}' and CWD). Skipping node.")
+                        continue
+
+                # Determine path string for sd_mecha.model() (prefer relative)
+                try:
+                    # Use os.path.relpath for cross-drive compatibility if needed, otherwise Path.relative_to
+                    relative_path_str = os.path.relpath(resolved_path, self.models_dir)
+                    # Check if relpath actually worked (it might return absolute if on different drives on Windows)
+                    if Path(relative_path_str).is_absolute():
+                         relative_path_str = str(resolved_path) # Use absolute if relpath failed
+                except ValueError:
+                    logger.warning(f"Cannot create relative path for {resolved_path} (potentially different drives). Using absolute path.")
+                    relative_path_str = str(resolved_path)
+
+                # Create the node using the determined path string
+                # sd_mecha.model() is hinted to return RecipeNode
+                node: RecipeNode = sd_mecha.model(relative_path_str)
+
+                # --- Explicitly check if it's a ModelRecipeNode ---
+                if isinstance(node, ModelRecipeNode):
+                    model_nodes.append(node) # Add it to our specific list
+                else:
+                    # Log an error if sd_mecha.model(path) returns something unexpected
+                    logger.error(f"Node created for path '{relative_path_str}' is not a ModelRecipeNode! Type: {type(node)}. Skipping.")
+                    # Decide if this should be a fatal error:
+                    # raise TypeError(f"Expected ModelRecipeNode for path '{relative_path_str}', got {type(node)}")
+
+            except Exception as e:
+                 # Catch potential errors during path resolution or node creation
+                 logger.error(f"Error processing path '{model_path_str}': {e}", exc_info=True)
+                 # Continue to the next path
 
         logger.info(f"Merger: Created {len(model_nodes)} ModelRecipeNodes using relative paths.")
-        return model_nodes
+        return model_nodes # Return the list guaranteed to contain ModelRecipeNodes
 
     def _create_model_output_name(self, it: int = 0, best: bool = False) -> Path:
         """Generates the output file name for the merged model."""
@@ -325,81 +380,93 @@ class Merger:
             logger.error(f"Failed to serialize or save recipe: {e}")
 
     def _prepare_model_recipe_args(
-        self,
-        initial_model_nodes: List[ModelRecipeNode],
-        base_model_node: Optional[ModelRecipeNode],
-        merge_method: MergeMethod
-    ) -> List[RecipeNodeOrValue]:
-        """Prepares model nodes for the recipe, handling LoRA conversion and delta subtraction."""
+            self,
+            initial_model_nodes: List[ModelRecipeNode],
+            base_model_node: Optional[ModelRecipeNode],
+            merge_method: MergeMethod
+    ) -> List[RecipeNodeOrValue]:  # Return type might not always be just RecipeNode now
         prepared_nodes = []
-        input_types_args = merge_method.get_input_types().args # Get positional arg types
-        input_spaces_args = merge_method.get_input_merge_spaces().args # Get positional arg merge spaces
+        input_types = merge_method.get_input_types()
+        input_spaces = merge_method.get_input_merge_spaces()
+        param_names = merge_method.get_param_names()
+        delta_space_obj = sd_mecha.extensions.merge_spaces.resolve("delta")  # Resolve once
 
-        # Use base_model_node for conversion target if available
-        conversion_target_node = base_model_node if base_model_node else initial_model_nodes[0]
+        conversion_target_node = base_model_node if base_model_node else (
+            initial_model_nodes[0] if initial_model_nodes else None)
+        if not conversion_target_node:
+            logger.error("Cannot prepare model args: No target node for potential conversions.")
+            return []
 
         for i, model_node in enumerate(initial_model_nodes):
-            current_node = model_node
+            current_node: RecipeNode = model_node  # Start with original node
             is_lora = False
+            should_add_node = True  # Flag to control adding to prepared_nodes
 
-            # --- LoRA Detection & Conversion ---
+            # --- LoRA Detection & Conversion (remains the same) ---
             try:
-                # Use self.models_dir which is resolved in __init__
-                if not self.models_dir: raise FileNotFoundError("models_dir not set")  # Safety check
-
-                # Temporarily open dicts to infer config
-                # Pass the correct directory context
-                with sd_mecha.open_input_dicts(current_node, [self.models_dir]):  # <<< USE self.models_dir
-                    if current_node.model_config:  # Check if config was inferred
+                if not self.models_dir: raise FileNotFoundError("models_dir not set")
+                with sd_mecha.open_input_dicts(current_node, [self.models_dir]):
+                    if current_node.model_config:
                         inferred_config_id = current_node.model_config.identifier
-                        if "lora" in inferred_config_id or "lycoris" in inferred_config_id:
-                            is_lora = True
-                            logger.info(f"Detected LoRA/LyCORIS: {current_node.path}")
-                    # else: logger.warning(f"Could not infer config for {current_node.path} during LoRA check.")
-            except FileNotFoundError as e_dir:
-                logger.error(f"LoRA check failed: models_dir '{self.models_dir}' invalid? Error: {e_dir}")
-            except AttributeError:
-                # This can happen if current_node.model_configs remains None after open_input_dicts
-                logger.warning(f"Could not access model_config for {current_node.path} during LoRA check.")
+                        if "lora" in inferred_config_id or "lycoris" in inferred_config_id: is_lora = True; logger.info(
+                            f"Detected LoRA/LyCORIS: {current_node.path}")
             except Exception as e_inf:
-                logger.warning(f"Error during LoRA check for {current_node.path}: {e_inf}. Assuming not a LoRA.")
+                logger.warning(f"Error during LoRA check for {current_node.path}: {e_inf}.")
 
             if is_lora:
                 logger.info(f"Converting LoRA node {current_node.path} relative to {conversion_target_node.path}")
                 try:
-                     # Convert requires the target node for config reference
-                    current_node = sd_mecha.convert(current_node, conversion_target_node)
+                    current_node = sd_mecha.convert(current_node, conversion_target_node, model_dirs=[self.models_dir])
                 except Exception as e:
-                     logger.error(f"Failed to create conversion recipe for LoRA {current_node.path}: {e}")
-                     # Handle error: skip this model, raise, or use original node?
-                     raise ValueError(f"LoRA conversion failed for {current_node.path}") from e
+                    logger.error(f"LoRA conversion failed for {current_node.path}: {e}"); raise ValueError from e
 
-            # --- Delta Subtraction ---
-            # Check if the corresponding positional parameter expects a delta
-            if i < len(input_spaces_args):
-                 expected_space = input_spaces_args[i]
-                 # Check if expected_space is a set containing delta or the delta space itself
-                 is_delta_expected = False
-                 if isinstance(expected_space, set):
-                     is_delta_expected = sd_mecha.extensions.merge_spaces.resolve("delta") in expected_space
-                 elif isinstance(expected_space, sd_mecha.extensions.merge_spaces.MergeSpace):
-                     is_delta_expected = expected_space == sd_mecha.extensions.merge_spaces.resolve("delta")
+            # --- Delta Subtraction / Exclusion ---
+            is_delta_expected = False
+            expected_space_for_arg = None
+            # Determine expected space (same logic as before)
+            if param_names.has_varargs() and i >= len(param_names.args):
+                expected_space_for_arg = input_spaces.vararg
+            elif i < len(param_names.args):
+                expected_space_for_arg = input_spaces.args[i]
 
-                 if is_delta_expected:
-                     if base_model_node:
-                         if current_node != base_model_node: # Don't subtract base from itself
-                             logger.info(f"Creating delta for model {current_node.path} relative to base.")
-                             current_node = sd_mecha.subtract(current_node, base_model_node)
-                         else:
-                              # This happens if base model itself is passed to a delta slot
-                              logger.warning(f"Base model passed to a delta parameter slot for method '{merge_method.identifier}'. Using zero delta.")
-                              # Create a zero delta - might need a more robust way
-                              current_node = sd_mecha.literal(0.0) # Represent zero delta as literal 0
-                     else:
-                         raise ValueError(f"Merge method '{merge_method.identifier}' requires a delta for positional argument {i}, but no base model was selected.")
+            if expected_space_for_arg is not None:
+                if isinstance(expected_space_for_arg, set):
+                    is_delta_expected = delta_space_obj in expected_space_for_arg
+                elif isinstance(expected_space_for_arg, sd_mecha.extensions.merge_spaces.MergeSpace):
+                    is_delta_expected = expected_space_for_arg == delta_space_obj
 
-            prepared_nodes.append(current_node)
+            logger.debug(
+                f"Arg {i}: Path={getattr(model_node, 'path', 'N/A')}, Expected space={expected_space_for_arg}, Needs Delta={is_delta_expected}")
 
+            if is_delta_expected:
+                logger.debug(f"  Parameter {i} expects delta. Base model selected: {base_model_node is not None}")
+                if base_model_node:
+                    is_base = current_node == base_model_node
+                    logger.debug(f"  Node is base model: {is_base}")
+                    if not is_base:
+                        logger.info(f"  Creating delta for node {getattr(current_node, 'path', 'N/A')}...")
+                        current_node = sd_mecha.subtract(current_node, base_model_node)  # Perform subtraction
+                        logger.info(
+                            f"  Delta node created. New merge space: {current_node.merge_space.identifier if current_node.merge_space else 'N/A'}")
+                    else:
+                        # --- CHANGE: Don't add the base model itself to the list ---
+                        logger.warning(
+                            f"  Base model '{getattr(current_node, 'path', 'N/A')}' matches arg {i} which expects delta. EXCLUDING this node from arguments passed to '{merge_method.identifier}'.")
+                        should_add_node = False  # Set flag to skip adding
+                        # --- END CHANGE ---
+                else:
+                    # No base model selected, cannot create delta - raise error
+                    raise ValueError(
+                        f"Merge method '{merge_method.identifier}' requires a delta for positional argument {i}, but no base model was selected.")
+
+            # --- Add the node only if the flag allows ---
+            if should_add_node:
+                prepared_nodes.append(current_node)
+            # --- End Add Node ---
+
+        # Log the final list of nodes being passed
+        logger.debug(
+            f"Prepared {len(prepared_nodes)} nodes for method '{merge_method.identifier}': {[getattr(n, 'path', type(n).__name__) for n in prepared_nodes]}")
         return prepared_nodes
 
     # V1.4 - Uses param_info metadata to expand group/single strategies
@@ -549,6 +616,7 @@ class Merger:
             else:
                  effective_model_dirs = [self.models_dir]
 
+            logger.info(f"Calling sd_mecha.merge with fallback_model: {fallback_node}")
             sd_mecha.merge(
                 recipe=final_recipe_node,
                 output=model_path,
@@ -614,6 +682,8 @@ class Merger:
 
         # 3. Select base model (for delta subtraction, conversion context)
         base_model_node = self._select_base_model()
+
+        logger.info(f"Selected base model node: {base_model_node.path if base_model_node else 'None'}")
 
         # 4. Prepare model input nodes (handles LoRA conversion, delta subtraction)
         prepared_model_nodes = self._prepare_model_recipe_args(

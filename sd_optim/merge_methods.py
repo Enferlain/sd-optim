@@ -792,116 +792,116 @@ class MergeMethods:
     #     Q_final = torch.vstack(new_Q)  # same number of rows as x
     #
     #     return Q_final.to(x.device), R_final[:n, :n].to(x.device)  # Return results on the original device
-    #
-    # @staticmethod
-    # @merge_method
-    # def delta_dist(
-    #         *models: Tensor | SameMergeSpace,  # subtract
-    #         magnitude_ratio: Parameter(Tensor) =0.6,
-    #         direction_ratio: Parameter(Tensor) =0.75,
-    #         above_average_ratio: Parameter(Tensor) =1.2,
-    #         calibration_value: Parameter(Tensor) =1.0,
-    #         **kwargs,
-    # ) -> Return(Tensor):  # add diff
-    #     """Improved delta disentanglement merge based on WIDEN"""
-    #
-    #     def tensor_components(t: Tensor):
-    #         # Handle scalars and empty tensors consistently
-    #         if t.numel() == 0:  # Empty tensor
-    #             return torch.tensor([0.0], device=t.device), torch.tensor([0.0], device=t.device)  # Return 1D tensors
-    #         if t.dim() == 0:  # Scalar
-    #             return torch.tensor([torch.abs(t)], device=t.device), torch.tensor([torch.sign(t)],
-    #                                                                                device=t.device)  # Return as 1D
-    #         if t.dim() == 1:  # 1D Tensors
-    #             return torch.abs(t), torch.sign(t)
-    #
-    #         # For multi-dimensional tensors
-    #         if t.dim() == 4:  # Conv layers
-    #             mag = torch.norm(t.reshape(t.shape[0], -1), p=2, dim=1)
-    #         else:  # Linear/embedding
-    #             mag = torch.norm(t, p=2, dim=1)
-    #
-    #         # Safe division
-    #         mag_expanded = mag.unsqueeze(-1)
-    #         if t.dim() > 2:
-    #             for _ in range(t.dim() - 2):
-    #                 mag_expanded = mag_expanded.unsqueeze(-1)
-    #
-    #         dir = t / (mag_expanded + 1e-7)
-    #         return mag, dir
-    #
-    #     def rank_within_model(values: Tensor):
-    #         # Handle empty or scalar tensors
-    #         if values.numel() == 0:
-    #             return torch.tensor([], device=values.device, dtype=values.dtype)  # Return empty tensor
-    #         if values.dim() == 0:  # Scalar: return a 0-rank tensor
-    #             return torch.tensor(0.0, device=values.device, dtype=values.dtype)
-    #         # Percentile-based ranking (0-1 range)
-    #         sorted_idx = torch.argsort(values, dim=0, stable=True)
-    #         ranks = torch.arange(values.shape[0], device=values.device, dtype=values.dtype) / values.shape[0]
-    #         result = torch.zeros_like(values)
-    #         result.scatter_(0, sorted_idx, ranks)
-    #         return result
-    #
-    #     # Process each model
-    #     components = [tensor_components(model) for model in models]
-    #     mags, dirs = zip(*components)
-    #
-    #     # Rank magnitudes within each model
-    #     mag_ranks = torch.stack([rank_within_model(torch.abs(m)) for m in mags])
-    #
-    #     # Rank directions within each model.
-    #     dir_ranks = []
-    #     for d in dirs:
-    #         if d.numel() == 0 or d.ndim < 2:  # Check for empty or <2D tensors
-    #             #  Create a zero tensor of the same shape as other rank tensors.
-    #             dir_ranks.append(torch.zeros_like(mag_ranks[0]))
-    #         else:
-    #             dir_ranks.append(
-    #                 rank_within_model(1 - torch.cosine_similarity(
-    #                     d.reshape(d.shape[0], -1),
-    #                     dirs[0].reshape(dirs[0].shape[0], -1),
-    #                     dim=1
-    #                 ))
-    #             )
-    #     dir_ranks = torch.stack(dir_ranks)
-    #
-    #     # Combined weighted ranks
-    #     combined_ranks = magnitude_ratio * mag_ranks + direction_ratio * dir_ranks
-    #
-    #     # Apply calibration (critical step from original WIDEN)
-    #     avg_ranks = combined_ranks.mean(dim=0, keepdim=True)
-    #     mask = combined_ranks > (avg_ranks * above_average_ratio)
-    #     combined_ranks[mask] = calibration_value
-    #
-    #     # Final merge with controlled scaling
-    #     merged = torch.zeros_like(models[0])
-    #     for i, model in enumerate(models):
-    #         # Apply weights with proper broadcasting
-    #         weight_expanded = combined_ranks[i]
-    #
-    #         # Correctly handle scalar models
-    #         if model.dim() == 0:
-    #             weight_expanded = weight_expanded.squeeze()  # Remove extra dimensions, making it a scalar
-    #         else:
-    #             for _ in range(model.dim() - 1):
-    #                 weight_expanded = weight_expanded.unsqueeze(-1)
-    #         merged += model * weight_expanded
-    #
-    #     # Normalize by sum of weights
-    #     weight_sum = combined_ranks.sum(dim=0)
-    #     for _ in range(models[0].dim() - 1):
-    #         weight_sum = weight_sum.unsqueeze(-1)
-    #
-    #     # handle scalar here too
-    #     if merged.dim() == 0:
-    #         if weight_sum != 0:
-    #             merged = merged / weight_sum
-    #     else:
-    #         merged = merged / (weight_sum + 1e-7)
-    #
-    #     return merged
-    #
+
+    @staticmethod
+    @merge_method
+    def delta_dist(
+            *models: Parameter(Tensor, "delta"), # subtract
+            magnitude_ratio: Parameter(Tensor) =0.6,
+            direction_ratio: Parameter(Tensor) =0.75,
+            above_average_ratio: Parameter(Tensor) =1.2,
+            calibration_value: Parameter(Tensor) =1.0,
+            **kwargs,
+    ) -> Return(Tensor, "delta"): # add diff
+        """Improved delta disentanglement merge based on WIDEN"""
+
+        def tensor_components(t: Tensor):
+            # Handle scalars and empty tensors consistently
+            if t.numel() == 0:  # Empty tensor
+                return torch.tensor([0.0], device=t.device), torch.tensor([0.0], device=t.device)  # Return 1D tensors
+            if t.dim() == 0:  # Scalar
+                return torch.tensor([torch.abs(t)], device=t.device), torch.tensor([torch.sign(t)],
+                                                                                   device=t.device)  # Return as 1D
+            if t.dim() == 1:  # 1D Tensors
+                return torch.abs(t), torch.sign(t)
+
+            # For multi-dimensional tensors
+            if t.dim() == 4:  # Conv layers
+                mag = torch.norm(t.reshape(t.shape[0], -1), p=2, dim=1)
+            else:  # Linear/embedding
+                mag = torch.norm(t, p=2, dim=1)
+
+            # Safe division
+            mag_expanded = mag.unsqueeze(-1)
+            if t.dim() > 2:
+                for _ in range(t.dim() - 2):
+                    mag_expanded = mag_expanded.unsqueeze(-1)
+
+            dir = t / (mag_expanded + 1e-7)
+            return mag, dir
+
+        def rank_within_model(values: Tensor):
+            # Handle empty or scalar tensors
+            if values.numel() == 0:
+                return torch.tensor([], device=values.device, dtype=values.dtype)  # Return empty tensor
+            if values.dim() == 0:  # Scalar: return a 0-rank tensor
+                return torch.tensor(0.0, device=values.device, dtype=values.dtype)
+            # Percentile-based ranking (0-1 range)
+            sorted_idx = torch.argsort(values, dim=0, stable=True)
+            ranks = torch.arange(values.shape[0], device=values.device, dtype=values.dtype) / values.shape[0]
+            result = torch.zeros_like(values)
+            result.scatter_(0, sorted_idx, ranks)
+            return result
+
+        # Process each model
+        components = [tensor_components(model) for model in models]
+        mags, dirs = zip(*components)
+
+        # Rank magnitudes within each model
+        mag_ranks = torch.stack([rank_within_model(torch.abs(m)) for m in mags])
+
+        # Rank directions within each model.
+        dir_ranks = []
+        for d in dirs:
+            if d.numel() == 0 or d.ndim < 2:  # Check for empty or <2D tensors
+                #  Create a zero tensor of the same shape as other rank tensors.
+                dir_ranks.append(torch.zeros_like(mag_ranks[0]))
+            else:
+                dir_ranks.append(
+                    rank_within_model(1 - torch.cosine_similarity(
+                        d.reshape(d.shape[0], -1),
+                        dirs[0].reshape(dirs[0].shape[0], -1),
+                        dim=1
+                    ))
+                )
+        dir_ranks = torch.stack(dir_ranks)
+
+        # Combined weighted ranks
+        combined_ranks = magnitude_ratio * mag_ranks + direction_ratio * dir_ranks
+
+        # Apply calibration (critical step from original WIDEN)
+        avg_ranks = combined_ranks.mean(dim=0, keepdim=True)
+        mask = combined_ranks > (avg_ranks * above_average_ratio)
+        combined_ranks[mask] = calibration_value
+
+        # Final merge with controlled scaling
+        merged = torch.zeros_like(models[0])
+        for i, model in enumerate(models):
+            # Apply weights with proper broadcasting
+            weight_expanded = combined_ranks[i]
+
+            # Correctly handle scalar models
+            if model.dim() == 0:
+                weight_expanded = weight_expanded.squeeze()  # Remove extra dimensions, making it a scalar
+            else:
+                for _ in range(model.dim() - 1):
+                    weight_expanded = weight_expanded.unsqueeze(-1)
+            merged += model * weight_expanded
+
+        # Normalize by sum of weights
+        weight_sum = combined_ranks.sum(dim=0)
+        for _ in range(models[0].dim() - 1):
+            weight_sum = weight_sum.unsqueeze(-1)
+
+        # handle scalar here too
+        if merged.dim() == 0:
+            if weight_sum != 0:
+                merged = merged / weight_sum
+        else:
+            merged = merged / (weight_sum + 1e-7)
+
+        return merged
+
     # @staticmethod
     # @merge_method
     # def synthetic_fisher_merge(
@@ -1206,6 +1206,8 @@ class MergeMethods:
         """
         original_shape = a.shape
         key = kwargs.get("key", "")
+        print(
+            f"DEBUG butterfly_merge called for key: {key} | alpha type: {type(alpha)}, value: {alpha} | rank_ratio type: {type(rank_ratio)}, value: {rank_ratio}")
 
         if key.endswith(("in_proj_weight", "in_proj_bias")):
             # workaround for concatenated attention projection layers

@@ -15,6 +15,8 @@ from abc import abstractmethod
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Tuple, Optional, Any, Union
+
+import torch
 from tqdm import tqdm
 
 from hydra.core.hydra_config import HydraConfig
@@ -381,6 +383,22 @@ class Optimizer:
 
         iteration_duration = time.time() - iteration_start_time
         logger.info(f"Iteration {self.iteration} finished. Final Score for Optimizer: {avg_score:.4f}. Duration: {iteration_duration:.2f}s")
+
+        # --- ADD EXPLICIT CLEANUP HERE ---
+        logger.debug(f"Performing cleanup for iteration {self.iteration}...")
+        # Clear potential large objects from this iteration explicitly? (Optional)
+        # E.g., if 'image' or 'scores' list could be huge and we don't need them
+        # del scores, norm_weights, payloads, image # Or specific large variables if applicable
+        # Force Python garbage collection
+        import gc # Make sure gc is imported at the top of the file
+        gc.collect()
+        logger.debug("Python garbage collection triggered.")
+        # Tell PyTorch to release unused cached VRAM
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+            logger.debug("PyTorch CUDA cache cleared.")
+        logger.debug(f"Cleanup for iteration {self.iteration} complete.")
+        # --- END OF ADDED CLEANUP ---
 
         return avg_score
 

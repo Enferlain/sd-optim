@@ -32,7 +32,7 @@ height: 512
 sampler_name: Euler a
 sampler_index: Euler a
 
-seed: -1
+seed: 218
 subseed: -1
 subseed_strength: 0
 seed_resize_from_h: -1

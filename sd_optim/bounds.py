@@ -265,34 +265,47 @@ class ParameterHandler:
                                  logger.warning(f"Group '{group_name}' patterns {group_patterns} did not match any items in component '{guide_component_name}' for param '{base_param_name}'.")
 
                     elif strategy_type == "single":
-                        # Generate ONE parameter for all items in component
-                        group_name = f"{guide_component_name}_single" # Auto-generate group name
+                        # --- ADD LOGGING ---
+                        logger.debug(f"PARAMETER_HANDLER: Processing single strategy for base_param: '{base_param_name}' in component '{guide_component_name}'")
+                        # --- END LOGGING ---
+
+                        group_name = f"{guide_component_name}_single"
                         strategy_identifier = f"single:{group_name}"
                         items_covered_by_single = []
                         conflict_found_for_single = False
+
                         # Check conflicts FIRST
+                        if not items_in_component: # Add check if component item list is empty
+                             logger.warning(f"PARAMETER_HANDLER: No items found for component '{guide_component_name}' when processing '{base_param_name}'. Skipping single strategy.")
+                             continue
+
                         for item_name in items_in_component:
                              assignment_key = (base_param_name, item_name)
                              if assignment_key in assigned_items:
                                  logger.error(f"Conflict for item '{item_name}' (param '{base_param_name}')! Assigned by '{assigned_items[assignment_key]}', cannot assign by '{strategy_identifier}'. Skipping.")
                                  conflict_found_for_single = True
                                  break
-                        if conflict_found_for_single: continue # Skip if conflict
+                        if conflict_found_for_single: continue
 
                         # If no conflicts, add the single parameter and mark items
                         generated_param_name = f"{group_name}_{base_param_name}"
-                        if group_name not in processed_groups_in_component:
-                             params_info[generated_param_name] = {
-                                 **base_metadata,
-                                 "strategy": "single", # Ensure strategy is set correctly
-                                 "group_name": group_name, # Store the generated group name
-                                 "items_covered": items_in_component,
-                                 "bounds": default_bounds_tuple
-                             }
-                             processed_groups_in_component.add(group_name)
+                        # --- ADD LOGGING ---
+                        logger.debug(f"PARAMETER_HANDLER: Generating single param: '{generated_param_name}'")
+                        # --- END LOGGING ---
+                        params_info[generated_param_name] = {
+                             **base_metadata,
+                             "strategy": "single",
+                             "group_name": group_name,
+                             "items_covered": items_in_component,
+                             "bounds": default_bounds_tuple
+                         }
+
                         # Mark all items as assigned
                         for item_name in items_in_component:
                             assigned_items[(base_param_name, item_name)] = strategy_identifier
+                        # --- ADD LOGGING ---
+                        logger.debug(f"PARAMETER_HANDLER: Marked {len(items_in_component)} items as assigned for '{generated_param_name}'")
+                        # --- END LOGGING ---
 
         logger.info(f"Generated metadata for {len(params_info)} optimization parameters based on guide.")
         return params_info

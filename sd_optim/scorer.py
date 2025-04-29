@@ -7,10 +7,10 @@ import logging
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple, Any
 
 from hydra.core.hydra_config import HydraConfig
-from omegaconf import DictConfig, open_dict
+from omegaconf import DictConfig, open_dict, ListConfig
 from PIL import Image, PngImagePlugin
 from sd_optim.models.Laion import Laion as AES
 from sd_optim.models.ImageReward import ImageReward as IMGR
@@ -24,6 +24,7 @@ from sd_optim.models.CafeScore import CafeScore as CAFE
 from sd_optim.models.NoAIScore import NoAIScore as NOAI
 from sd_optim.models.CityAesthetics import CityAestheticsScorer as CITY
 from sd_optim.models.AestheticV25 import AestheticV25 as AES25
+from sd_optim.models.LumiAnatomy import AnatomyScorer as LUMI
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO)
@@ -89,6 +90,21 @@ MODEL_DATA = {
         "url": None,  # No direct download needed
         "file_name": "aesthetic-predictor-v2-5",
     },
+    "luminaflex": { # <<< Our identifier
+        "url": None,
+        "file_name": "AnatomyFlaws-v6.6_adabeleif_fl_sigmoid_so400m_naflex_efinal_s10K_final.safetensors", # Head filename
+        "config_name": "AnatomyFlaws-v6.6_adabeleif_fl_sigmoid_so400m_naflex.config.json" # Config filename
+    },
+    "lumidinov2l": {
+        "url": None,
+        "file_name": "AnatomyFlaws-v6.3_adabeleif_fl_sigmoid_dinov2_large_efinal_s10K_final.safetensors",
+        "config_name": "AnatomyFlaws-v6.3_adabeleif_fl_sigmoid_dinov2_large.config.json"
+    },
+    "lumidinov2g": {
+        "url": None,
+        "file_name": "AnatomyFlaws-v6.4_adabeleif_fl_sigmoid_dinov2_giant_efinal_s10K_final.safetensors",
+        "config_name": "AnatomyFlaws-v6.4_adabeleif_fl_sigmoid_dinov2_giant.config.json"
+    },
 }
 
 printWSLFlag = 0
@@ -97,197 +113,447 @@ printWSLFlag = 0
 @dataclass
 class AestheticScorer:
     cfg: DictConfig
-    scorer_model_name: Dict
-    model_path: Dict
-    model: Dict
+    # --- REMOVED scorer_model_name, model_path, model from dataclass fields ---
+    # These will be instance attributes initialized later
 
     def __post_init__(self):
+        # Initialize instance attributes
+        self.model: Dict[str, Any] = {} # Dictionary to hold loaded scorer instances
+        self.model_path: Dict[str, Path] = {} # Dictionary to hold Path objects for models
+
         self.setup_img_saving()
 
-        with open_dict(self.cfg):  # Make sure scorer_weight exists
+        with open_dict(self.cfg):
             self.cfg.scorer_weight = self.cfg.scorer_weight or {}
+            # Ensure scorer_device exists before setup_evaluator_paths uses it
+            self.cfg.scorer_device = self.cfg.scorer_device or {}
 
-        self.setup_evaluator_paths()  # Now safe to call this method
-        self.get_models()
-        self.load_models()
+        self.setup_evaluator_paths() # Populates self.model_path and sets default devices/weights
+        self.get_models() # Downloads files if needed
+        self._load_all_models() # NEW: Call the loader function
 
     def setup_img_saving(self):
-        if "manual" in self.cfg.scorer_method:
-            self.cfg.save_imgs = True
+        """Sets up the directory for saving images if enabled."""
+        # Use .get() for safer access, default to False
+        save_enabled = self.cfg.get("save_imgs", False)
+        # Also enable saving if manual scoring is used
+        if "manual" in self.cfg.get("scorer_method", []):
+            save_enabled = True
 
-        if self.cfg.save_imgs:
-            self.imgs_dir = Path(HydraConfig.get().runtime.output_dir, "imgs")
-            self.imgs_dir.mkdir(exist_ok=True)
+        if save_enabled:
+            try:
+                # Try getting path from Hydra context
+                self.imgs_dir = Path(HydraConfig.get().runtime.output_dir, "imgs")
+            except ValueError:
+                # Fallback if Hydra context not available
+                logger.warning("Hydra context not available, saving images to ./imgs_fallback")
+                self.imgs_dir = Path("./imgs_fallback").resolve()
+
+            self.imgs_dir.mkdir(parents=True, exist_ok=True)
+            logger.info(f"Image saving enabled. Saving to: {self.imgs_dir}")
+            # Update config back if manual mode forced it (optional)
+            with open_dict(self.cfg):
+                self.cfg.save_imgs = True
+        else:
+            self.imgs_dir = None # Explicitly set to None if disabled
+            logger.info("Image saving disabled.")
 
     def setup_evaluator_paths(self):
-        """Sets up model paths and devices for each evaluator."""
-        for evaluator in self.cfg.scorer_method:
-            if evaluator in ['manual', 'noai']:
-                continue
+        """Sets up model paths (Path objects) and default configs for each configured evaluator."""
+        logger.debug("Setting up evaluator paths...")
+        scorer_model_dir_path = Path(self.cfg.scorer_model_dir)
 
-            self.scorer_model_name[evaluator], self.model_path[evaluator] = self.get_evaluator_model_info(evaluator)
+        # --- Use open_dict context manager ---
+        with open_dict(self.cfg):
+            # Ensure scorer_device and scorer_weight exist as dicts, create if missing/null
+            if not isinstance(self.cfg.get('scorer_device'), DictConfig):
+                 self.cfg.scorer_device = {}
+            if not isinstance(self.cfg.get('scorer_weight'), DictConfig):
+                 self.cfg.scorer_weight = {}
+            # Now self.cfg.scorer_device and self.cfg.scorer_weight are modifiable
 
-            with open_dict(self.cfg):
-                self.cfg.scorer_device = self.cfg.scorer_device or {}
-                self.cfg.scorer_device.setdefault(evaluator, self.cfg.scorer_default_device)
+            # Make sure self.cfg.scorer_method is iterable (list or ListConfig)
+            configured_scorers = self.cfg.get('scorer_method', [])
+            if not isinstance(configured_scorers, (list, ListConfig)):
+                 logger.warning("scorer_method is not a list, cannot process evaluators.")
+                 configured_scorers = []
 
-                self.cfg.scorer_weight = self.cfg.scorer_weight or {}
-                self.cfg.scorer_weight.setdefault(evaluator, 1)
+            for evaluator in configured_scorers:
+                # Use .lower() for case-insensitive matching
+                evaluator_lower = str(evaluator).lower() # Ensure it's a string first
+                if evaluator_lower == 'manual': continue
 
-    def get_evaluator_model_info(self, evaluator):
-        """Determines the model name and path for each evaluator."""
-        alt_location = self.cfg.scorer_alt_location
+                model_data_entry = MODEL_DATA.get(evaluator_lower)
+                if not model_data_entry:
+                    logger.warning(f"No MODEL_DATA entry for '{evaluator}'. Cannot set path or defaults.")
+                    continue
 
-        if alt_location and evaluator in alt_location:
-            model_name = alt_location[evaluator]['model_name']
-            model_dir = Path(alt_location[evaluator]['model_dir'])
-        else:
-            model_name = MODEL_DATA.get(evaluator.upper(), MODEL_DATA.get(evaluator.lower(), {})).get("file_name")
-            if not model_name:
-                raise KeyError(f"Evaluator '{evaluator}' not found in MODEL_DATA")
-            model_dir = Path(self.cfg.scorer_model_dir, model_name)
+                # --- Handle Alternative Locations ---
+                alt_location = self.cfg.get("scorer_alt_location", {}) or {} # Default to empty dict
+                evaluator_alt_config = alt_location.get(evaluator_lower)
+                current_model_dir = scorer_model_dir_path
+                primary_filename = model_data_entry.get("file_name")
 
-        return model_name, model_dir
+                if isinstance(evaluator_alt_config, (dict, DictConfig)): # Check if it's dict-like
+                    alt_name = evaluator_alt_config.get('model_name')
+                    alt_dir_str = evaluator_alt_config.get('model_dir')
+                    if alt_name and alt_dir_str:
+                        logger.info(f"Using alternative location for '{evaluator}': Dir='{alt_dir_str}', File='{alt_name}'")
+                        try:
+                            current_model_dir = Path(alt_dir_str)
+                            primary_filename = alt_name
+                        except Exception as e_path:
+                             logger.warning(f"Invalid alternative path for '{evaluator}': {e_path}. Using default path.")
+                    else:
+                        logger.warning(f"Alternative location config for '{evaluator}' incomplete. Using default path.")
+                # --- End Alt Location Handling ---
 
+                # Set path in self.model_path (only if a filename exists)
+                if primary_filename and evaluator_lower != "aestheticv25":
+                    try:
+                        self.model_path[evaluator_lower] = current_model_dir / primary_filename
+                    except TypeError as e_path_join:
+                         logger.error(f"Error creating path for '{evaluator}': {e_path_join}. Ensure directory and filename are valid.")
+                         continue # Skip defaults if path fails
+                elif evaluator_lower == "aestheticv25":
+                    logger.debug(f"No file path needed for '{evaluator}'.")
+                else:
+                     logger.warning(f"MODEL_DATA for '{evaluator}' missing primary 'file_name'. Cannot set base path.")
+                     # Continue to set defaults even if path missing? Or skip? Let's continue for now.
+
+                # --- Set defaults (safe now due to open_dict) ---
+                try:
+                    # Use .get() on the main cfg object for the default device
+                    default_device = self.cfg.get('scorer_default_device', 'cpu')
+                    # Set default device for this evaluator
+                    self.cfg.scorer_device.setdefault(evaluator_lower, default_device)
+                    # Set default weight for this evaluator
+                    self.cfg.scorer_weight.setdefault(evaluator_lower, 1.0)
+                except Exception as e_setdefault:
+                     # Catch potential errors during setdefault if keys are weird
+                     logger.error(f"Error setting default config for '{evaluator}': {e_setdefault}")
+            # --- End Loop ---
+        # --- End open_dict context ---
+
+        logger.debug(f"Populated model paths: {self.model_path}")
+        # Log final config state after defaults are set
+        logger.debug(f"Final scorer devices: {self.cfg.get('scorer_device', {})}")
+        logger.debug(f"Final scorer weights: {self.cfg.get('scorer_weight', {})}")
+
+    # get_models can be simplified or adjusted based on the factory pattern if needed
+    # It mainly needs to ensure *all* required files listed in MODEL_DATA (file_name, config_name, class, real, anime etc.)
+    # for the *configured* scorers are downloaded if missing.
+    # (Keeping previous refined version for now)
     def get_models(self) -> None:
         """Downloads necessary model files if they do not exist."""
-        blip_config = Path(self.cfg.scorer_model_dir, 'med_config.json')
+        logger.debug("Checking for necessary scorer model files...")
+        scorer_model_dir_path = Path(self.cfg.scorer_model_dir)
 
-        if not blip_config.is_file():
-            self.download_file(
-                "https://huggingface.co/THUDM/ImageReward/resolve/main/med_config.json?download=true",
-                blip_config,
-            )
+        # --- Files needed by specific scorers explicitly ---
+        med_config_path = scorer_model_dir_path / 'med_config.json'
+        if any(x.lower() in ['blip', 'imagereward'] for x in self.cfg.scorer_method):
+             if not med_config_path.is_file():
+                logger.info("Downloading med_config.json (needed for BLIP/ImageReward)")
+                self.download_file("https://huggingface.co/THUDM/ImageReward/resolve/main/med_config.json?download=true", med_config_path)
 
+        clip_l_path = scorer_model_dir_path / "CLIP-ViT-L-14.pt"
+        if any(x.lower() in ['laion', 'chad'] for x in self.cfg.scorer_method):
+            if not clip_l_path.is_file():
+                logger.info("Downloading CLIP ViT-L-14 model (required for Laion/Chad)")
+                self.download_file("https://openaipublic.azureedge.net/clip/models/b8cca3fd41ae0c99ba7e8951adf17d267cdb84cd88be6f7c2e0eca1737a03836/ViT-L-14.pt?raw=true", clip_l_path)
+
+        clip_b_path = scorer_model_dir_path / "CLIP-ViT-B-32.safetensors"
+        if any(x.lower() in ['wdaes'] for x in self.cfg.scorer_method):
+            if not clip_b_path.is_file():
+                logger.warning(f"CLIP ViT-B-32 model needed by WDAes not found at {clip_b_path}. Please ensure it exists or WDAes might fail.")
+                # Add download logic if a reliable URL is found
+        # --- End explicit file checks ---
+
+        # --- Download files listed in MODEL_DATA for configured scorers ---
+        downloaded_this_run = set() # Track downloads per run to avoid repeats
         for evaluator in self.cfg.scorer_method:
-            if evaluator in ['manual', 'noai']:
-                continue
-            # Skip download if URL is None
-            if MODEL_DATA[evaluator]["url"] is None:  # Add this check
-                continue  # Aestheticv25 doesn't need downloads
-            if not self.model_path[evaluator].is_file():
-                print(f"Downloading {evaluator.upper()} model")
-                url = MODEL_DATA[evaluator]["url"]
-                self.download_file(url, self.model_path[evaluator])
+            evaluator_lower = evaluator.lower()
+            if evaluator_lower in ['manual', 'aestheticv25']: continue
 
-        # Download CLIP model if needed by Laion or Chad scorers
-        if any(x in ['laion', 'chad'] for x in self.cfg.scorer_method):
-            clip_path = Path(self.cfg.scorer_model_dir, "CLIP-ViT-L-14.pt")
-            if not clip_path.is_file():
-                print("Downloading CLIP model (required for Laion or Chad scorers)")
-                self.download_file(
-                    "https://openaipublic.azureedge.net/clip/models/b8cca3fd41ae0c99ba7e8951adf17d267cdb84cd88be6f7c2e0eca1737a03836/ViT-L-14.pt?raw=true",
-                    clip_path,
-                )
+            model_data_entry = MODEL_DATA.get(evaluator_lower)
+            if not model_data_entry: continue
+
+            # Get all potential filenames associated with this scorer from MODEL_DATA
+            filenames_to_check = []
+            for key, value in model_data_entry.items():
+                if key.endswith("_name") or key == "file_name" or key in ['class', 'real', 'anime']:
+                     if isinstance(value, str): # Ensure it's a filename string
+                          filenames_to_check.append(value)
+
+            # Check and download each unique required filename
+            for filename in set(filenames_to_check): # Use set for uniqueness
+                 if not filename or filename in downloaded_this_run: continue # Skip empty or already handled
+
+                 file_path = scorer_model_dir_path / filename
+                 if not file_path.is_file():
+                     # Find URL associated with this filename (might only be on primary key like 'url')
+                     url = model_data_entry.get("url") # Try default 'url' key first
+                     if filename != model_data_entry.get("file_name") : # If it's not the primary file
+                          url = model_data_entry.get(f"url_{filename.split('.')[0].lower()}", url) # Try url_key (e.g., url_class) or fallback to main url
+
+                     if url:
+                         logger.info(f"Downloading {evaluator} file: {filename}")
+                         self.download_file(url, file_path)
+                         downloaded_this_run.add(filename)
+                     else:
+                         logger.warning(f"Required file '{filename}' for scorer '{evaluator}' not found and no download URL could be determined. Please place it manually in '{scorer_model_dir_path}'.")
+                 else:
+                      downloaded_this_run.add(filename) # Mark as checked
 
     def download_file(self, url: str, path: Path):
         """Downloads a file from a URL to the specified path."""
-        r = requests.get(url)
-        r.raise_for_status()
-        with open(path, "wb") as f:
-            f.write(r.content)
-        print(f"Saved into {path}")
+        logger.info(f"Attempting to download file from {url} to {path}...")
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True) # Ensure directory exists
+            # Use stream=True for potentially large files
+            with requests.get(url, stream=True, timeout=60) as r: # Add timeout
+                r.raise_for_status() # Check for HTTP errors
+                total_size = int(r.headers.get('content-length', 0))
+                # Basic progress indication (can be replaced with tqdm if preferred)
+                chunk_size = 8192
+                downloaded = 0
+                with open(path, "wb") as f:
+                    for chunk in r.iter_content(chunk_size=chunk_size):
+                        f.write(chunk)
+                        downloaded += len(chunk)
+                        # Optional: Print progress
+                        # done = int(50 * downloaded / total_size) if total_size > 0 else 0
+                        # print(f"\r  Downloading [{'>'*done}{'.'*(50-done)}] {downloaded/1024/1024:.1f} MB", end='')
+                # print() # Newline after download
+            logger.info(f"Download successful. Saved to {path}")
+        except requests.exceptions.RequestException as req_err:
+             logger.error(f"Failed to download {url}: {req_err}")
+             # Optionally delete partial file if it exists
+             if path.exists(): path.unlink(missing_ok=True)
+        except Exception as e:
+             logger.error(f"An unexpected error occurred during download: {e}")
+             if path.exists(): path.unlink(missing_ok=True)
 
-    def load_models(self) -> None:
-        """Initializes models for each evaluator."""
-        med_config = Path(self.cfg.scorer_model_dir, "med_config.json")
-        model_loaders = self.get_model_loaders(med_config)
+    def _load_all_models(self):
+        """Loads instances for all configured scorers using a factory pattern."""
+        logger.info("Loading scorer model instances...")
+        # Define paths needed by some factories
+        scorer_model_dir_path = Path(self.cfg.scorer_model_dir)
+        med_config_path = scorer_model_dir_path / 'med_config.json'
+        clip_l_path = scorer_model_dir_path / "CLIP-ViT-L-14.pt"
+        clip_b_path = scorer_model_dir_path / "CLIP-ViT-B-32.safetensors"
 
+        # --- Scorer Factory Configuration ---
+        scorer_factory = {
+            "laion":        {"class": AES, "files": {"model_path": "file_name"}, "extra_args": {"clip_model_path": str(clip_l_path)}},
+            "chad":         {"class": AES, "files": {"model_path": "file_name"}, "extra_args": {"clip_model_path": str(clip_l_path)}},
+            "wdaes":        {"class": WDA, "files": {"model_path": "file_name"}, "extra_args": {"clip_path": str(clip_b_path)}},
+            "clip":         {"class": CLP, "files": {"model_path": "file_name"}},
+            "blip":         {"class": BLP, "files": {"model_path": "file_name"}, "extra_args": {"med_config": med_config_path}},
+            "imagereward":  {"class": IMGR,"files": {"model_path": "file_name"}, "extra_args": {"med_config": med_config_path}},
+            "hpsv21":       {"class": HPS, "files": {"pathname": "file_name"}},
+            "pick":         {"class": PICK,"files": {"model_path": "file_name"}},
+            "shadowv2":     {"class": SS,  "files": {"model_path": "file_name"}},
+            "cafe":         {"class": CAFE,"files": {"model_path": "file_name"}},
+            "noai":         {"class": NOAI,"files": {"model_path_class": "class", "model_path_real": "real", "model_path_anime": "anime"}},
+            "cityaes":      {"class": CITY,"files": {"pathname": "file_name"}},
+            "aestheticv25": {"class": AES25,"files": {"model_path": "file_name"}},
+            "luminaflex":  {"class": LUMI,"files": {"model_path": "file_name","config_path": "config_name"}},
+            "lumidinov2l": {"class": LUMI,"files": {"model_path": "file_name","config_path": "config_name"}},
+            "lumidinov2g": {"class": LUMI,"files": {"model_path": "file_name","config_path": "config_name"}},
+            # --- Add other custom scorers like LumiStyle here ---
+            # "lumistyle": {
+            #     "class": AnatomyScorer if LUMI_ANATOMY_AVAILABLE else None, # Or a different StyleScorer class
+            #     "files": {
+            #         "model_path": "file_name", # Needs 'file_name' in MODEL_DATA["lumistyle"]
+            #         "config_path": "config_name"    # Needs 'config_name' in MODEL_DATA["lumistyle"]
+            #      }
+            # },
+        }
+        # --- End Factory Config ---
+
+        # --- Instantiation Loop ---
         for evaluator in self.cfg.scorer_method:
-            if evaluator == 'manual':
+            evaluator_lower = evaluator.lower()
+            if evaluator_lower == 'manual': continue
+
+            logger.info(f"Loading instance for scorer: '{evaluator}'")
+
+            if evaluator_lower not in scorer_factory:
+                logger.error(f"Unknown scorer '{evaluator}' defined in config but not found in scorer_factory. Skipping.")
                 continue
 
-            print(f"Loading {self.scorer_model_name[evaluator]}")
+            config = scorer_factory[evaluator_lower]
+            ScorerClass = config.get("class")
+
+            if ScorerClass is None:
+                logger.error(f"Scorer class for '{evaluator}' not available (possibly failed import). Skipping.")
+                continue
+
+            # Prepare constructor arguments
+            constructor_args = {}
+            file_paths_ok = True
+
+            # 1. Add device
             try:
-                self.model[evaluator] = model_loaders[evaluator]()
-                # Verify model initialization
-                if not hasattr(self.model[evaluator], 'score'):
-                    raise AttributeError(f"{evaluator} missing score method")
-                print(f"Successfully initialized {evaluator}")
-            except Exception as e:
-                logger.error(f"Failed to initialize {evaluator}: {str(e)}")
-                raise RuntimeError(f"Critical model init failure in {evaluator}") from e
+                constructor_args["device"] = self.cfg.scorer_device.get(evaluator_lower, self.cfg.scorer_default_device)
+            except KeyError:
+                 logger.error(f"Device config missing for '{evaluator}'. Skipping.")
+                 continue
 
-    # Now place the get_model_loaders method outside load_models
-    def get_model_loaders(self, med_config: Path):
-        """Creates a dictionary of evaluators mapped to their respective model loading functions."""
-        return {
-            "wdaes": lambda: WDA(self.model_path["wdaes"], Path(self.cfg.scorer_model_dir, "CLIP-ViT-B-32.safetensors"), self.cfg.scorer_device["wdaes"]),
-            "clip": lambda: CLP(self.model_path["clip"], self.cfg.scorer_device["clip"]),
-            "blip": lambda: BLP(self.model_path["blip"], med_config, self.cfg.scorer_device["blip"]),
-            "imagereward": lambda: IMGR(self.model_path["imagereward"], med_config, self.cfg.scorer_device["imagereward"]),
-            "laion": lambda: AES(self.model_path["laion"], self.model_path['clip'], self.cfg.scorer_device["laion"]),
-            "chad": lambda: AES(self.model_path["chad"], self.model_path['clip'], self.cfg.scorer_device["chad"]),
-            "hpsv21": lambda: HPS(self.model_path["hpsv21"], self.cfg.scorer_device["hpsv21"]),
-            "pick": lambda: PICK(self.model_path["pick"], self.cfg.scorer_device["pick"]),
-            "shadowv2": lambda: SS(self.model_path["shadowv2"], self.cfg.scorer_device["shadowv2"]),
-            "cafe": lambda: CAFE(self.model_path["cafe"], self.cfg.scorer_device["cafe"]),
-            "noai": lambda: NOAI(self.model_path["noai"]['class'], self.model_path["noai"]['real'], self.model_path["noai"]['anime'], device=self.cfg.scorer_device["noai"]),
-            "cityaes": lambda: CITY(self.model_path["cityaes"], self.cfg.scorer_device["cityaes"]),
-            "aestheticv25": lambda: AES25(self.cfg.scorer_device["aestheticv25"]),
-        }
+            # 2. Resolve and check file paths
+            if "files" in config:
+                for arg_name, model_data_key in config["files"].items():
+                    try:
+                        # Derive filename from MODEL_DATA using the key
+                        model_data_entry = MODEL_DATA.get(evaluator_lower)
+                        if not model_data_entry: raise KeyError("MODEL_DATA entry missing")
 
-    async def score(self, image: Image.Image, prompt, name=None) -> float:
-        values = []
-        scorer_weights = []
+                        filename = None
+                        if model_data_key == "file_name": filename = model_data_entry.get("file_name")
+                        elif model_data_key == "config_name": filename = model_data_entry.get("config_name")
+                        elif model_data_key in ['class', 'real', 'anime']: filename = model_data_entry.get(model_data_key)
+                        else: filename = model_data_entry.get(model_data_key)
+
+                        if not filename:
+                            # Special case: aestheticv25 has no file
+                            if evaluator_lower == "aestheticv25" and not config["files"]:
+                                 logger.debug(f"No file needed for {evaluator_lower}, arg '{arg_name}'.")
+                                 continue # Skip adding this arg if no file needed
+                            else:
+                                 raise KeyError(f"Filename key '{model_data_key}' not found in MODEL_DATA for '{evaluator_lower}'")
+
+                        # Use the Path object stored in self.model_path if it's the primary file, otherwise construct path
+                        if arg_name in ["model_path", "pathname"] and evaluator_lower in self.model_path:
+                             # Use the primary path object already created
+                             file_path = self.model_path[evaluator_lower]
+                             # Verify filename matches if needed (optional sanity check)
+                             if file_path.name != filename:
+                                  logger.warning(f"Filename mismatch for {evaluator_lower} arg {arg_name}: Expected {filename}, Path has {file_path.name}. Using path.")
+                        else:
+                             # Construct path for secondary files (like config, or NOAI parts)
+                             file_path = scorer_model_dir_path / filename
+
+                        # Check existence
+                        if not file_path.is_file():
+                            logger.error(f"Required file for '{evaluator}', arg '{arg_name}' not found: {file_path}")
+                            file_paths_ok = False
+                            break
+                        constructor_args[arg_name] = str(file_path) # Pass path as string
+
+                    except KeyError as e:
+                        logger.error(f"Config error resolving file for '{evaluator}', arg '{arg_name}': {e}")
+                        file_paths_ok = False; break
+                    except Exception as e_path:
+                        logger.error(f"Error resolving path for '{evaluator}', arg '{arg_name}': {e_path}")
+                        file_paths_ok = False; break
+
+            if not file_paths_ok: continue # Skip if files missing
+
+            # 3. Add extra arguments
+            if "extra_args" in config:
+                # Convert Path objects in extra_args to strings if needed by constructor
+                resolved_extra_args = {}
+                for k, v in config["extra_args"].items():
+                     resolved_extra_args[k] = str(v) if isinstance(v, Path) else v
+                constructor_args.update(resolved_extra_args)
+
+            # 4. Instantiate
+            try:
+                logger.debug(f"Instantiating {ScorerClass.__name__} with args: {constructor_args}")
+                self.model[evaluator_lower] = ScorerClass(**constructor_args) # Store instance using lowercase key
+                logger.info(f"Successfully loaded instance for scorer: '{evaluator}'")
+            except Exception as e_init:
+                logger.error(f"Failed to initialize instance for '{evaluator}': {e_init}", exc_info=True)
+        # --- End Instantiation Loop ---
+
+    async def score(self, image: Image.Image, prompt: str, name: Optional[str] = None) -> float:
+        values: List[float] = []
+        scorer_weights: List[float] = []
         logger.info("Entering score method.")
 
-        # Check if this image should undergo background color check
-        # Replace with your specific model identifiers
-        models_to_check = ["negeuler2",]
+        # --- Optional Background Check ---
+        # Read settings from config ONCE before the loop
+        # Use .get() to safely access nested keys and provide defaults
+        background_check_cfg = self.cfg.get("background_check", {})  # Get the whole sub-config or empty dict
+        enable_background_check = background_check_cfg.get("enabled", False)  # Default to False if key missing
+        payloads_to_check = background_check_cfg.get("payloads", [])  # Get list of payloads or empty list
 
-        should_check_background = name in models_to_check if name else False
-        background_check_passed = True
+        # Determine if check applies to THIS image and perform it IF enabled
+        run_check_for_this_image = False
+        background_check_passed = True  # Assume passes unless check fails
+        if enable_background_check and name is not None and name in payloads_to_check:
+            logger.debug(f"Background check enabled for payload '{name}'. Performing check...")
+            run_check_for_this_image = True
+            try:
+                background_check_passed = self.check_background_color(image)
+                if not background_check_passed:
+                    logger.info(f"Image from '{name}' failed background color check.")
+                else:
+                    logger.debug(f"Image from '{name}' passed background color check.")
+            except Exception as e_bc:
+                logger.error(f"Error during background check for '{name}': {e_bc}")
+                background_check_passed = False  # Treat check error as failure? Or ignore? Let's treat as fail.
+        # --- End Optional Background Check ---
 
-        if should_check_background:
-            background_check_passed = self.check_background_color(image)
-            if not background_check_passed:
-                logger.info(f"Image from {name} failed background color check")
-
-        # Rest of your existing score method...
+        # --- Manual Score Image Display Helper (if needed) ---
         def show_image():
             try:
                 image.show()
             except Exception as e:
                 logger.error(f"Error displaying image: {e}")
 
+        # --- Scoring Loop ---
         for evaluator in self.cfg.scorer_method:
-            individual_eval_score = 0.0 # Score for this evaluator
-            weight = 1.0 # Default weight
+            individual_eval_score: float = 0.0  # Explicitly type hint
+            weight: float = 1.0
 
+            # Check if manual scoring is selected
             if evaluator == 'manual':
-                # --- Run blocking input in a separate thread ---
-                # We still start the image display thread
                 threading.Thread(target=show_image, daemon=True).start()
-                # Await the result from the thread running get_user_score
                 individual_eval_score = await asyncio.to_thread(self.get_user_score)
-                # --- End modification ---
-
                 if individual_eval_score == -1.0:
-                    return -1.0 # Pass the override signal up immediately
-
+                    return -1.0  # Exit early on override signal
                 weight = self.cfg.scorer_weight.get(evaluator, 1.0)
             else:
-                # Non-manual scoring remains synchronous within this loop iteration
-                if should_check_background and not background_check_passed:
-                    logger.info(f"Assigning 0 score for {evaluator} due to background check failure")
+                # --- Automatic Scoring ---
+                # Check if background check failed FOR THIS specific image
+                if run_check_for_this_image and not background_check_passed:
+                    logger.info(
+                        f"Assigning 0 score for '{evaluator}' due to background check failure for image '{name}'.")
                     individual_eval_score = 0.0
                 else:
+                    # Proceed with scoring
                     try:
-                        # Note: If any *automatic* scorer also uses blocking I/O,
-                        # it would need the asyncio.to_thread treatment too.
-                        # Assuming they are CPU/GPU bound or use async I/O internally.
-                        individual_eval_score = self.model[evaluator].score(prompt, image)
-                    except Exception as e:
-                        logger.error(f"Error scoring image with {evaluator}: {e}")
-                        individual_eval_score = 0.0
-                weight = self.cfg.scorer_weight.get(evaluator, 1.0)
+                        # Get the specific scorer instance
+                        scorer_instance = self.model.get(evaluator)  # Use .get() for safety
+                        if scorer_instance is None:
+                            logger.error(f"Scorer instance for '{evaluator}' not found in self.model. Skipping.")
+                            individual_eval_score = 0.0  # Assign 0 if scorer missing
+                        else:
+                            # --- VVV CORRECTED ARGUMENT ORDER VVV ---
+                            logger.debug(f"[AestheticScorer] Preparing to call {evaluator}.score.")
+                            # Pass image first, then prompt. Use keywords for clarity.
+                            individual_eval_score = scorer_instance.score(image=image, prompt=prompt)
+                            # --- ^^^ END CORRECTION ^^^ ---
+                            logger.debug(f"[AestheticScorer] Call to {evaluator}.score finished.")
 
+                    except Exception as e:
+                        logger.error(f"Error scoring image with {evaluator}: {e}", exc_info=True)
+                        individual_eval_score = 0.0  # Assign 0 on scoring error
+
+                weight = self.cfg.scorer_weight.get(evaluator, 1.0)
+            # --- End Automatic Scoring Path ---
+
+            # Append results for this evaluator
             values.append(individual_eval_score)
             scorer_weights.append(weight)
 
             if self.cfg.scorer_print_individual:
-                print(f"{evaluator}:{values[-1]}")
+                score_str = f"{individual_eval_score:.4f}" if isinstance(individual_eval_score, (int, float)) else str(
+                    individual_eval_score)
+                print(f"{evaluator}:{score_str}")
+        # --- End Scoring Loop ---
 
         # Calculate average only if no override signal was passed up
         score = self.average_calc(values, scorer_weights, self.cfg.scorer_average_type)

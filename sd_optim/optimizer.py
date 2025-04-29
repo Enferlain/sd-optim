@@ -46,7 +46,7 @@ class Optimizer:
         self.setup_parameter_space()
         self.generator = Generator(self.cfg.url, self.cfg.batch_size, self.cfg.webui)
         self.merger = Merger(self.cfg)
-        self.scorer = AestheticScorer(self.cfg, {}, {}, {})
+        self.scorer = AestheticScorer(self.cfg)
         self.prompter = Prompter(self.cfg)
         self.iteration = -1
         self.best_model_path = None

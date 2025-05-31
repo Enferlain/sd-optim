@@ -1,4 +1,6 @@
 import re
+import sys
+
 import pywt
 import sd_mecha
 import functools
@@ -24,12 +26,1505 @@ from torch.utils import checkpoint
 from typing import Optional, Callable, Dict, Tuple, TypeVar, Generic, get_type_hints, get_origin, Union, get_args, List, Set, Iterable
 from pytorch_wavelets import DWTForward, DWTInverse
 from sd_mecha import Parameter, Return, merge_method  # Import Parameter and Return
+
+from sd_optim.svd import torch_svd_lowrank # you need to make your own or use the one from mecha
 from torch import Tensor # Import Tensor
 
 EPSILON = 1e-10
 
 
 class MergeMethods:
+
+    @merge_method
+    def merge_layers(
+            a: Parameter(Tensor, "weight"),
+            b: Parameter(Tensor, "weight"),
+            *,
+            alpha: Parameter(float) = 0.5,
+            corr_threshold: Parameter(float) = 0.5,
+            early_exit: Parameter(float) = 0.0,  # New flag
+            debug_polar: Parameter(bool) = True,
+            **kwargs,
+    ) -> Return(Tensor, "weight"):
+        cache = kwargs["cache"]
+        key = kwargs["key"]
+
+        # --- ADDED NaN/Inf CHECK ---
+        a_is_finite = torch.isfinite(a).all()
+        b_is_finite = torch.isfinite(b).all()
+
+        if not a_is_finite or not b_is_finite:
+            warning_msg = f"LUMI_NAN_HANDLER ({key}): Non-finite values detected in input tensors! "
+            if not a_is_finite: warning_msg += "Input 'a' has NaNs/Infs. "
+            if not b_is_finite: warning_msg += "Input 'b' has NaNs/Infs. "
+            warning_msg += "Returning input 'a' as fallback."
+            # Use your logging system here if you have one, otherwise print
+            print(warning_msg, file=sys.stderr) # Or logpy.warning(warning_msg)
+            return a # Return tensor 'a'
+        # --- END OF NaN/Inf CHECK ---
+
+        # Early exit if alpha is 0.0 and flag is above 0.0
+        if early_exit > 0.0 and alpha == 0.0:
+            return a
+
+        if cache is not None:
+            if key not in cache:
+                cache[key] = {}
+            layer_cache = cache[key]
+        else:
+            layer_cache = None
+
+        layer_type = MergeMethods.get_layer_type(a.shape, kwargs)
+
+        if layer_type == MergeMethods.LayerType.SCALAR:
+            return MergeMethods.geometric_sum_full.__wrapped__(a, b, alpha=alpha)
+        elif layer_type == MergeMethods.LayerType.OFFSET:
+            return torch.lerp(a, b, alpha)
+        elif layer_type == MergeMethods.LayerType.EMBEDD:
+            return MergeMethods.clip_embedding_merge_v3(a, b, alpha=alpha)
+        elif layer_type == MergeMethods.LayerType.CROSS_ATTENTION_QKV:
+            return MergeMethods.merge_cross_attention_qkv(a, b, alpha=alpha, key=key, cache=layer_cache)
+        elif layer_type == MergeMethods.LayerType.ATTENTION_QKV:
+            return MergeMethods.merge_self_attention_qkv(a, b, alpha, key=key, cache=layer_cache)
+        elif layer_type == MergeMethods.LayerType.ATTENTION_PROJ:
+            return MergeMethods.merge_attention_output(a, b, alpha, key=key, cache=layer_cache)
+        elif layer_type == MergeMethods.LayerType.FFN_PROJ:
+            return MergeMethods.merge_ffn_proj(a, b, alpha=alpha, key=key)
+        elif layer_type == MergeMethods.LayerType.FFN_OUT:
+            return MergeMethods.merge_ffn_out(a, b, alpha=alpha, corr_threshold=corr_threshold, cache=layer_cache)
+        elif layer_type == MergeMethods.LayerType.MATMUL:
+            return MergeMethods.polar_decomposition(a, b, alpha=alpha, cache=layer_cache, debug=debug_polar)
+        elif layer_type == MergeMethods.LayerType.CONV2D:
+            return MergeMethods.merge_wavelets(a, b, alpha=alpha)
+        else:
+            return torch.lerp(a, b, alpha)
+
+    @staticmethod
+    def polar_decomposition(a: torch.Tensor, b: torch.Tensor, alpha: float,
+                            regularization_eps: float = 1e-6,
+                            cache: Optional[Dict] = None,
+                            key_prefix: str = "polar", debug: bool = False) -> torch.Tensor:  # ADDED key_prefix, debug
+        if debug:
+            print(
+                f"LUMI_DEBUG ({key_prefix}): polar_decomposition initiated. alpha={alpha:.4f}, a.shape={a.shape}, b.shape={b.shape}, reg_eps={regularization_eps:.1e}")
+            if not torch.isfinite(a).all() or not torch.isfinite(b).all(): print(
+                f"LUMI_DEBUG ({key_prefix}): CRITICAL_INPUT_ISSUE: Input 'a' or 'b' is not finite! a_ok={torch.isfinite(a).all()}, b_ok={torch.isfinite(b).all()}",
+                file=sys.stderr)
+
+        device, dtype, original_shape = a.device, a.dtype, a.shape
+
+        if not original_shape:
+            shape_2d = (1, 1)
+        elif len(a.shape) == 4:
+            shape_2d = (a.shape[0], functools.reduce(operator.mul, a.shape[1:]))  # Per your original
+        else:
+            shape_2d = (a.shape[0] if len(a.shape) > 1 else 1, a.shape[-1])  # Ensure 2D for other cases
+        if debug: print(f"LUMI_DEBUG ({key_prefix}): Reshaping from {original_shape} to {shape_2d}")
+        a_2d, b_2d = a.reshape(*shape_2d), b.reshape(*shape_2d)
+
+        # Inner helper from your original code structure
+        def get_cached_svd(matrix: torch.Tensor, name_suffix: str) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+            if debug: print(
+                f"LUMI_DEBUG ({key_prefix}.get_cached_svd.{name_suffix}): Input matrix shape {matrix.shape}")
+            # This uses the class's _get_standard_cached_svd
+            svd_cache_key_prefix = f"{key_prefix}_{name_suffix}"  # For _get_standard_cached_svd's internal caching
+            try:
+                u_svd, s_svd, vt_svd = MergeMethods._get_standard_cached_svd(matrix, cache, svd_cache_key_prefix,
+                                                                             device, dtype)
+            except Exception as e:
+                if debug: print(
+                    f"LUMI_DEBUG ({key_prefix}.get_cached_svd.{name_suffix}): ERROR in _get_standard_cached_svd for {name_suffix}: {e}",
+                    file=sys.stderr)
+                raise e
+            u_polar = u_svd @ vt_svd  # This is the R factor in A = RP if matrix is square
+            if debug:
+                s_min, s_max = (s_svd.min().item(), s_svd.max().item()) if s_svd.numel() > 0 else (0, 0)
+                cond_s = s_max / (s_min + EPSILON) if s_min > EPSILON else float('inf')  # Avoid div by zero for cond
+                print(
+                    f"LUMI_DEBUG ({key_prefix}.get_cached_svd.{name_suffix}): S_svd min={s_min:.3e}, max={s_max:.3e}, cond={cond_s:.3e}. U_polar norm={torch.norm(u_polar):.3e}, finite={torch.isfinite(u_polar).all()}")
+                if s_min < EPSILON * 10 and s_svd.numel() > 0: print(
+                    f"LUMI_DEBUG ({key_prefix}.get_cached_svd.{name_suffix}): WARNING small singular value s_min={s_min:.3e}",
+                    file=sys.stderr)
+            return u_polar, s_svd, vt_svd
+
+        u_a_polar, s_a, vt_a = get_cached_svd(a_2d, "a")
+        u_b_polar, s_b, vt_b = get_cached_svd(b_2d, "b")
+
+        transform_cache_key = f"{key_prefix}_transform"  # Make cache key specific to this layer
+        if cache is not None and transform_cache_key in cache:  # Use specific key
+            transform = cache[transform_cache_key].to(device, dtype)
+            if debug: print(f"LUMI_DEBUG ({key_prefix}): Loaded transform from cache. Norm={torch.norm(transform):.3e}")
+        else:
+            if debug: print(
+                f"LUMI_DEBUG ({key_prefix}): Computing orthogonal_procrustes_ml for U_a_polar={u_a_polar.shape}, U_b_polar={u_b_polar.shape}")
+            try:
+                transform = MergeMethods.orthogonal_procrustes_ml(u_a_polar, u_b_polar)
+            except Exception as e:
+                if debug: print(f"LUMI_DEBUG ({key_prefix}): ERROR in orthogonal_procrustes_ml: {e}", file=sys.stderr)
+                raise e
+            if debug: print(
+                f"LUMI_DEBUG ({key_prefix}): Computed transform norm={torch.norm(transform):.3e}, finite={torch.isfinite(transform).all()}")
+            if cache is not None: cache[transform_cache_key] = transform.to("cpu")
+
+        u_b_polar_aligned = u_b_polar @ transform
+        if debug:
+            align_diff = torch.norm(u_a_polar - u_b_polar_aligned)
+            print(
+                f"LUMI_DEBUG ({key_prefix}): U_b_polar_aligned norm={torch.norm(u_b_polar_aligned):.3e}. Alignment diff(Ua, Ub_aligned)={align_diff:.3e}")
+
+        p_a = vt_a.T @ torch.diag(s_a + regularization_eps) @ vt_a  # Original logic, reg_eps already on s_a
+        p_b = vt_b.T @ torch.diag(s_b + regularization_eps) @ vt_b  # Original logic
+        if debug:
+            for p_mat, name in [(p_a, "p_a"), (p_b, "p_b")]:
+                p_norm = torch.norm(p_mat)
+                p_finite = torch.isfinite(p_mat).all()
+                try:
+                    eig_p = torch.linalg.eigvalsh(p_mat) if p_mat.numel() > 0 and p_mat.shape[0] == p_mat.shape[
+                        1] else torch.tensor([0.0])  # eigvalsh for symmetric
+                    eig_min, eig_max = eig_p.min().item(), eig_p.max().item()
+                    print(
+                        f"LUMI_DEBUG ({key_prefix}): {name} norm={p_norm:.3e}, finite={p_finite}, eig_min={eig_min:.3e}, eig_max={eig_max:.3e}")
+                    if eig_min < -EPSILON: print(
+                        f"LUMI_DEBUG ({key_prefix}): WARNING {name} has negative eigenvalues: {eig_min:.3e}",
+                        file=sys.stderr)
+                except Exception as e_eig:
+                    print(f"LUMI_DEBUG ({key_prefix}): WARNING could not compute eigvalsh for {name}: {e_eig}",
+                          file=sys.stderr)
+
+        M_polar, N_polar = u_a_polar.shape
+        slerp_sub_cache_key = f"{key_prefix}_slerp_cache"  # Unique key for slerp's own cache if it uses one
+        slerp_internal_cache = cache.get(slerp_sub_cache_key, {}) if cache is not None else {}
+
+        if N_polar > M_polar:
+            if debug: print(f"LUMI_DEBUG ({key_prefix}): Path: slerp_grassmann for U_polar {u_a_polar.shape}")
+            merged_u = MergeMethods.slerp_grassmann(u_a_polar, u_b_polar_aligned, alpha, cache=slerp_internal_cache,
+                                                    key_prefix=f"{key_prefix}_grassmann", debug=debug)
+        else:
+            if debug: print(f"LUMI_DEBUG ({key_prefix}): Path: slerp_stiefel for U_polar {u_a_polar.shape}")
+            merged_u = MergeMethods.slerp_stiefel(u_a_polar, u_b_polar_aligned, alpha, cache=slerp_internal_cache,
+                                                  key_prefix=f"{key_prefix}_stiefel", debug=debug)
+
+        if cache is not None and slerp_internal_cache: cache[slerp_sub_cache_key] = slerp_internal_cache
+
+        merged_p = torch.lerp(p_a, p_b, alpha)
+        if debug:
+            mp_norm, mp_finite = torch.norm(merged_p), torch.isfinite(merged_p).all()
+            try:
+                eig_mp = torch.linalg.eigvalsh(merged_p) if merged_p.numel() > 0 and merged_p.shape[0] == \
+                                                            merged_p.shape[1] else torch.tensor([0.0])
+                eig_min, eig_max = eig_mp.min().item(), eig_mp.max().item()
+                print(
+                    f"LUMI_DEBUG ({key_prefix}): merged_u norm={torch.norm(merged_u):.3e}, finite={torch.isfinite(merged_u).all()}")
+                print(
+                    f"LUMI_DEBUG ({key_prefix}): merged_p norm={mp_norm:.3e}, finite={mp_finite}, eig_min={eig_min:.3e}, eig_max={eig_max:.3e}")
+                if eig_min < -EPSILON: print(
+                    f"LUMI_DEBUG ({key_prefix}): WARNING merged_p has negative eigenvalues: {eig_min:.3e}",
+                    file=sys.stderr)
+            except Exception as e_eig_mp:
+                print(f"LUMI_DEBUG ({key_prefix}): WARNING could not compute eigvalsh for merged_p: {e_eig_mp}",
+                      file=sys.stderr)
+
+        result = (merged_u @ merged_p).reshape(original_shape)
+        if debug:
+            print(
+                f"LUMI_DEBUG ({key_prefix}): polar_decomposition final result norm={torch.norm(result):.3e}, finite={torch.isfinite(result).all()}")
+            if not torch.isfinite(result).all(): print(
+                f"LUMI_DEBUG ({key_prefix}): CRITICAL_OUTPUT_ISSUE: Final result is not finite!", file=sys.stderr)
+        return result
+
+    @staticmethod
+    def slerp_grassmann(  # Version 1.0 from user, minimally modified
+            u_a: torch.Tensor, u_b: torch.Tensor, alpha: float,
+            cache: Optional[Dict] = None, key_prefix: str = "grassmann", debug: bool = False  # ADDED key_prefix, debug
+    ) -> torch.Tensor:
+        if debug: print(
+            f"LUMI_DEBUG ({key_prefix}): slerp_grassmann initiated. alpha={alpha:.4f}, u_a.shape={u_a.shape}, u_b.shape={u_b.shape}")
+        if alpha == 0.0: return u_a
+        if alpha == 1.0: return u_b
+        if torch.allclose(u_a, u_b, atol=1e-6):
+            if debug: print(f"LUMI_DEBUG ({key_prefix}): Inputs u_a, u_b are close, returning u_a.")
+            return u_a
+
+        device, dtype, M, N = u_a.device, u_a.dtype, u_a.shape[0], u_a.shape[1]
+
+        if M == N:  # Square matrix
+            if debug: print(f"LUMI_DEBUG ({key_prefix}): M==N, dispatching to slerp_square_unitary.")
+            return MergeMethods.slerp_square_unitary(u_a, u_b, alpha, key=f"{key_prefix}_sq_unitary",
+                                                     debug=debug)  # Pass debug
+
+        C_matrix = u_a @ u_b.T  # M x M
+        if debug: print(f"LUMI_DEBUG ({key_prefix}): C_matrix (u_a @ u_b.T) norm={torch.norm(C_matrix):.3e}")
+
+        svd_C_key_v, svd_C_key_s, svd_C_key_w_t = f"{key_prefix}_svd_C_v", f"{key_prefix}_svd_C_s", f"{key_prefix}_svd_C_w_t"
+        if cache is not None and svd_C_key_v in cache:
+            v_c, s_c_diag, w_c_t = cache[svd_C_key_v].to(device, dtype), cache[svd_C_key_s].to(device, dtype), cache[
+                svd_C_key_w_t].to(device, dtype)
+            if debug: print(f"LUMI_DEBUG ({key_prefix}): SVD of C_matrix loaded from cache.")
+        else:
+            svd_driver = "gesvdj" if u_a.is_cuda and M == M else ("gesvda" if u_a.is_cuda else None)
+            try:
+                v_c, s_c_diag, w_c_t = torch.linalg.svd(C_matrix, driver=svd_driver)
+            except Exception as e:
+                if debug: print(f"LUMI_DEBUG ({key_prefix}): ERROR in SVD of C_matrix (u_a @ u_b.T): {e}",
+                                file=sys.stderr)
+                raise e  # Re-raise, no fallback in original
+            if cache is not None: cache[svd_C_key_v], cache[svd_C_key_s], cache[
+                svd_C_key_w_t] = v_c.cpu(), s_c_diag.cpu(), w_c_t.cpu()
+        if debug: print(
+            f"LUMI_DEBUG ({key_prefix}): SVD of C_matrix: s_c_diag min={s_c_diag.min():.3e}, max={s_c_diag.max():.3e}")
+
+        s_c_diag_clamped = torch.clamp(s_c_diag, -1.0 + EPSILON, 1.0 - EPSILON)  # Original EPSILON
+        theta_s = torch.acos(s_c_diag_clamped)
+        if debug: print(
+            f"LUMI_DEBUG ({key_prefix}): theta_s (principal angles) min={theta_s.min():.3e}, max={theta_s.max():.3e}")
+
+        q_onc_key = f"{key_prefix}_q_onc"
+        if cache is not None and q_onc_key in cache:
+            q_onc = cache[q_onc_key].to(device, dtype)
+            if debug: print(f"LUMI_DEBUG ({key_prefix}): Q_onc loaded from cache.")
+        else:
+            identity_N = torch.eye(N, device=device, dtype=dtype)
+            q_factor_cols = (identity_N - u_a.T @ u_a) @ u_b.T  # N x M
+            q_factor_norm = torch.norm(q_factor_cols)
+            if debug: print(f"LUMI_DEBUG ({key_prefix}): q_factor_cols (for Q_onc QR) norm={q_factor_norm:.3e}")
+            if q_factor_norm < EPSILON * 100:  # Heuristic from before
+                if debug: print(
+                    f"LUMI_DEBUG ({key_prefix}): WARNING q_factor_cols norm is very small ({q_factor_norm:.3e}). Q_onc from QR might be unstable/unreliable.",
+                    file=sys.stderr)
+                # If q_factor_cols is effectively zero, QR might produce NaNs or arbitrary vectors.
+                # The original formula does not specify a fallback here. If term2_cols becomes NaN, the result is NaN.
+                # This state (ub in span of ua) implies theta_s might be mostly zeros or pis, making sin(alpha*theta_s) small.
+                # For safety, if it's extremely small, make Q_onc zero so it won't contribute NaNs if QR of tiny matrix fails.
+                # This is a minimal intervention to prevent NaNs from QR of (near) zero matrix.
+                q_onc = torch.zeros_like(q_factor_cols)  # If very small, make it zero to avoid QR issues
+            else:
+                try:
+                    q_onc, _ = torch.linalg.qr(q_factor_cols)
+                except Exception as e:
+                    if debug: print(f"LUMI_DEBUG ({key_prefix}): ERROR in QR decomposition of q_factor_cols: {e}",
+                                    file=sys.stderr)
+                    raise e  # Re-raise, no fallback in original
+            if cache is not None: cache[q_onc_key] = q_onc.cpu()
+        if debug: print(f"LUMI_DEBUG ({key_prefix}): Q_onc (after QR) norm={torch.norm(q_onc):.3e}")
+
+        cos_interp_theta, sin_interp_theta = torch.cos(alpha * theta_s), torch.sin(alpha * theta_s)
+        term1_cols = u_a.T @ w_c_t.T @ torch.diag(cos_interp_theta) @ v_c.T
+        term2_cols = q_onc @ torch.diag(sin_interp_theta) @ v_c.T
+        x_interp_cols = term1_cols + term2_cols
+        if debug: print(
+            f"LUMI_DEBUG ({key_prefix}): x_interp_cols norm={torch.norm(x_interp_cols):.3e}, finite={torch.isfinite(x_interp_cols).all()}")
+
+        u_interp = x_interp_cols.T
+        if debug: print(
+            f"LUMI_DEBUG ({key_prefix}): slerp_grassmann final u_interp norm={torch.norm(u_interp):.3e}, finite={torch.isfinite(u_interp).all()}")
+        return u_interp
+
+    @staticmethod
+    def slerp_stiefel(a: torch.Tensor, b: torch.Tensor, alpha: float,
+                      cache: Optional[Dict] = None, key_prefix: str = "stiefel",
+                      debug: bool = False) -> torch.Tensor:  # ADDED key_prefix, debug
+        if debug: print(
+            f"LUMI_DEBUG ({key_prefix}): slerp_stiefel initiated. alpha={alpha:.4f}, a.shape={a.shape}, b.shape={b.shape}")
+        if alpha == 0.0: return a
+        if alpha == 1.0: return b
+        m, n = a.shape
+        if m == n:
+            if debug: print(f"LUMI_DEBUG ({key_prefix}): M==N, dispatching to slerp_square_unitary.")
+            return MergeMethods.slerp_square_unitary(a, b, alpha, key=f"{key_prefix}_sq_unitary",
+                                                     debug=debug)  # Pass debug
+        if torch.allclose(a, b, atol=1e-6):
+            if debug: print(f"LUMI_DEBUG ({key_prefix}): Inputs a, b are close, returning a.")
+            return a
+
+        try:  # This is your original primary path
+            if debug: print(f"LUMI_DEBUG ({key_prefix}): Trying Stiefel log/exp path.")
+            tangent_vector = MergeMethods.log_stiefel(a, b, cache=cache, key_prefix=f"{key_prefix}_log",
+                                                      debug=debug)  # Pass debug
+            if debug: print(
+                f"LUMI_DEBUG ({key_prefix}): Tangent_vector from log_stiefel norm={torch.norm(tangent_vector):.3e}, finite={torch.isfinite(tangent_vector).all()}")
+            scaled_tangent = alpha * tangent_vector
+            result = MergeMethods.exp_stiefel(a, scaled_tangent, key_prefix=f"{key_prefix}_exp",
+                                              debug=debug)  # Pass debug
+            if debug: print(
+                f"LUMI_DEBUG ({key_prefix}): Result from exp_stiefel norm={torch.norm(result):.3e}, finite={torch.isfinite(result).all()}")
+            return result
+        except Exception as e_logexp:  # This is your original fallback path
+            if debug: print(
+                f"LUMI_DEBUG ({key_prefix}): Stiefel log/exp path FAILED: {e_logexp}. Using original SVD-based fallback.",
+                file=sys.stderr)
+            # --- Your Original Fallback Logic ---
+            svd_driver = "gesvda" if a.is_cuda else None
+            try:
+                u, s, vt = torch.linalg.svd(a.T @ b, driver=svd_driver, full_matrices=False)
+            except Exception as e_svd_fallback:
+                if debug: print(f"LUMI_DEBUG ({key_prefix}): ERROR in SVD of fallback path (a.T @ b): {e_svd_fallback}",
+                                file=sys.stderr)
+                raise e_svd_fallback  # If SVD here fails, the fallback fails
+            s_clamped = torch.clamp(s, -1 + 1e-7, 1 - 1e-7)  # Original 1e-7
+            theta = torch.acos(s_clamped)
+            if debug: print(
+                f"LUMI_DEBUG ({key_prefix}): Fallback theta (from acos(s_clamped)) min={theta.min():.3e}, max={theta.max():.3e}")
+            theta_interp, cos_interp, sin_interp = alpha * theta, torch.cos(alpha * theta), torch.sin(
+                alpha * theta)  # Corrected: alpha*theta for interp
+
+            y = b - a @ (a.T @ b)
+            try:
+                q, _ = torch.linalg.qr(y)
+            except Exception as e_qr_fallback:
+                if debug: print(f"LUMI_DEBUG ({key_prefix}): ERROR in QR of fallback path (y): {e_qr_fallback}",
+                                file=sys.stderr)
+                raise e_qr_fallback
+            if debug: print(
+                f"LUMI_DEBUG ({key_prefix}): Fallback y norm={torch.norm(y):.3e}, q_of_y norm={torch.norm(q):.3e}")
+
+            result = a @ (u @ torch.diag(cos_interp) @ vt) + q @ (u @ torch.diag(sin_interp) @ vt)
+            if debug: print(
+                f"LUMI_DEBUG ({key_prefix}): slerp_stiefel fallback result norm={torch.norm(result):.3e}, finite={torch.isfinite(result).all()}")
+            return result
+
+    @staticmethod
+    def log_stiefel(a, b, tau=None, max_iter=30, cache: Optional[Dict] = None,
+                    key_prefix: str = "log_stiefel", debug: bool = False):  # ADDED key_prefix, debug
+        if debug: print(
+            f"LUMI_DEBUG ({key_prefix}): log_stiefel initiated. a.shape={a.shape}, b.shape={b.shape}, max_iter={max_iter}")
+        log_stiefel_key = f"{key_prefix}_result_log_stiefel_cpu"  # Make cache key unique
+        if cache is not None and log_stiefel_key in cache:
+            if debug: print(f"LUMI_DEBUG ({key_prefix}): Loaded cached log_stiefel result.")
+            return cache[log_stiefel_key].to(a.device, a.dtype)
+
+        n, p = a.shape;
+        device, dtype = a.device, a.dtype
+        tau = tau or 100 * torch.finfo(dtype).eps * p
+
+        m_mat = a.T @ b
+        b_minus_am = b - a @ m_mat
+        if debug: print(
+            f"LUMI_DEBUG ({key_prefix}): M (a.T@b) norm={torch.norm(m_mat):.3e}. (B-AM) norm={torch.norm(b_minus_am):.3e}")
+        q_orth, n_mat = MergeMethods.qr_pos(b_minus_am, debug=debug,
+                                            key_prefix=f"{key_prefix}_qr_pos_b_am")  # Pass debug
+
+        v_intermediate_cat = torch.cat((m_mat, n_mat), dim=0)
+        v = MergeMethods.orthogonal_complete(v_intermediate_cat, debug=debug,
+                                             key_prefix=f"{key_prefix}_orth_compl_v_interm")  # Pass debug
+        if debug: print(
+            f"LUMI_DEBUG ({key_prefix}): V after orthogonal_complete, shape={v.shape}, norm={torch.norm(v):.3e}")
+
+        try:
+            r_svd, sigma_svd, r_hat_t_svd = torch.linalg.svd(v[p:, p:], driver="gesvda" if v.is_cuda else None)
+        except Exception as e:
+            if debug: print(f"LUMI_DEBUG ({key_prefix}): ERROR SVD(v[p:,p:]) in log_stiefel loop setup: {e}",
+                            file=sys.stderr)
+            raise e
+        q_orth @= r_svd
+        v[p:, :p] = r_svd.T @ n_mat
+        v[:p, p:] @= r_hat_t_svd.T
+        p_arange = torch.arange(p, 2 * p, device=device)
+        v[p:, p:].zero_();
+        v[p_arange, p_arange] = sigma_svd
+        del r_svd, sigma_svd, r_hat_t_svd, p_arange
+        if debug: print(f"LUMI_DEBUG ({key_prefix}): V after SVD adjustment, norm={torch.norm(v):.3e}")
+
+        iter_count = 0
+        for i in range(max_iter):
+            iter_count = i + 1
+            l_iter = MergeMethods.logm(v, key_prefix=f"{key_prefix}_logm_iter{i}", debug=debug)  # Pass debug
+            c_syl, lh_block = l_iter[p:, p:], l_iter[p:, :p]
+            c_norm = torch.linalg.matrix_norm(c_syl)
+            if debug: print(
+                f"LUMI_DEBUG ({key_prefix}): log_stiefel iter {i + 1}/{max_iter}, c_norm={c_norm:.3e} (target < {tau:.1e})")
+            if c_norm <= tau: break
+            s_syl = (lh_block @ lh_block.mH) / 12.0 - torch.eye(p, device=device, dtype=dtype) / 2.0  # Original .mH
+            g_syl = MergeMethods.solve_symmetric_sylvester(s_syl, c_syl, debug=debug,
+                                                           key_prefix=f"{key_prefix}_sylv_iter{i}")  # Pass debug
+            try:
+                v_update_exp = torch.linalg.matrix_exp(g_syl)
+            except Exception as e:
+                if debug: print(f"LUMI_DEBUG ({key_prefix}): ERROR matrix_exp(g_syl) in iter {i + 1}: {e}",
+                                file=sys.stderr)
+                raise e
+            v[:, p:] @= v_update_exp
+        else:  # No break
+            if debug: print(
+                f"LUMI_DEBUG ({key_prefix}): WARNING Max iterations ({max_iter}) reached in log_stiefel. c_norm was {c_norm:.3e}",
+                file=sys.stderr)
+
+        l_final = MergeMethods.logm(v, key_prefix=f"{key_prefix}_logm_final", debug=debug)  # Pass debug
+        delta = a @ l_final[:p, :p] + q_orth @ l_final[p:, :p]
+        if debug: print(
+            f"LUMI_DEBUG ({key_prefix}): log_stiefel final delta norm={torch.norm(delta):.3e}, finite={torch.isfinite(delta).all()}, iters={iter_count}")
+        if cache is not None: cache[log_stiefel_key] = delta.to("cpu")
+        return delta
+
+    @staticmethod
+    def logm(m: torch.Tensor, key_prefix: str = "logm", debug: bool = False):  # ADDED key_prefix, debug
+        # This is your original eigendecomposition-based logm
+        if debug: print(
+            f"LUMI_DEBUG ({key_prefix}): logm (user's eig-based) initiated. m.shape={m.shape}, dtype={m.dtype}, norm={torch.norm(m):.3e}")
+        original_dtype = m.dtype
+        # Promote to complex for eig if real, as eigenvalues/vectors can be complex
+        # Using m.dtype for compute_dtype if already complex.
+        compute_dtype = m.dtype if m.is_complex() else (
+            torch.complex64 if m.dtype == torch.float32 else torch.complex128)
+        m_c = m.to(compute_dtype)
+        if debug: print(f"LUMI_DEBUG ({key_prefix}): logm compute_dtype={compute_dtype}")
+
+        try:
+            eigenvalues, eigenvectors_V = torch.linalg.eig(m_c)
+        except Exception as e:
+            if debug: print(f"LUMI_DEBUG ({key_prefix}): ERROR in torch.linalg.eig(m_c): {e}", file=sys.stderr)
+            raise e  # Re-raise, no fallback in original for this part
+        if debug:
+            abs_eig = eigenvalues.abs()
+            print(
+                f"LUMI_DEBUG ({key_prefix}): Eigenvalues from eig(m_c): abs_min={abs_eig.min():.3e}, abs_max={abs_eig.max():.3e}")
+
+        log_eigenvalues = torch.log(eigenvalues)  # Complex log
+        if debug and not torch.isfinite(log_eigenvalues).all():
+            print(
+                f"LUMI_DEBUG ({key_prefix}): WARNING log_eigenvalues contains non-finite values. Problematic eigenvalues (before log): {eigenvalues[~torch.isfinite(log_eigenvalues)]}",
+                file=sys.stderr)
+
+        try:
+            if debug:
+                # Approximate condition number. Can be expensive.
+                # cond_V = torch.linalg.cond(eigenvectors_V)
+                # print(f"LUMI_DEBUG ({key_prefix}): Eigenvector matrix V cond ~ {cond_V:.3e}")
+                # if cond_V > 1e8: print(f"LUMI_DEBUG ({key_prefix}): WARNING Eigenvector matrix V might be ill-conditioned ({cond_V:.3e}).", file=sys.stderr)
+                pass  # Cond check can be slow, omitting for now unless specifically needed
+            # V @ diag(log_eig) @ V_inv
+            res_c = eigenvectors_V @ torch.diag_embed(log_eigenvalues) @ torch.linalg.inv(eigenvectors_V)
+        except Exception as e:
+            if debug: print(f"LUMI_DEBUG ({key_prefix}): ERROR reconstructing logm from eig (inv or multiply): {e}",
+                            file=sys.stderr)
+            raise e  # Re-raise
+
+        # If original input was real, result should ideally be real (e.g. log of real orthogonal is real skew-symmetric)
+        # Your original code returned res.real
+        if not m.is_complex():  # original_dtype was real
+            if torch.is_complex(res_c) and res_c.imag.abs().max() > EPSILON * 1000:  # Check for significant imag part
+                if debug: print(
+                    f"LUMI_DEBUG ({key_prefix}): WARNING logm of real matrix gave complex result with imag_max={res_c.imag.abs().max():.3e}. Taking .real as per original.",
+                    file=sys.stderr)
+            res = res_c.real.to(original_dtype)
+        else:  # Original was complex, result is complex
+            res = res_c.to(original_dtype)
+
+        if debug: print(
+            f"LUMI_DEBUG ({key_prefix}): logm final result norm={torch.norm(res):.3e}, finite={torch.isfinite(res).all()}")
+        return res
+
+    @staticmethod
+    def orthogonal_complete(q: torch.Tensor, debug: bool = False,
+                            key_prefix="orth_compl") -> torch.Tensor:  # ADDED debug, key_prefix
+        # This is your original logic for orthogonal_complete
+        if debug: print(f"LUMI_DEBUG ({key_prefix}): orthogonal_complete initiated. q.shape={q.shape}")
+        n, k = q.shape
+        if n <= k:
+            if debug: print(
+                f"LUMI_DEBUG ({key_prefix}): n ({n}) <= k ({k}), cannot complete columns in n-dim space. Returning q (or its orthonormalized version if not square).")
+            # If q is already n x n, it's its own completion (assuming it's orthogonal)
+            # If q is n x k with k > n (wide), QR gives n x n Q.
+            # The original code returns q. To be safe and match intent of "orthogonal" basis part:
+            q_ortho, _ = torch.linalg.qr(q)  # Returns n x min(n,k) Q
+            return q_ortho[:, :n] if q_ortho.shape[1] > n else q_ortho  # Ensure n x n or n x k (k<n)
+
+        # Original logic for n > k:
+        m_ident_cols = torch.eye(n, device=q.device, dtype=q.dtype)[:, k:]  # Select last n-k columns of Identity
+        # Orthonormalize q first to ensure correct projection properties
+        q_ortho, _ = torch.linalg.qr(q)  # q_ortho is n x k
+        p_project = m_ident_cols - q_ortho @ (q_ortho.T @ m_ident_cols)  # Project identity columns
+        if debug: print(f"LUMI_DEBUG ({key_prefix}): p_project (for q2) norm={torch.norm(p_project):.3e}")
+
+        # torch.geqrf is deprecated. Use torch.linalg.qr(..., mode='raw') for householder_product
+        try:
+            # If p_project is rank deficient or zero, qr might behave unexpectedly or q2 might not have enough columns.
+            # For householder_product, it expects output of qr(mode='raw')
+            raw_qr_output = torch.linalg.qr(p_project, mode='raw')
+            q2 = torch.linalg.householder_product(*raw_qr_output)
+        except Exception as e:
+            if debug: print(
+                f"LUMI_DEBUG ({key_prefix}): ERROR in QR(p_project, mode='raw') or householder_product: {e}",
+                file=sys.stderr)
+            raise e
+
+        # Ensure q2 has the correct number of columns (n-k)
+        # householder_product on (N x M) input gives (N x M) output. p_project is N x (N-K). So q2 is N x (N-K).
+        # result = torch.cat([q_ortho, q2], dim=1) # This should be N x N
+        # defensive slicing for q2 in case its number of columns is less than N-K (e.g. if p_project was rank deficient)
+        num_cols_q2_needed = n - k
+        q2_selected = q2[:, :num_cols_q2_needed]
+        if q2_selected.shape[1] < num_cols_q2_needed:
+            if debug: print(
+                f"LUMI_DEBUG ({key_prefix}): WARNING q2 from householder_product has {q2_selected.shape[1]} cols, needed {num_cols_q2_needed}. Resulting matrix might not be square or fully orthogonal.",
+                file=sys.stderr)
+            # Pad with zeros if really needed, but this indicates an issue.
+            padding = torch.zeros(n, num_cols_q2_needed - q2_selected.shape[1], device=q.device, dtype=q.dtype)
+            q2_selected = torch.cat([q2_selected, padding], dim=1)
+
+        result = torch.cat([q_ortho, q2_selected], dim=1)
+        if debug: print(
+            f"LUMI_DEBUG ({key_prefix}): orthogonal_complete final result shape={result.shape}, norm={torch.norm(result):.3e}")
+        return result
+
+    @staticmethod
+    def solve_symmetric_sylvester(s, c, debug: bool = False, key_prefix="sylvester"):  # ADDED debug, key_prefix
+        # This is your original logic
+        if debug: print(f"LUMI_DEBUG ({key_prefix}): solve_symmetric_sylvester. s.shape={s.shape}, c.shape={c.shape}")
+        try:
+            v_eigvals, vs_eigvecs = torch.linalg.eigh(s)  # s is symmetric
+        except Exception as e:
+            if debug: print(f"LUMI_DEBUG ({key_prefix}): ERROR in torch.linalg.eigh(s): {e}", file=sys.stderr)
+            raise e
+
+        # Original used .mH. For real symmetric s, eigvecs are real, so .T is fine.
+        # If s could be complex Hermitian, .mH is correct. Assuming s is real symmetric based on context.
+        c_t = vs_eigvecs.T @ c @ vs_eigvecs  # V.T C V
+        d_denom = v_eigvals.unsqueeze(0) + v_eigvals.unsqueeze(1)
+
+        # Your original singularity check:
+        if torch.any(torch.abs(d_denom) < 1e-12):
+            # Original code just printed this to stderr.
+            if debug: print(
+                f"LUMI_DEBUG ({key_prefix}): Singular Sylvester operator: some lambda_i+lambda_j approx 0. min_abs_denom={d_denom.abs().min():.1e}",
+                file=sys.stderr)
+            # The original code did not regularize d_denom, so division by near-zero could occur.
+            # This can lead to Infs if not handled. For "just logging", we let it happen.
+            # If you want to avoid Inf, you'd add: d_denom[torch.abs(d_denom) < 1e-12] = 1e-12 * torch.sign(d_denom[torch.abs(d_denom) < 1e-12])
+
+        g_t = c_t / d_denom
+        g = vs_eigvecs @ g_t @ vs_eigvecs.T  # Original used .T
+        if debug: print(
+            f"LUMI_DEBUG ({key_prefix}): solve_symmetric_sylvester final g norm={torch.norm(g):.3e}, finite={torch.isfinite(g).all()}")
+        return g
+
+    @staticmethod
+    def qr_pos(a: torch.Tensor, debug: bool = False, key_prefix="qr_pos") -> tuple[
+        torch.Tensor, torch.Tensor]:  # ADDED debug, key_prefix
+        # This is your original logic
+        if debug: print(f"LUMI_DEBUG ({key_prefix}): qr_pos initiated. a.shape={a.shape}, norm={torch.norm(a):.3e}")
+        if debug and not torch.isfinite(a).all(): print(
+            f"LUMI_DEBUG ({key_prefix}): WARNING input 'a' to qr_pos contains non-finite values!", file=sys.stderr)
+        try:
+            q, r = torch.linalg.qr(a)
+        except Exception as e:
+            if debug: print(f"LUMI_DEBUG ({key_prefix}): ERROR in torch.linalg.qr(a): {e}", file=sys.stderr)
+            raise e
+
+        d = torch.diagonal(r, dim1=-2, dim2=-1)  # Original
+        ph = d.sign().clone()  # Clone for modification
+        ph[ph == 0] = 1.0  # Original: ph, not ph.unsqueeze
+
+        # Original: q *= ph.unsqueeze(-2); r *= ph.unsqueeze(-1)
+        # ph is 1D vector of length K=min(M,N).
+        # q is M x K. To scale columns of q by ph: q * ph (broadcasts ph along M rows)
+        # r is K x N. To scale rows of r by ph: r * ph.unsqueeze(-1) (ph becomes Kx1, broadcasts along N columns)
+        q_scaled = q * ph
+        r_scaled = r * ph.unsqueeze(-1)
+
+        if debug:
+            diag_r_new = torch.diagonal(r_scaled, dim1=-2, dim2=-1)
+            all_pos = (diag_r_new.min() >= -EPSILON) if diag_r_new.numel() > 0 else True
+            print(
+                f"LUMI_DEBUG ({key_prefix}): qr_pos final q_scaled norm={torch.norm(q_scaled):.3e}, r_scaled norm={torch.norm(r_scaled):.3e}. R_diag_all_pos={all_pos}")
+        return q_scaled, r_scaled
+
+    @staticmethod
+    def exp_stiefel(a: torch.Tensor, delta: torch.Tensor,
+                    key_prefix: str = "exp_stiefel", debug: bool = False) -> torch.Tensor:  # ADDED key_prefix, debug
+        if debug: print(
+            f"LUMI_DEBUG ({key_prefix}): exp_stiefel initiated. a.shape={a.shape}, delta.shape={delta.shape}")
+        n, p = a.shape
+        augmented = torch.cat([a, delta], dim=1)
+        if debug: print(
+            f"LUMI_DEBUG ({key_prefix}): Augmented matrix shape {augmented.shape}, norm={torch.norm(augmented):.3e}")
+        try:
+            q_aug, r_aug = torch.linalg.qr(augmented)  # Q: n x min(n,2p), R: min(n,2p) x 2p
+        except Exception as e:
+            if debug: print(f"LUMI_DEBUG ({key_prefix}): ERROR in QR of augmented matrix: {e}", file=sys.stderr)
+            raise e
+        if debug: print(f"LUMI_DEBUG ({key_prefix}): Q_aug={q_aug.shape}, R_aug={r_aug.shape}")
+
+        # Original block extraction logic
+        q1 = q_aug[:, :p]
+        # q2 needs to be n x p. If q_aug has fewer than 2p columns (i.e. n < 2p), adjust.
+        if q_aug.shape[1] >= 2 * p:
+            q2 = q_aug[:, p:2 * p]
+        elif q_aug.shape[1] > p:  # p < n < 2p, q_aug is n x n. q2 is q_aug[:, p:n]
+            q2_partial = q_aug[:, p:]  # This is n x (n-p)
+            q2 = torch.zeros(n, p, device=a.device, dtype=a.dtype)  # Pad to n x p
+            q2[:, :q2_partial.shape[1]] = q2_partial
+            if debug: print(
+                f"LUMI_DEBUG ({key_prefix}): q2 was {q2_partial.shape}, padded to {q2.shape} as n < 2p and q_aug.shape[1]={q_aug.shape[1]}.")
+        else:  # q_aug.shape[1] == p (i.e. n == p), q2 is empty.
+            q2 = torch.zeros(n, p, device=a.device, dtype=a.dtype)
+            if debug: print(
+                f"LUMI_DEBUG ({key_prefix}): q2 is effectively zero matrix as n == p (q_aug.shape[1]={q_aug.shape[1]}).")
+
+        r12 = r_aug[:p, p:2 * p]
+        r22 = r_aug[p:2 * p, p:2 * p]  # This block should be p x p
+        if debug: print(
+            f"LUMI_DEBUG ({key_prefix}): R22 shape={r22.shape}, norm={torch.norm(r22):.3e}, cond={torch.linalg.cond(r22) if r22.numel() > 0 and r22.shape[0] == r22.shape[1] else float('nan'):.1e}")
+
+        # Original try-except for k
+        try:
+            k = torch.linalg.solve(r22, r12.T)
+        except Exception as e_solve:  # Original code uses broad except
+            if debug: print(
+                f"LUMI_DEBUG ({key_prefix}): torch.linalg.solve(r22, r12.T) FAILED: {e_solve}. Using pinv as per original fallback.",
+                file=sys.stderr)
+            try:
+                k = torch.linalg.pinv(r22) @ r12.T
+            except Exception as e_pinv:
+                if debug: print(
+                    f"LUMI_DEBUG ({key_prefix}): torch.linalg.pinv(r22) also FAILED: {e_pinv}. Raising pinv error.",
+                    file=sys.stderr)
+                raise e_pinv  # If pinv also fails, raise the error from pinv
+        if debug: print(f"LUMI_DEBUG ({key_prefix}): k (for M_skew) norm={torch.norm(k):.3e}")
+
+        m_skew = torch.zeros(2 * p, 2 * p, device=a.device, dtype=a.dtype)  # Original m
+        m_skew[:p, p:], m_skew[p:, :p] = k, -k.T
+        try:
+            exp_m = torch.linalg.matrix_exp(m_skew)
+        except Exception as e:
+            if debug: print(f"LUMI_DEBUG ({key_prefix}): ERROR in torch.linalg.matrix_exp(m_skew): {e}",
+                            file=sys.stderr)
+            raise e
+        if debug: print(f"LUMI_DEBUG ({key_prefix}): exp_m (matrix_exp result) norm={torch.norm(exp_m):.3e}")
+
+        result = q1 @ exp_m[:p, :p] + q2 @ exp_m[p:, :p]
+        if debug:
+            ortho_dev = torch.norm(result.T @ result - torch.eye(p, device=a.device, dtype=a.dtype)) if p > 0 else 0.0
+            print(
+                f"LUMI_DEBUG ({key_prefix}): exp_stiefel final result norm={torch.norm(result):.3e}, ortho_dev={ortho_dev:.3e}, finite={torch.isfinite(result).all()}")
+        return result
+
+    @staticmethod
+    def _matrix_logarithm_eig(matrix: torch.Tensor, key: str, debug: bool = False) -> torch.Tensor:  # ADDED debug
+        # This is your original _matrix_logarithm_eig
+        if debug: print(
+            f"LUMI_DEBUG ({key}): _matrix_logarithm_eig initiated. matrix.shape={matrix.shape}, key='{key}'")
+        if not (matrix.ndim == 2 and matrix.shape[0] == matrix.shape[1]):
+            if debug: print(
+                f"LUMI_DEBUG ({key}): ERROR Matrix logarithm expects a square matrix. Got shape: {matrix.shape}",
+                file=sys.stderr)
+            raise ValueError(f"Matrix logarithm expects a square matrix. Got shape: {matrix.shape}")
+
+        original_dtype = matrix.dtype
+        compute_dtype = matrix.dtype if matrix.is_complex() else (
+            torch.complex64 if matrix.dtype == torch.float32 else torch.complex128)
+        matrix_c = matrix.to(compute_dtype)
+        if debug: print(f"LUMI_DEBUG ({key}): _matrix_logarithm_eig compute_dtype={compute_dtype}")
+
+        try:
+            eigenvalues, eigenvectors_V = torch.linalg.eig(matrix_c)
+        except Exception as e:
+            if debug: print(f"LUMI_DEBUG ({key}): ERROR in torch.linalg.eig for key '{key}': {e}", file=sys.stderr)
+            raise e
+        if debug: print(
+            f"LUMI_DEBUG ({key}): Eigenvalues from eig abs_min={eigenvalues.abs().min():.3e}, abs_max={eigenvalues.abs().max():.3e}")
+
+        log_eigenvalues = torch.log(eigenvalues)
+        if debug and not torch.isfinite(log_eigenvalues).all():
+            print(
+                f"LUMI_DEBUG ({key}): WARNING log_eigenvalues contains non-finite values. Problematic eigenvalues (before log): {eigenvalues[~torch.isfinite(log_eigenvalues)]}",
+                file=sys.stderr)
+
+        try:
+            V_inv = torch.linalg.inv(eigenvectors_V)
+            log_A = eigenvectors_V @ torch.diag_embed(log_eigenvalues) @ V_inv
+        except Exception as e:
+            if debug: print(
+                f"LUMI_DEBUG ({key}): ERROR reconstructing _matrix_logarithm_eig from eig (inv or mul) for key '{key}': {e}",
+                file=sys.stderr)
+            raise e
+
+        # Original logic for returning to original dtype. For slerp_square_unitary, input A can be real.
+        # If matrix was real, log_A should be real (skew-symmetric).
+        if not matrix.is_complex():  # original was real
+            if torch.is_complex(log_A) and log_A.imag.abs().max() > EPSILON * 1000:
+                if debug: print(
+                    f"LUMI_DEBUG ({key}): WARNING _matrix_logarithm_eig of real matrix gave complex result with imag_max={log_A.imag.abs().max():.3e}. Taking .real for key '{key}'.",
+                    file=sys.stderr)
+            log_A_final = log_A.real.to(original_dtype)
+        else:  # original was complex
+            log_A_final = log_A.to(original_dtype)
+
+        if debug: print(
+            f"LUMI_DEBUG ({key}): _matrix_logarithm_eig final result norm={torch.norm(log_A_final):.3e}, finite={torch.isfinite(log_A_final).all()}")
+        return log_A_final
+
+    @staticmethod
+    def slerp_square_unitary(  # Version 3 from user, minimally modified
+            A: torch.Tensor, B: torch.Tensor, alpha: float,
+            key: Optional[str] = None, debug: bool = False  # ADDED debug
+    ) -> torch.Tensor:
+        if debug: print(
+            f"LUMI_DEBUG ({key}): slerp_square_unitary initiated. alpha={alpha:.4f}, A.shape={A.shape}, key='{key}'")
+        if alpha == 0.0: return A
+        if alpha == 1.0:  # Original logic for alpha=1.0
+            if debug and key: print(f"LUMI_DEBUG ({key}): alpha is 1.0, returning B directly for slerp.")
+            return B
+        if torch.allclose(A, B, atol=1e-6):
+            if debug: print(f"LUMI_DEBUG ({key}): Inputs A, B are close, returning A.")
+            return A
+
+        device, original_dtype = A.device, A.dtype
+        compute_c_dtype = torch.complex64 if original_dtype in [torch.float32, torch.complex64] else torch.complex128
+        was_real_input = not A.is_complex()
+        A_c, B_c = A.to(compute_c_dtype), B.to(compute_c_dtype)
+        if debug: print(
+            f"LUMI_DEBUG ({key}): slerp_square_unitary compute_dtype={compute_c_dtype}, was_real_input={was_real_input}")
+
+        try:  # This is your original try block
+            relative_rotation = B_c @ A_c.mH
+            if debug: print(f"LUMI_DEBUG ({key}): Relative_rotation norm={torch.norm(relative_rotation):.3e}")
+            log_R = MergeMethods._matrix_logarithm_eig(relative_rotation, key=f"{key}_log_rel_rot",
+                                                       debug=debug)  # Pass debug
+
+            if was_real_input:
+                log_R_proj = (log_R - log_R.T) / 2.0
+            else:
+                log_R_proj = (log_R - log_R.mH) / 2.0
+            if debug: print(f"LUMI_DEBUG ({key}): log_R_proj norm={torch.norm(log_R_proj):.3e}")
+
+            interpolated_log = alpha * log_R_proj
+            delta_rotation = torch.linalg.matrix_exp(interpolated_log)
+            if debug: print(f"LUMI_DEBUG ({key}): Delta_rotation (from expm) norm={torch.norm(delta_rotation):.3e}")
+            interpolated_unitary_c = delta_rotation @ A_c
+
+            if was_real_input:
+                if torch.is_complex(interpolated_unitary_c) and torch.max(
+                        torch.abs(interpolated_unitary_c.imag)) < 1e-5:  # Original check
+                    final_result = interpolated_unitary_c.real.to(original_dtype)
+                elif torch.is_complex(interpolated_unitary_c):  # Original warning
+                    if debug and key: print(
+                        f"LUMI_DEBUG ({key}): WARN ({key}): slerp_robust produced significant complex output for real input. Max imag: {torch.max(torch.abs(interpolated_unitary_c.imag)):.1e}. Taking real part.",
+                        file=sys.stderr)
+                    final_result = interpolated_unitary_c.real.to(original_dtype)
+                else:
+                    final_result = interpolated_unitary_c.to(original_dtype)  # Already real
+            else:
+                final_result = interpolated_unitary_c.to(original_dtype)
+
+            if debug and not torch.isfinite(final_result).all():  # Original check
+                print(
+                    f"LUMI_DEBUG ({key}): ERROR ({key}): slerp_robust produced non-finite result! Inputs A sum: {A.sum()}, B sum: {B.sum()}, alpha: {alpha}",
+                    file=sys.stderr)
+                raise RuntimeError(f"slerp_robust produced non-finite result for key {key}")
+            if debug: print(
+                f"LUMI_DEBUG ({key}): slerp_square_unitary final result norm={torch.norm(final_result):.3e}, finite={torch.isfinite(final_result).all()}")
+            return final_result
+        except Exception as e:  # This is your original fallback
+            if debug and key: print(
+                f"LUMI_DEBUG ({key}): ERROR ({key}): Exception in slerp_robust: {e}. Inputs A sum: {A.sum()}, B sum: {B.sum()}, alpha: {alpha}. Falling back to re-orthogonalized LERP.",
+                file=sys.stderr)
+            lerped_val = torch.lerp(A, B, alpha)  # Original fallback lerps on original A, B
+            try:
+                u_lerp, _, vh_lerp = torch.linalg.svd(lerped_val, full_matrices=False)
+                fallback_result = (u_lerp @ vh_lerp).to(original_dtype)
+                if debug: print(f"LUMI_DEBUG ({key}): Fallback LERP+SVD result norm={torch.norm(fallback_result):.3e}")
+                return fallback_result
+            except Exception as e_ortho:
+                if debug and key: print(
+                    f"LUMI_DEBUG ({key}): ERROR ({key}): Fallback LERP re-orthogonalization failed: {e_ortho}. Returning raw LERP.",
+                    file=sys.stderr)
+                return lerped_val  # Return raw lerped_val if SVD re-ortho fails.
+
+    @staticmethod
+    def clip_embedding_merge_v3(a: Tensor, b: Tensor, alpha: float = 0.5) -> Tensor:
+        """
+        CLIP embedding merge focused on preserving directional relationships using orthogonal Procrustes.
+        """
+        # 1. Normalize embeddings
+        a_norm = F.normalize(a, p=2, dim=1)
+        b_norm = F.normalize(b, p=2, dim=1)
+
+        # 2. Compute rotation using orthogonal Procrustes
+        rotation = MergeMethods.orthogonal_procrustes_ml(a_norm, b_norm)  # Replace SVD-based rotation
+
+        # 3. Apply rotation to b to align directional space
+        b_aligned = torch.mm(b, rotation.T)
+
+        # 4. Simple interpolation in aligned space
+        merged = (1 - alpha) * a + alpha * b_aligned
+
+        # 5. Preserve original norms
+        a_norms = torch.norm(a, dim=1, keepdim=True)
+        b_norms = torch.norm(b, dim=1, keepdim=True)
+        target_norms = (1 - alpha) * a_norms + alpha * b_norms
+
+        current_norms = torch.norm(merged, dim=1, keepdim=True)
+        merged = merged * (target_norms / (current_norms + 1e-8))
+
+        return merged
+
+    @staticmethod
+    def merge_cross_attention_qkv(a: Tensor, b: Tensor, alpha: float, key: str,
+                                  cache: Optional[Dict] = None) -> Tensor:
+        """
+        Enhanced merge for cross-attention QKV layers with optimized caching for SVD.
+        Handles various architectures and projection types.
+        """
+        device = a.device
+        dtype = a.dtype
+
+        # Handle CLIP-G style concatenated QKV
+        if "in_proj" in key:
+            head_dim = a.shape[0] // 3
+            merged_parts = []
+
+            for i in range(3):
+                start = head_dim * i
+                end = head_dim * (i + 1)
+                part_a = a[start:end]
+                part_b = b[start:end]
+
+                # Use polar decomposition for each part with separate cache entries
+                part_key = f"{key}_part_{i}"
+                part_cache = cache.get(part_key, {}) if cache is not None else None
+                merged = MergeMethods.polar_decomposition(part_a, part_b, alpha, cache=part_cache)
+                if cache is not None:
+                    cache[part_key] = part_cache
+
+                merged_parts.append(merged)
+
+            return torch.cat(merged_parts, dim=0)
+
+        # Handle regular CLIP text encoder layers
+        elif any(x in key for x in ["k_proj", "v_proj", "q_proj"]):
+            return MergeMethods.merge_self_attention_qkv(a, b, alpha, key)
+
+        # Handle UNet cross-attention
+        else:
+            # For query projections, calculate `adjusted_alpha` without caching
+            if ".to_q." in key:
+                with torch.no_grad():
+                    # Generate some sample data for cosine similarity computation
+                    x = torch.randn(min(100, a.shape[-1]), a.shape[-1], device=device, dtype=dtype)
+                    q_a = x @ a.T
+                    q_b = x @ b.T
+                    sim = F.cosine_similarity(q_a.flatten(), q_b.flatten(), dim=0)
+                    adjusted_alpha = alpha * torch.sigmoid(sim * 0.5)
+
+                # Use polar decomposition with adjusted weight
+                return MergeMethods.polar_decomposition(a, b, alpha=adjusted_alpha.item(), cache=cache)
+
+            # Get cached SVD components for matrices `a` and `b` using the centralized helper
+            u_a, s_a, vh_a = MergeMethods._get_standard_cached_svd(a, cache, f"{key}_a", device, dtype)
+            u_b, s_b, vh_b = MergeMethods._get_standard_cached_svd(b, cache, f"{key}_b", device, dtype)
+
+            # Interpolate singular values
+            s_merged = torch.lerp(s_a, s_b, alpha)
+
+            # Align spaces using the smaller dimension
+            k = min(vh_a.shape[0], vh_b.shape[0])
+
+            # Get or compute alignment transform
+            transform_key = f"{key}_transform"
+            if cache is not None and transform_key in cache:
+                R = cache[transform_key].to(device, dtype)
+            else:
+                R = MergeMethods.orthogonal_procrustes_ml(vh_a[:k], vh_b[:k])
+                if cache is not None:
+                    cache[transform_key] = R.to('cpu')
+
+            vh_merged = torch.lerp(vh_a[:k], vh_b[:k] @ R.T, alpha)
+
+            # Reconstruct while preserving cross-modal relationships
+            merged = (u_a[:, :k] * s_merged[:k]) @ vh_merged
+
+            # Scale to preserve magnitude
+            scale_a = torch.norm(a)
+            scale_b = torch.norm(b)
+            target_scale = (1 - alpha) * scale_a + alpha * scale_b
+            current_scale = torch.norm(merged)
+
+            return merged * (target_scale / (current_scale + 1e-6))
+
+    @staticmethod
+    def merge_self_attention_qkv(a: Tensor, b: Tensor, alpha: float, key: str,
+                                 cache: Optional[Dict] = None) -> Tensor:
+        """
+        Merge self-attention QKV layers with caching for polar decomposition.
+        Handles separate Q/K/V and concatenated formats for CLIP-G style models.
+        """
+        # Handle CLIP-G style concatenated QKV
+        if "in_proj" in key:
+            head_dim = a.shape[0] // 3
+            merged_parts = []
+
+            # Pre-fetch all cache entries to minimize repeated calls to cache.get
+            part_caches = [cache.get(f"{key}_part_{i}", {}) if cache else None for i in range(3)]
+
+            for i in range(3):
+                start = head_dim * i
+                end = head_dim * (i + 1)
+                part_a = a[start:end]
+                part_b = b[start:end]
+
+                # Use polar decomposition with separate cache namespace for each part
+                merged = MergeMethods.polar_decomposition(part_a, part_b, alpha, cache=part_caches[i])
+
+                # Update the main cache after polar decomposition call, if caching is enabled
+                if cache is not None:
+                    cache[f"{key}_part_{i}"] = part_caches[i]
+
+                merged_parts.append(merged)
+
+            return torch.cat(merged_parts, dim=0)
+
+        # Handle separate Q/K/V projections
+        else:
+            # Calculate attention similarity and adjusted alpha (not cached)
+            with torch.no_grad():
+                x = torch.randn(min(100, a.shape[-1]), a.shape[-1], device=a.device, dtype=a.dtype)
+                attn_a = torch.softmax(x @ a.mT / math.sqrt(a.shape[-1]), dim=-1)  # Fix: Use .mT
+                attn_b = torch.softmax(x @ b.mT / math.sqrt(b.shape[-1]), dim=-1)  # Fix: Use .mT
+
+                kl_div = F.kl_div(attn_a.log(), attn_b, reduction='batchmean')
+                adjusted_alpha = alpha * torch.sigmoid(1.0 - kl_div)
+
+            # Call polar_decomposition without caching, due to dynamic adjusted_alpha
+            return MergeMethods.polar_decomposition(a, b, alpha=adjusted_alpha.item(), cache=cache)
+
+    @staticmethod
+    def merge_attention_output(a: Tensor, b: Tensor, alpha: float, key: str,
+                               cache: Optional[Dict] = None) -> Tensor:
+        """
+        Merge attention output projections while preserving output distribution,
+        without caching for dynamically adjusted alpha values.
+        """
+        with torch.no_grad():
+            # Generate sample inputs
+            x = torch.randn(min(512, a.shape[-1]), a.shape[-1], device=a.device, dtype=a.dtype)
+
+            # Get output representations
+            out_a = x @ a.T
+            out_b = x @ b.T
+
+            # Compute output statistics
+            stats_a = torch.stack([
+                out_a.std(dim=0).mean(),  # Feature variation
+                out_a.abs().mean(),  # Activation magnitude
+                (out_a > 0).float().mean()  # Activation sparsity
+            ])
+            stats_b = torch.stack([
+                out_b.std(dim=0).mean(),
+                out_b.abs().mean(),
+                (out_b > 0).float().mean()
+            ])
+
+            # Adjust merge weight based on output similarity
+            stats_diff = torch.norm(stats_a - stats_b)
+            adjusted_alpha = alpha * torch.sigmoid(1.0 - stats_diff)
+
+        # Call polar_decomposition without caching, due to dynamic adjusted_alpha
+        merged = MergeMethods.polar_decomposition(a, b, alpha=adjusted_alpha.item(), cache=cache)
+
+        # Scale to preserve activation magnitude
+        scale_a = torch.norm(out_a) / torch.norm(x)
+        scale_b = torch.norm(out_b) / torch.norm(x)
+        target_scale = (1 - alpha) * scale_a + alpha * scale_b
+
+        with torch.no_grad():
+            current_scale = torch.norm(x @ merged.T) / torch.norm(x)
+
+        return merged * (target_scale / (current_scale + 1e-6))
+
+    @staticmethod
+    def merge_ffn_proj(a: Tensor, b: Tensor, alpha: float, key: str) -> torch.Tensor:
+        """
+        Enhanced FFN projection handling that adapts to matrix size.
+        """
+        input_dim = a.shape[-1]  # For proj.weight, this would be 640 or 1280
+        output_dim = a.shape[0]  # For proj.weight, this would be 5120 or 10240
+        expansion_factor = output_dim / input_dim
+
+        if MergeMethods.matrix_is_large(a, threshold=2048):  # Adjust threshold as needed
+            return MergeMethods.merge_ffn_proj_conservative(a, b, alpha, expansion_factor)
+        else:
+            return MergeMethods.merge_ffn_proj_standard(a, b, alpha, expansion_factor)
+
+    @staticmethod
+    def merge_ffn_proj_conservative(a: Tensor, b: Tensor, alpha: float,
+                                    expansion_factor: float) -> Tensor:
+        """
+        Conservative merging for larger FFN projections
+        """
+        # Split the large projection into groups
+        group_size = a.shape[-1]  # Input dimension
+        num_groups = int(expansion_factor)
+
+        # Reshape to handle groups separately
+        a_groups = a.reshape(num_groups, -1, a.shape[-1])
+        b_groups = b.reshape(num_groups, -1, b.shape[-1])
+
+        merged_groups = []
+        for i in range(num_groups):
+            # Process each group with attention to activation patterns
+            a_group = a_groups[i]
+            b_group = b_groups[i]
+
+            # Check activation similarity within group
+            with torch.no_grad():
+                test_input = torch.randn(min(100, a_group.shape[-1]),
+                                         a_group.shape[-1],
+                                         device=a.device).to(a.dtype)  # Ensure correct data type
+                a_act = torch.relu(test_input @ a_group.T)
+                b_act = torch.relu(test_input @ b_group.T).to(a.dtype)
+
+                # Compare activation patterns
+                similarity = F.cosine_similarity(
+                    a_act.flatten(),
+                    b_act.flatten(),
+                    dim=0
+                )
+
+            if similarity > 0.5:
+                # Similar activations - interpolate smoothly
+                merged_group = torch.lerp(a_group, b_group, alpha)
+            else:
+                # Different activations - preserve stronger features
+                merged_group = torch.where(
+                    torch.abs(a_group) > torch.abs(b_group),
+                    a_group,
+                    b_group
+                )
+
+            merged_groups.append(merged_group)
+
+        # Recombine groups
+        return torch.cat(merged_groups, dim=0)
+
+    @staticmethod
+    def merge_ffn_proj_standard(a: Tensor, b: Tensor, alpha: float,
+                                expansion_factor: float) -> Tensor:
+        """
+        Standard merging for smaller FFN projections
+        """
+        # Normalize matrices
+        a_norm = F.normalize(a, dim=-1)
+        b_norm = F.normalize(b, dim=-1)
+
+        # Compute activation statistics
+        with torch.no_grad():
+            test_input = torch.randn(min(100, a.shape[-1]),
+                                     a.shape[-1],
+                                     device=a.device).to(a.dtype)  # Cast test_input to a.dtype
+            a_act = torch.relu(test_input @ a.T)
+            b_act = torch.relu(test_input @ b.T).to(a.dtype)
+
+            # Calculate activation statistics
+            a_stats = torch.stack([
+                (a_act > 0).float().mean(),  # sparsity
+                a_act[a_act > 0].std()  # activation spread
+            ])
+            b_stats = torch.stack([
+                (b_act > 0).float().mean(),
+                b_act[b_act > 0].std()
+            ])
+
+        # Calculate merge weight based on activation properties
+        stats_diff = torch.norm(a_stats - b_stats)
+        merge_weight = torch.sigmoid(1.0 - stats_diff) * alpha
+
+        # Interpolate with adjusted weight
+        merged = torch.lerp(a_norm, b_norm, merge_weight)
+
+        # Rescale to preserve activation magnitude
+        scale_a = torch.norm(a_act) / torch.norm(test_input)
+        scale_b = torch.norm(b_act) / torch.norm(test_input)
+        target_scale = (1 - alpha) * scale_a + alpha * scale_b
+        current_scale = torch.norm(torch.relu(test_input @ merged.T)) / torch.norm(test_input)
+
+        return merged * (target_scale / (current_scale + 1e-6))
+
+    @staticmethod
+    def merge_ffn_out(a: Tensor, b: Tensor, alpha: float, corr_threshold: float,
+                      cache: Optional[Dict[str, Dict[str, Tensor]]] = None) -> Tensor:
+        """
+        Enhanced FFN output merge that preserves feature relationships and activation patterns,
+        optimized with caching for SVD and orthogonal Procrustes alignment.
+        """
+        output_dim, input_dim = a.shape
+        device = a.device
+        dtype = a.dtype
+
+        # Generate sample activations
+        num_samples = min(512, input_dim)
+        with torch.no_grad():
+            x = torch.randn(num_samples, input_dim, device=device, dtype=dtype)
+            x = torch.nn.functional.gelu(x)
+
+            # Get output space representations
+            out_a = x @ a.T
+            out_b = x @ b.T
+
+            # Compute correlation matrices in output space
+            corr_a = torch.corrcoef(out_a.T)
+            corr_b = torch.corrcoef(out_b.T)
+
+            # Identify strongly correlated feature groups
+            groups_a = []
+            groups_b = []
+            used_indices = set()
+
+            # Find feature groups in both matrices
+            for i in range(output_dim):
+                if i in used_indices:
+                    continue
+
+                # Find correlated features
+                group_a = torch.where(torch.abs(corr_a[i]) > corr_threshold)[0]
+                group_b = torch.where(torch.abs(corr_b[i]) > corr_threshold)[0]
+
+                if len(group_a) > 1 or len(group_b) > 1:
+                    # Ensure we don't exceed the actual group size when storing
+                    actual_size = min(len(group_a), len(group_b))
+                    groups_a.append(group_a[:actual_size])
+                    groups_b.append(group_b[:actual_size])
+                    used_indices.update(group_a[:actual_size].tolist())
+
+            # Initialize merged tensor
+            merged = torch.zeros_like(a)
+
+            # Process each feature group
+            for group_a, group_b in zip(groups_a, groups_b):
+                # Extract relevant slices
+                slice_a = a[group_a]
+                slice_b = b[group_b]
+
+                # Normalize the slices
+                norm_a = torch.norm(slice_a, dim=1, keepdim=True)
+                norm_b = torch.norm(slice_b, dim=1, keepdim=True)
+                slice_a_norm = slice_a / (norm_a + 1e-8)
+                slice_b_norm = slice_b / (norm_b + 1e-8)
+
+                # Get SVD components WITHOUT caching
+                # u_a, s_a, v_a = MergeMethods._get_standard_cached_svd(slice_a_norm, cache, f"{group_a}_a", device, dtype)
+                # u_b, s_b, v_b = MergeMethods._get_standard_cached_svd(slice_b_norm, cache, f"{group_b}_b", device, dtype)
+
+                # Direct SVD computation without caching
+                svd_driver = "gesvdj" if slice_a_norm.is_cuda else "none"
+                u_a, s_a, v_a = torch.linalg.svd(slice_a_norm, full_matrices=False, driver=svd_driver)
+                u_b, s_b, v_b = torch.linalg.svd(slice_b_norm, full_matrices=False, driver=svd_driver)
+
+                # Use minimum number of components for alignment
+                k = min(v_a.shape[1], v_b.shape[1])
+
+                # Use orthogonal Procrustes for alignment WITHOUT caching
+                if k > 0:
+                    # procrustes_key = f"procrustes_{len(group_a)}_{len(group_b)}"
+                    # if cache is not None and procrustes_key in cache:
+                    #     r = cache[procrustes_key].to(device, dtype)
+                    # else:
+                    #     r = MergeMethods.orthogonal_procrustes_ml(v_a[:, :k], v_b[:, :k])
+                    #     if cache is not None:
+                    #         cache[procrustes_key] = r.cpu()
+
+                    # Direct Procrustes computation without caching
+                    r = MergeMethods.orthogonal_procrustes_ml(v_a[:, :k], v_b[:, :k])
+                    v_b_aligned = v_b[:, :k] @ r.T
+                else:
+                    v_b_aligned = v_b[:, :k]
+
+                # Align and interpolate
+                v_merged = torch.lerp(v_a[:, :k], v_b_aligned, alpha)
+                s_merged = torch.exp((1 - alpha) * torch.log(s_a[:k] + 1e-8) + alpha * torch.log(s_b[:k] + 1e-8))
+
+                # Interpolate norms
+                norm_merged = (1 - alpha) * norm_a + alpha * norm_b
+
+                # Reconstruct and check shape before assignment
+                group_result = (u_a[:, :k] * s_merged.unsqueeze(0)) @ v_merged * norm_merged
+
+                # Ensure the reconstructed group_result has the correct shape for assignment
+                expected_shape = merged[group_a].shape
+                if group_result.shape != expected_shape:
+                    # Apply padding or trimming to match expected shape
+                    if group_result.shape[0] < expected_shape[0]:
+                        # Pad group_result to match the expected shape
+                        padding = (0, 0, 0, expected_shape[0] - group_result.shape[0])
+                        group_result = torch.nn.functional.pad(group_result, padding)
+                    elif group_result.shape[0] > expected_shape[0]:
+                        # Trim group_result to match the expected shape
+                        group_result = group_result[:expected_shape[0]]
+
+                merged[group_a] = group_result
+
+            # Handle uncorrelated features
+            uncorrelated = list(set(range(output_dim)) - used_indices)
+            if uncorrelated:
+                merged[uncorrelated] = torch.lerp(a[uncorrelated], b[uncorrelated], alpha)
+
+            # Scale adjustment
+            with torch.no_grad():
+                out_merged = x @ merged.T
+                scale_a = torch.norm(out_a) / torch.norm(x)
+                scale_b = torch.norm(out_b) / torch.norm(x)
+                target_scale = (1 - alpha) * scale_a + alpha * scale_b
+                current_scale = torch.norm(out_merged) / torch.norm(x)
+                merged = merged * (target_scale / (current_scale + 1e-8))
+
+        return merged
+
+    @merge_method
+    def geometric_sum_full(
+            a: Parameter(Tensor, "weight"),
+            b: Parameter(Tensor, "weight"),
+            alpha: Parameter(Tensor) = 0.5,
+    ) -> Return(Tensor, "weight"):
+        a = torch.complex(a, torch.zeros_like(a))
+        b = torch.complex(b, torch.zeros_like(b))
+        res = a ** (1 - alpha) * b ** alpha
+        return res.real
+
+    @staticmethod
+    def merge_wavelets(a: Tensor, b: Tensor, alpha: float, wave: str = 'db4',
+                       levels: int = None) -> Tensor:
+        """
+        Merges two convolutional layers using a multi-level wavelet transform
+        while attempting to preserve original sizes. Kernels are reshaped to 2D
+        before the transform, and explicit padding is removed.
+
+        Args:
+        - a, b: Input tensors (convolutional kernels)
+        - alpha: Blending factor (0 to 1)
+        - wave: Wavelet to use (default: 'db3')
+        - levels: Number of decomposition levels
+        """
+        original_size = a.shape
+
+        # Reshape tensors to 2D based on kernel size
+        is_conv_3x3 = len(a.shape) == 4 and a.shape[-1] != 1
+        is_conv_1x1 = len(a.shape) == 4 and a.shape[-1] == 1
+        if is_conv_3x3:
+            shape_2d = (-1, functools.reduce(operator.mul, a.shape[1:]))
+        elif is_conv_1x1:
+            shape_2d = (-1, functools.reduce(operator.mul, a.shape[1:]))
+        elif not a.shape:
+            shape_2d = (1, 1)
+        else:
+            shape_2d = (-1, a.shape[-1])
+
+        a = a.reshape(*shape_2d)
+        b = b.reshape(*shape_2d)
+
+        # Determine the number of levels if not specified
+        if levels is None:
+            levels = min(4, (max(shape_2d) - 1).bit_length() - 1)  # Adaptive J
+
+        # Initialize wavelet transform
+        dwt = DWTForward(J=levels, wave=wave, mode='zero')
+        idwt = DWTInverse(wave=wave, mode='zero')
+        dwt = dwt.to(device=a.device, dtype=a.dtype)
+        idwt = idwt.to(device=a.device, dtype=a.dtype)
+
+        # Perform forward DWT (on 2D matrices)
+        a_ll, a_h = dwt(a.unsqueeze(0).unsqueeze(0))  # Add batch and channel dimensions
+        b_ll, b_h = dwt(b.unsqueeze(0).unsqueeze(0))  # Add batch and channel dimensions
+
+        # Merge the low-frequency components
+        merged_ll = alpha * a_ll + (1 - alpha) * b_ll
+
+        # Merge the high-frequency components
+        merged_h = []
+        for a_h_level, b_h_level in zip(a_h, b_h):
+            merged_h_level = alpha * a_h_level + (1 - alpha) * b_h_level
+            merged_h.append(merged_h_level)
+
+        # Perform inverse DWT
+        merged = idwt((merged_ll, merged_h)).squeeze(0).squeeze(0)  # Remove batch and channel dimensions
+
+        # Reshape back to original size (no cropping needed)
+        return merged.reshape(original_size)
+
+    @staticmethod
+    def get_layer_type(shape, kwargs):
+        key = kwargs["key"]
+
+        # Prioritize checks for bias and other specific types
+        if key.endswith(".bias") or "bias" in key:
+            return MergeMethods.LayerType.OFFSET
+
+        # Layer Norms
+        elif any(x in key for x in [".norm", "layer_norm", "ln_final", "ln_1", "ln_2", "layer_norm1", "layer_norm2",
+                                    "final_layer_norm"]) or "norm" in key:
+            return MergeMethods.LayerType.SCALAR
+
+        # Scalar Layer (like `logit_scale` in CLIP models)
+        elif "logit_scale" in key or "position_ids" in key:
+            return MergeMethods.LayerType.SCALAR
+
+        elif ".in_layers.0.weight" in key or ".out_layers.0.weight" in key:  # Specific to ResBlock norm weights
+            return MergeMethods.LayerType.SCALAR
+
+        # True embeddings (vocabulary mappings)
+        elif "token_embedding" in key or "position_embedding" in key or "positional_embedding" in key or "shared.weight" in key:
+            return MergeMethods.LayerType.EMBEDD
+
+        # Check for attention layers first
+        elif any(x in key for x in
+                 [".to_q.", ".to_k.", ".to_v.", "self_attn.q_proj", "self_attn.k_proj", "self_attn.v_proj",
+                  ".in_proj_"]):
+            # Add cross-attention check
+            if ".attn2." in key:
+                return MergeMethods.LayerType.CROSS_ATTENTION_QKV
+            return MergeMethods.LayerType.ATTENTION_QKV
+
+        # Attention Projection (output projection in both CLIP-G and CLIP-L)
+        elif any(x in key for x in [".to_out.", ".out_proj"]) and ".weight" in key:
+            return MergeMethods.LayerType.ATTENTION_PROJ
+
+        # Feed Forward Network (FFN) in Stable Diffusion layers
+        elif ".ff.net." in key and ".proj." in key:
+            return MergeMethods.LayerType.FFN_PROJ
+        elif ".ff.net." in key and ".weight" in key:
+            return MergeMethods.LayerType.FFN_OUT
+
+        # Feed Forward Network (FFN) in CLIP-G and CLIP-L
+        elif "mlp.c_fc" in key and ".weight" in key:
+            return MergeMethods.LayerType.FFN_PROJ
+        elif "mlp.c_proj" in key and ".weight" in key:
+            return MergeMethods.LayerType.FFN_OUT
+        elif "mlp.fc1" in key and ".weight" in key:
+            return MergeMethods.LayerType.FFN_PROJ
+        elif "mlp.fc2" in key and ".weight" in key:
+            return MergeMethods.LayerType.FFN_OUT
+
+        # Matrix Transformation for Embedding-Like Layers (positional embeddings, projections)
+        elif any(x in key for x in ["positional_embedding", "text_projection", "label_emb"]):
+            return MergeMethods.LayerType.MATMUL
+
+        # Convolutional Layers
+        elif len(shape) == 4:
+            return MergeMethods.LayerType.CONV2D
+
+        # Default to matrix transformations
+        return MergeMethods.LayerType.MATMUL
+
+    class LayerType(enum.Enum):
+        SCALAR = enum.auto()
+        OFFSET = enum.auto()
+        CONV2D = enum.auto()
+        EMBEDD = enum.auto()
+        MATMUL = enum.auto()
+        ATTENTION_QKV = enum.auto()
+        CROSS_ATTENTION_QKV = enum.auto()  # New type
+        ATTENTION_PROJ = enum.auto()
+        FFN_PROJ = enum.auto()
+        FFN_OUT = enum.auto()
+
+    @staticmethod
+    def matrix_is_large(a: Tensor, threshold: int = 1280) -> bool:
+        """
+        Determines if a matrix is considered "large" based on its dimensions.
+
+        Args:
+            A: The input matrix.
+            threshold: The threshold for the minimum dimension size to be considered "large."
+
+        Returns:
+            True if the matrix is considered large, False otherwise.
+        """
+        if a.ndim < 2:  # Check if tensor has fewer than 2 dimensions
+            return False  # Treat non-2D tensors as "not large"
+        m, n = a.shape  # Get the matrix dimensions
+        return m >= threshold or n >= threshold  # Check if either dimension exceeds the threshold
+
+    @staticmethod
+    def dominant_rotation(a: Tensor, threshold: float = 0.8) -> bool:
+        """
+        Estimates if a matrix primarily represents a rotation based on its singular values.
+
+        Args:
+            A: The input matrix.
+            threshold: The threshold for the ratio of the largest singular value to the smallest
+                        singular value to be considered "dominant rotation."
+
+        Returns:
+            True if the matrix is estimated to have a dominant rotation, False otherwise.
+        """
+        _, s, _ = torch.linalg.svd(a)  # Compute the singular values of the matrix
+        largest_singular_value = s[0]
+        smallest_singular_value = s[-1]
+        return largest_singular_value / smallest_singular_value >= threshold
+
+    @staticmethod
+    def matrix_is_ill_conditioned(a: Tensor, threshold: float = 100) -> bool:
+        """
+        Determines if a matrix is ill-conditioned based on its condition number.
+
+        Args:
+            A: The input matrix.
+            threshold: The threshold for the condition number to be considered ill-conditioned.
+
+        Returns:
+            True if the matrix is ill-conditioned, False otherwise.
+        """
+        condition_number = torch.linalg.cond(a)  # Compute the condition number
+        return condition_number >= threshold
+
+    @staticmethod
+    def orthogonal_procrustes_ml(a, b, cancel_reflection: bool = False):
+        # a is u_a_polar, b is u_b_polar
+        atb = a.T @ b
+
+        use_lowrank = not cancel_reflection and a.shape[0] + 10 < a.shape[1]
+
+        if use_lowrank:
+            svd_driver = "gesvdj" if a.is_cuda else None
+            # NEW torch_svd_lowrank returns U, S, Vh_approx
+            u_approx, _, vh_approx = torch_svd_lowrank(  # <--- vh_approx IS Vh
+                atb,
+                q=a.shape[0] + 10,
+                driver=svd_driver,
+                full_matrices=False  # Start with False to mimic old V dim if that helps isolate
+            )
+            # The Procrustes solution R = U @ Vh
+            transform = u_approx @ vh_approx  # <--- USE vh_approx DIRECTLY
+
+        else:  # Standard SVD path (this part was already correct)
+            svd_driver = "gesvdj" if a.is_cuda else None
+            u_full, _, vh_full = torch.linalg.svd(atb, driver=svd_driver)  # vh_full is V_transpose
+
+            final_u_for_transform = u_full
+            final_vh_for_transform = vh_full  # Renamed for clarity
+            if cancel_reflection:
+                final_u_for_transform[:, -1] *= torch.sign(
+                    torch.det(final_u_for_transform) * torch.det(final_vh_for_transform))
+
+            transform = final_u_for_transform @ final_vh_for_transform  # U @ Vh
+
+        if not torch.isfinite(transform).all():
+            raise ValueError("Orthogonal Procrustes transform is not finite.")
+        return transform
+
+    @staticmethod
+    def _get_standard_cached_svd(matrix: Tensor, cache: Optional[Dict], prefix: str,
+                                 device: torch.device, dtype: torch.dtype) -> Tuple[Tensor, Tensor, Tensor]:
+        """
+        Helper to handle standard SVD caching (u, s, vh).
+        """
+        cache_key_u = f"{prefix}_u"
+        cache_key_s = f"{prefix}_s"
+        cache_key_vh = f"{prefix}_vh"
+
+        if cache is not None and cache_key_u in cache:
+            u = cache[cache_key_u].to(device, dtype)
+            s = cache[cache_key_s].to(device, dtype)
+            vh = cache[cache_key_vh].to(device, dtype)
+        else:
+            svd_driver = "gesvdj" if matrix.is_cuda else "none"
+            u, s, vh = torch.linalg.svd(matrix, full_matrices=False, driver=svd_driver)
+
+            if cache is not None:
+                cache[cache_key_u] = u.to('cpu')
+                cache[cache_key_s] = s.to('cpu')
+                cache[cache_key_vh] = vh.to('cpu')
+
+        return u, s, vh
+
 
     @merge_method
     def orthonorm(
@@ -792,6 +2287,150 @@ class MergeMethods:
     #     Q_final = torch.vstack(new_Q)  # same number of rows as x
     #
     #     return Q_final.to(x.device), R_final[:n, :n].to(x.device)  # Return results on the original device
+
+    ### v2 ###
+
+    @merge_method
+    def pqr_projected_merge(
+            a: Parameter(Tensor, "weight"),
+            b: Parameter(Tensor, "weight"),
+            alpha: Parameter(Tensor) = 0.5,
+            rank_ratio: Parameter(float) = 0.25,
+            epsilon: Parameter(float) = 1e-6,  # Used for stable pivot sorting
+            **kwargs
+    ) -> Return(Tensor):
+        """
+        Merges tensors 'a' and 'b' using pivoted QR, projection, and low-rank.
+
+        Version: 1.8 (Concise style, fail-fast, corrected math, internal block_size)
+
+        Args:
+            a: First input tensor.
+            b: Second input tensor.
+            alpha: Interpolation factor.
+            rank_ratio:  The ratio of the dimensions to keep.
+            epsilon: Small value for numerical stability (used in stable pivot sorting).
+            **kwargs: Keyword arguments, including 'key'.
+        """
+        original_shape = a.shape
+        key = kwargs.get("key", "")
+
+        if len(original_shape) <= 1:
+            return (1 - alpha) * a + alpha * b
+
+        # Reshaping logic (unchanged)
+        if "token_embedding" in key:
+            a_2d = a
+            b_2d = b
+        elif len(original_shape) == 4:
+            a_2d = a.reshape(original_shape[0], -1)
+            b_2d = b.reshape(original_shape[0], -1)
+        elif len(original_shape) == 2:
+            a_2d = a
+            b_2d = b
+        else:
+            a_2d = a.reshape(original_shape[0], -1)
+            b_2d = b.reshape(original_shape[0], -1)
+
+        # --- _tsqr (Internal helper with default block_size) ---
+        def _tsqr(x: Tensor, block_size: int = 2048):
+            m, n = x.shape
+
+            if n == 0:
+                return torch.empty((m, 0), device=x.device, dtype=x.dtype), \
+                    torch.empty((0, 0), device=x.device, dtype=x.dtype)
+            if m == 0:
+                return torch.empty((0, n), device=x.device, dtype=x.dtype), \
+                    torch.empty((n, n), device=x.device, dtype=x.dtype)
+
+            Rs = []
+            Qs = []
+
+            for i in range(0, m, block_size):
+                xi = x[i:min(i + block_size, m), :]
+                if xi.shape[0] == 0: continue
+
+                Qi, Ri = torch.linalg.qr(xi, mode='reduced')
+                Qs.append(Qi)
+                Rs.append(Ri)
+
+            if not Rs:
+                return torch.empty((m, n), device=x.device, dtype=x.dtype), torch.empty((n, n), device=x.device,
+                                                                                        dtype=x.dtype)
+
+            stacked_R = torch.vstack(Rs)
+            Q_sR, R_f = torch.linalg.qr(stacked_R, mode='reduced')  # R_f is final R from TSQR
+
+            Q_parts = []
+            offset = 0
+            for Qi_b, Ri_b in zip(Qs, Rs):  # Qi_block, Ri_block
+                k_rows = Ri_b.shape[0]  # num_rows_from_Ri_block
+                Q_sR_seg = Q_sR[offset: offset + k_rows, :]  # Q_stackedR_segment
+                Q_parts.append(Qi_b @ Q_sR_seg)
+                offset += k_rows
+
+            Q_f = torch.vstack(Q_parts)  # Q_f is final Q from TSQR
+            return Q_f, R_f
+
+        # --- _stable_qr (Internal helper) ---
+        def _stable_qr(x: Tensor, tsqr_func: callable):  # epsilon from outer scope
+            if x.numel() == 0:
+                return torch.empty((x.shape[0], 0), device=x.device, dtype=x.dtype), \
+                    torch.empty((0, x.shape[1]), device=x.device, dtype=x.dtype), \
+                    torch.arange(x.shape[1], device=x.device)
+
+            col_norms = torch.norm(x, dim=0)
+            sort_val = col_norms + torch.arange(x.shape[1], 0, -1, device=x.device, dtype=x.dtype) * epsilon / (
+                        x.shape[1] + 1.0)
+            _, pivots = torch.sort(sort_val, descending=True)
+            x_p = x[:, pivots]  # x_pivoted
+
+            if x_p.shape[1] > 0 and x_p.shape[0] > 4 * x_p.shape[1]:
+                Q_r, R_r = tsqr_func(x_p)  # Q_raw, R_raw; tsqr uses its own default block_size
+            elif x_p.shape[1] == 0:
+                Q_r = torch.empty((x_p.shape[0], 0), device=x.device, dtype=x.dtype)
+                R_r = torch.empty((0, x_p.shape[1]), device=x.device, dtype=x.dtype)
+            else:
+                Q_r, R_r = torch.linalg.qr(x_p, mode='reduced')
+
+            if R_r.shape[0] > 0 and R_r.shape[1] > 0:
+                diag_sign = torch.sign(torch.diag(R_r))
+                diag_sign[diag_sign == 0] = 1.0
+
+                k_q = min(Q_r.shape[1], diag_sign.shape[0])  # num_q_cols_to_correct
+                k_r = min(R_r.shape[0], diag_sign.shape[0])  # num_r_rows_to_correct
+                Q_r[:, :k_q] *= diag_sign[None, :k_q]
+                R_r[:k_r, :] *= diag_sign[:k_r, None]
+
+            inv_pivots = torch.argsort(pivots)
+            R_f = R_r[:, inv_pivots]  # R_final
+            return Q_r, R_f, pivots  # Q_r is the Q_final for stable_qr
+
+        # --- Main logic ---
+        Qa, Ra, pa = _stable_qr(a_2d, tsqr_func=_tsqr)
+        diff = b_2d - a_2d
+
+        if Qa.shape[1] == 0:
+            projected_diff = torch.zeros_like(diff)
+        else:
+            projected_diff = Qa @ (Qa.T @ diff)
+
+        Q_diff, R_diff, _ = _stable_qr(projected_diff, tsqr_func=_tsqr)
+
+        if projected_diff.numel() == 0 or Q_diff.shape[1] == 0 or R_diff.shape[0] == 0:
+            low_rank_diff = torch.zeros_like(projected_diff)
+        else:
+            max_rank = min(Q_diff.shape[1], R_diff.shape[0])
+            rank = max(1, int(max_rank * rank_ratio))
+            rank = min(rank, max_rank)
+
+            Q_diff_trunc = Q_diff[:, :rank]
+            R_diff_trunc = R_diff[:rank, :]
+            low_rank_diff = Q_diff_trunc @ R_diff_trunc
+
+        merged = a_2d + alpha * low_rank_diff
+
+        return merged.reshape(original_shape)
 
     @staticmethod
     @merge_method

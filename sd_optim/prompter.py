@@ -86,6 +86,7 @@ def unpack_cargo(cargo: DictConfig, webui_type: str) -> Tuple[Dict, Dict]:
             defaults[k] = v
     return defaults, payloads
 
+
 @dataclass
 class Prompter:
     cfg: DictConfig

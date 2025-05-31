@@ -24,7 +24,7 @@ from sd_optim.models.CafeScore import CafeScore as CAFE
 from sd_optim.models.NoAIScore import NoAIScore as NOAI
 from sd_optim.models.CityAesthetics import CityAestheticsScorer as CITY
 from sd_optim.models.AestheticV25 import AestheticV25 as AES25
-from sd_optim.models.LumiAnatomy import AnatomyScorer as LUMI
+from sd_optim.models.LumiAnatomy import HybridAnatomyScorer as LUMI
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO)
@@ -92,8 +92,10 @@ MODEL_DATA = {
     },
     "luminaflex": { # <<< Our identifier
         "url": None,
-        "file_name": "AnatomyFlaws-v6.6_adabeleif_fl_sigmoid_so400m_naflex_efinal_s10K_final.safetensors", # Head filename
-        "config_name": "AnatomyFlaws-v6.6_adabeleif_fl_sigmoid_so400m_naflex.config.json" # Config filename
+        "file_name": "AnatomyFlaws-v11.3_adabelief_fl_naflex_3000_s9K.safetensors",
+        # "AnatomyFlaws-v6.6_adabeleif_fl_sigmoid_so400m_naflex_efinal_s10K_final.safetensors", # Head filename
+        "config_name": "AnatomyFlaws-v11.3_adabelief_fl_naflex_3000.config.json",
+        # "AnatomyFlaws-v6.6_adabeleif_fl_sigmoid_so400m_naflex.config.json" # Config filename
     },
     "lumidinov2l": {
         "url": None,

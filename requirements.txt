@@ -22,7 +22,7 @@ optuna-fast-fanova       # Recommended Optuna dependency
 Pillow                   # Image processing
 clip                     # Original OpenAI CLIP (might be pulled by others)
 open_clip_torch          # Alternative CLIP implementation (often preferred)
-transformers>=4.66.1     # Hugging Face library (used by many scorers like BLIP, CLIP)
+transformers             # Hugging Face library (used by many scorers like BLIP, CLIP) !new version needed!
 tqdm>=4.66.2             # mecha compat
 # openai-clip            # Usually redundant if 'clip' or 'open_clip_torch' is present
 # aesthetic-predictor-v2-5 # Pulled via pip install aesthetic-predictor-v2-5 directly

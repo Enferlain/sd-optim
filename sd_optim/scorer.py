@@ -2,6 +2,8 @@ import asyncio
 import platform
 import subprocess
 import threading
+
+import numpy as np
 import requests
 import logging
 
@@ -92,9 +94,11 @@ MODEL_DATA = {
     },
     "luminaflex": { # <<< Our identifier
         "url": None,
-        "file_name": "AnatomyFlaws-v11.3_adabelief_fl_naflex_3000_s9K.safetensors",
+        "file_name": "AnatomyFlaws-v14.7_adabelief_fl_naflex_4670_s1K.safetensors",
+        # "AnatomyFlaws-v11.3_adabelief_fl_naflex_3000_s9K.safetensors",
         # "AnatomyFlaws-v6.6_adabeleif_fl_sigmoid_so400m_naflex_efinal_s10K_final.safetensors", # Head filename
-        "config_name": "AnatomyFlaws-v11.3_adabelief_fl_naflex_3000.config.json",
+        "config_name": "AnatomyFlaws-v14.7_adabelief_fl_naflex_4670.config.json",
+        # "AnatomyFlaws-v11.3_adabelief_fl_naflex_3000.config.json",
         # "AnatomyFlaws-v6.6_adabeleif_fl_sigmoid_so400m_naflex.config.json" # Config filename
     },
     "lumidinov2l": {
@@ -672,42 +676,53 @@ class AestheticScorer:
 
     def check_background_color(self, image: Image.Image) -> bool:
         """
-        Check if the image has a black (#000000) or white (#ffffff) background.
-        Returns True if background is acceptable, False otherwise.
+        Robust black background detection that handles subjects extending to borders.
+        Returns True if background is black, False otherwise.
         """
-        # Convert image to RGB if it's not already
         if image.mode != 'RGB':
             image = image.convert('RGB')
 
-        width, height = image.size
+        img_array = np.array(image)
+        height, width = img_array.shape[:2]
 
-        # Define sample points (corners and edges)
-        sample_points = [
-            # Corners
-            (0, 0),  # Top-left
-            (width - 1, 0),  # Top-right
-            (0, height - 1),  # Bottom-left
-            (width - 1, height - 1),  # Bottom-right
+        # Sample multiple small segments along each border instead of entire border
+        segment_size = max(5, min(width, height) // 30)
+        segments_per_side = 8  # Sample 8 segments per border
 
-            # Extra edge samples
-            (width // 2, 0),  # Top middle
-            (width // 2, height - 1),  # Bottom middle
-            (0, height // 2),  # Left middle
-            (width - 1, height // 2),  # Right middle
-        ]
+        def check_border_segments(border_coords):
+            """Check if majority of border segments are black"""
+            black_segments = 0
+            total_segments = 0
 
-        # Check sample points
-        acceptable_colors = [(0, 0, 0), (255, 255, 255)]  # Black and white
-        acceptable_count = 0
+            for coord_list in border_coords:
+                if len(coord_list) < segment_size:
+                    continue
 
-        for x, y in sample_points:
-            color = image.getpixel((x, y))
-            # Allow small tolerance for compression artifacts
-            is_black = all(c <= 10 for c in color)
-            is_white = all(c >= 245 for c in color)
+                # Sample evenly spaced segments along this border
+                step = len(coord_list) // segments_per_side
+                for i in range(0, len(coord_list) - segment_size, step):
+                    segment_coords = coord_list[i:i + segment_size]
 
-            if is_black or is_white:
-                acceptable_count += 1
+                    # Check if this segment is predominantly black
+                    black_pixels_in_segment = 0
+                    for y, x in segment_coords:
+                        if np.all(img_array[y, x] <= 12):  # Black with tolerance
+                            black_pixels_in_segment += 1
 
-        # Consider background acceptable if majority of sample points are black or white
-        return acceptable_count >= len(sample_points) * 0.75
+                    # Segment is "black" if 80% of its pixels are black
+                    if black_pixels_in_segment / len(segment_coords) >= 0.8:
+                        black_segments += 1
+                    total_segments += 1
+
+            # Background is black if 60% of segments are black (allows for character intrusion)
+            return total_segments > 0 and (black_segments / total_segments) >= 0.6
+
+        # Generate border coordinates for each side
+        border_depth = max(2, min(width, height) // 20)
+
+        top_coords = [(y, x) for y in range(border_depth) for x in range(width)]
+        bottom_coords = [(y, x) for y in range(height - border_depth, height) for x in range(width)]
+        left_coords = [(y, x) for y in range(height) for x in range(border_depth)]
+        right_coords = [(y, x) for y in range(height) for x in range(width - border_depth, width)]
+
+        return check_border_segments([top_coords, bottom_coords, left_coords, right_coords])

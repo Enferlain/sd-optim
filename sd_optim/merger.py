@@ -469,28 +469,30 @@ class Merger:
             f"Prepared {len(prepared_nodes)} nodes for method '{merge_method.identifier}': {[getattr(n, 'path', type(n).__name__) for n in prepared_nodes]}")
         return prepared_nodes
 
-    # V1.4 - Uses param_info metadata to expand group/single strategies
+    # V1.5 - Block AND key, uses fallback to merge (and overwrite from keys to block)
     def _prepare_param_recipe_args(
             self,
-            params: Dict[str, Any], # Flat params from optimizer: {'OPT_PARAM_NAME': value}
-            param_info: BoundsInfo, # Metadata: {'OPT_PARAM_NAME': {'bounds': ..., 'strategy': ..., ...}}
+            params: Dict[str, Any],  # Flat params from optimizer: {'OPT_PARAM_NAME': value}
+            param_info: BoundsInfo,  # Metadata: {'OPT_PARAM_NAME': {'bounds': ..., 'strategy': ..., ...}}
             merge_method: MergeMethod
     ) -> Dict[str, RecipeNodeOrValue]:
         """
         Prepares sd_mecha nodes for parameters based on strategies and handles fixed kwargs.
+        Now supports combining block and key configs using fallback merge.
         """
         final_param_nodes: Dict[str, RecipeNodeOrValue] = {}
         # Group values by base_param and target_type based on optimizer output and param_info
         block_based_values_per_param: Dict[str, Dict[str, Any]] = {}
         key_based_values_per_param: Dict[str, Dict[str, Any]] = {}
-        handled_base_params = set() # Keep track of base params covered by strategies
+        handled_base_params = set()  # Keep track of base params covered by strategies
 
         logger.debug("Parsing optimizer params using parameter info metadata...")
+
         # --- Step 1: Populate values for Strategy-Based Parameters ---
         for opt_param_name, info in param_info.items():
             if opt_param_name not in params:
-                 logger.warning(f"Optimizer did not provide value for parameter '{opt_param_name}'. Skipping.")
-                 continue
+                logger.warning(f"Optimizer did not provide value for parameter '{opt_param_name}'. Skipping.")
+                continue
 
             value = params[opt_param_name]
             strategy = info.get('strategy')
@@ -500,61 +502,118 @@ class Merger:
             items_covered = info.get('items_covered', [])
 
             if not base_param: continue
-            handled_base_params.add(base_param) # Mark this base_param as handled
+            handled_base_params.add(base_param)  # Mark this base_param as handled
 
-            if target_type == 'block': block_based_values_per_param.setdefault(base_param, {})
-            elif target_type == 'key': key_based_values_per_param.setdefault(base_param, {})
-            else: logger.warning(f"Unknown target_type '{target_type}' for '{opt_param_name}'."); continue
+            if target_type == 'block':
+                block_based_values_per_param.setdefault(base_param, {})
+            elif target_type == 'key':
+                key_based_values_per_param.setdefault(base_param, {})
+            else:
+                logger.warning(f"Unknown target_type '{target_type}' for '{opt_param_name}'.")
+                continue
 
             if strategy in ['all', 'select']:
-                if not item_name: logger.warning(f"Missing 'item_name' for '{opt_param_name}' ({strategy})."); continue
-                if target_type == 'block': block_based_values_per_param[base_param][item_name] = value
-                elif target_type == 'key': key_based_values_per_param[base_param][item_name] = value
+                if not item_name:
+                    logger.warning(f"Missing 'item_name' for '{opt_param_name}' ({strategy}).")
+                    continue
+                if target_type == 'block':
+                    block_based_values_per_param[base_param][item_name] = value
+                elif target_type == 'key':
+                    key_based_values_per_param[base_param][item_name] = value
+
             elif strategy in ['group', 'single']:
-                if not items_covered: logger.warning(f"Missing 'items_covered' for '{opt_param_name}' ({strategy})."); continue
+                if not items_covered:
+                    logger.warning(f"Missing 'items_covered' for '{opt_param_name}' ({strategy}).")
+                    continue
                 for item in items_covered:
-                    if target_type == 'block': block_based_values_per_param[base_param][item] = value
-                    elif target_type == 'key': key_based_values_per_param[base_param][item] = value
-            # No 'custom_fixed' strategy to handle here anymore
+                    if target_type == 'block':
+                        block_based_values_per_param[base_param][item] = value
+                    elif target_type == 'key':
+                        key_based_values_per_param[base_param][item] = value
 
         # --- Step 1b: Create sd-mecha nodes for Strategy-Based Parameters ---
         target_model_node = self._select_base_model() or (self.models[0] if self.models else None)
         if not target_model_node:
-             logger.error("Cannot prepare parameter nodes: Target/Base model node is missing.")
-             # Decide how to handle this - maybe return empty dict?
-             return {} # Return empty if no target model context
+            logger.error("Cannot prepare parameter nodes: Target/Base model node is missing.")
+            return {}
 
-        # Create nodes for block-targeted parameters (e.g., alpha, constraint in the example)
-        for base_param, block_dict in block_based_values_per_param.items():
-             if not block_dict: logger.warning(f"No block values collected for base param '{base_param}'."); continue
-             if not self.custom_block_config: logger.error(f"Cannot make block node for '{base_param}': custom block config missing."); continue
-             if not target_model_node: logger.error(f"Cannot make convert node for '{base_param}': target model missing."); continue
-             try:
-                 literal_node = sd_mecha.literal(block_dict, config=self.custom_block_config.identifier)
-                 converted_node = sd_mecha.convert(
-                     literal_node,
-                     target_model_node,
-                     model_dirs=[self.models_dir]  # <<< ADD THIS ARGUMENT
-                 )
-                 final_param_nodes[base_param] = converted_node # Use base_param name as key
-                 logger.debug(f"Created CONVERT node for '{base_param}' ({len(block_dict)} blocks).")
-             except Exception as e: logger.error(f"Failed creating block/convert node for '{base_param}': {e}", exc_info=True)
+        # Process each base parameter that has values from either blocks or keys
+        all_base_params = set(block_based_values_per_param.keys()) | set(key_based_values_per_param.keys())
 
-        # Create nodes for key-targeted parameters
-        for base_param, key_dict in key_based_values_per_param.items():
-             if base_param in final_param_nodes: logger.warning(f"Parameter '{base_param}' conflict (block/key?). Overwriting with key-based.");
-             if not key_dict: logger.warning(f"No key values collected for base param '{base_param}'."); continue
-             if not self.base_model_config: logger.error(f"Cannot create key node for '{base_param}': base_model_config not loaded."); continue
-             try:
-                 literal_node = sd_mecha.literal(key_dict, config=self.base_model_config.identifier)
-                 final_param_nodes[base_param] = literal_node # Use base_param name as key
-                 logger.debug(f"Created KEY literal node for '{base_param}' ({len(key_dict)} keys).")
-             except Exception as e: logger.error(f"Failed creating key node for '{base_param}': {e}", exc_info=True)
+        for base_param in all_base_params:
+            block_dict = block_based_values_per_param.get(base_param, {})
+            key_dict = key_based_values_per_param.get(base_param, {})
+
+            # Case 1: Only block values
+            if block_dict and not key_dict:
+                if not self.custom_block_config:
+                    logger.error(f"Cannot make block node for '{base_param}': custom block config missing.")
+                    continue
+                try:
+                    literal_node = sd_mecha.literal(block_dict, config=self.custom_block_config.identifier)
+                    converted_node = sd_mecha.convert(
+                        literal_node,
+                        target_model_node,
+                        model_dirs=[self.models_dir]
+                    )
+                    final_param_nodes[base_param] = converted_node
+                    logger.debug(f"Created BLOCK-ONLY node for '{base_param}' ({len(block_dict)} blocks).")
+                except Exception as e:
+                    logger.error(f"Failed creating block node for '{base_param}': {e}", exc_info=True)
+
+            # Case 2: Only key values
+            elif key_dict and not block_dict:
+                if not self.base_model_config:
+                    logger.error(f"Cannot create key node for '{base_param}': base_model_config not loaded.")
+                    continue
+                try:
+                    literal_node = sd_mecha.literal(key_dict, config=self.base_model_config.identifier)
+                    final_param_nodes[base_param] = literal_node
+                    logger.debug(f"Created KEY-ONLY node for '{base_param}' ({len(key_dict)} keys).")
+                except Exception as e:
+                    logger.error(f"Failed creating key node for '{base_param}': {e}", exc_info=True)
+
+            # Case 3: Both block and key values - MERGE THEM with fallback
+            elif block_dict and key_dict:
+                if not self.custom_block_config:
+                    logger.error(f"Cannot make block node for '{base_param}': custom block config missing.")
+                    continue
+                if not self.base_model_config:
+                    logger.error(f"Cannot create key node for '{base_param}': base_model_config not loaded.")
+                    continue
+
+                logger.debug(
+                    f"Merging block and key values for '{base_param}' ({len(block_dict)} blocks + {len(key_dict)} keys). Keys will override blocks.")
+                try:
+                    # Step 1: Create block literal with custom config
+                    block_literal = sd_mecha.literal(block_dict, config=self.custom_block_config.identifier)
+
+                    # Step 2: Convert blocks to base config (same as models)
+                    block_converted = sd_mecha.convert(
+                        block_literal,
+                        target_model_node,
+                        model_dirs=[self.models_dir]
+                    )
+
+                    # Step 3: Create key literal with base config (already compatible)
+                    key_literal = sd_mecha.literal(key_dict, config=self.base_model_config.identifier)
+
+                    # Step 4: Use fallback to combine - key values override block values
+                    # Order matters: later arguments override earlier ones
+                    merged_node = key_literal | block_converted
+
+                    final_param_nodes[base_param] = merged_node
+                    logger.debug(f"Created FALLBACK-MERGED node for '{base_param}' (blocks + keys, keys override).")
+                except Exception as e:
+                    logger.error(f"Failed creating merged node for '{base_param}': {e}", exc_info=True)
+
+            # Case 4: Neither (shouldn't happen, but just in case)
+            else:
+                logger.warning(f"No values found for base parameter '{base_param}' - this shouldn't happen.")
 
         # --- Step 2: Handle Fixed Keyword Arguments (Not Optimized via Strategies) ---
         logger.debug(f"Checking for fixed keyword arguments using custom_bounds...")
         expected_kwargs = set(merge_method.get_params().kwargs.keys())
-        # handled_base_params contains base names like 'alpha', 'constraint'
 
         unhandled_kwargs = expected_kwargs - handled_base_params
         logger.debug(f"Expected Kwargs: {expected_kwargs}")
@@ -563,24 +622,22 @@ class Merger:
 
         # Get custom bounds config safely and validate it
         custom_bounds_config = self.cfg.optimization_guide.get("custom_bounds", {})
-        # Use the static method from ParameterHandler for validation
         validated_custom_bounds = ParameterHandler.validate_custom_bounds(custom_bounds_config)
 
         for kwarg_name in unhandled_kwargs:
             if kwarg_name in validated_custom_bounds:
                 # Fixed value provided directly in custom_bounds
                 fixed_value = validated_custom_bounds[kwarg_name]
-                # Validate the fixed value type if necessary (e.g., ensure int if method expects int)
-                # Expected type can be inferred from merge_method.get_params().kwargs[kwarg_name].interface
-                # For now, just create a literal node directly
                 final_param_nodes[kwarg_name] = sd_mecha.literal(fixed_value)
                 logger.info(f"Using fixed value for '{kwarg_name}' from custom_bounds: {fixed_value}")
             else:
                 # Not in custom_bounds, rely on merge method's own default value
-                logger.info(f"Using default value for parameter '{kwarg_name}' from merge method '{merge_method.identifier}'.")
+                logger.info(
+                    f"Using default value for parameter '{kwarg_name}' from merge method '{merge_method.identifier}'.")
                 # Do NOT add to final_param_nodes, sd-mecha will use the method's default
 
-        logger.info(f"Prepared {len(final_param_nodes)} final parameter nodes for merge method '{merge_method.identifier}'.")
+        logger.info(
+            f"Prepared {len(final_param_nodes)} final parameter nodes for merge method '{merge_method.identifier}'.")
         return final_param_nodes
 
     # V1.1 - Added handling for fallback_model_index, including -1/None check.

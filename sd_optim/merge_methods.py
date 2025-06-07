@@ -42,19 +42,22 @@ class MergeMethods:
             *,
             alpha: Parameter(float) = 0.5,
             corr_threshold: Parameter(float) = 0.5,
-            early_exit: Parameter(float) = 0.0,  # New flag
-            debug_polar: Parameter(bool) = True,
+            early_exit: Parameter(bool) = True,
             **kwargs,
     ) -> Return(Tensor, "weight"):
         cache = kwargs["cache"]
         key = kwargs["key"]
+
+        if key: # Only print if key is available
+            # The 'alpha' variable here is ALREADY the specific float value for this key
+            print(f"[merge_layers] Key: {key} -- Using alpha: {alpha:.4f}")
 
         # --- ADDED NaN/Inf CHECK ---
         a_is_finite = torch.isfinite(a).all()
         b_is_finite = torch.isfinite(b).all()
 
         if not a_is_finite or not b_is_finite:
-            warning_msg = f"LUMI_NAN_HANDLER ({key}): Non-finite values detected in input tensors! "
+            warning_msg = f"({key}): Non-finite values detected in input tensors! "
             if not a_is_finite: warning_msg += "Input 'a' has NaNs/Infs. "
             if not b_is_finite: warning_msg += "Input 'b' has NaNs/Infs. "
             warning_msg += "Returning input 'a' as fallback."
@@ -64,7 +67,7 @@ class MergeMethods:
         # --- END OF NaN/Inf CHECK ---
 
         # Early exit if alpha is 0.0 and flag is above 0.0
-        if early_exit > 0.0 and alpha == 0.0:
+        if early_exit and alpha == 0.0:  # Changed from: early_exit > 0.0
             return a
 
         if cache is not None:
@@ -93,742 +96,471 @@ class MergeMethods:
         elif layer_type == MergeMethods.LayerType.FFN_OUT:
             return MergeMethods.merge_ffn_out(a, b, alpha=alpha, corr_threshold=corr_threshold, cache=layer_cache)
         elif layer_type == MergeMethods.LayerType.MATMUL:
-            return MergeMethods.polar_decomposition(a, b, alpha=alpha, cache=layer_cache, debug=debug_polar)
+            return MergeMethods.polar_decomposition(a, b, alpha=alpha, cache=layer_cache)
         elif layer_type == MergeMethods.LayerType.CONV2D:
             return MergeMethods.merge_wavelets(a, b, alpha=alpha)
         else:
             return torch.lerp(a, b, alpha)
 
     @staticmethod
-    def polar_decomposition(a: torch.Tensor, b: torch.Tensor, alpha: float,
+    def polar_decomposition(a: Tensor, b: Tensor, alpha: float,
                             regularization_eps: float = 1e-6,
                             cache: Optional[Dict] = None,
-                            key_prefix: str = "polar", debug: bool = False) -> torch.Tensor:  # ADDED key_prefix, debug
-        if debug:
-            print(
-                f"LUMI_DEBUG ({key_prefix}): polar_decomposition initiated. alpha={alpha:.4f}, a.shape={a.shape}, b.shape={b.shape}, reg_eps={regularization_eps:.1e}")
-            if not torch.isfinite(a).all() or not torch.isfinite(b).all(): print(
-                f"LUMI_DEBUG ({key_prefix}): CRITICAL_INPUT_ISSUE: Input 'a' or 'b' is not finite! a_ok={torch.isfinite(a).all()}, b_ok={torch.isfinite(b).all()}",
-                file=sys.stderr)
-
+                            key_prefix: str = "polar") -> Tensor:
+        """
+        Interpolate between tensors using polar decomposition.
+        Decomposes each tensor into orthogonal and positive semidefinite parts,
+        then interpolates each part separately.
+        """
         device, dtype, original_shape = a.device, a.dtype, a.shape
 
         if not original_shape:
             shape_2d = (1, 1)
         elif len(a.shape) == 4:
-            shape_2d = (a.shape[0], functools.reduce(operator.mul, a.shape[1:]))  # Per your original
+            shape_2d = (a.shape[0], functools.reduce(operator.mul, a.shape[1:]))
         else:
-            shape_2d = (a.shape[0] if len(a.shape) > 1 else 1, a.shape[-1])  # Ensure 2D for other cases
-        if debug: print(f"LUMI_DEBUG ({key_prefix}): Reshaping from {original_shape} to {shape_2d}")
+            shape_2d = (a.shape[0] if len(a.shape) > 1 else 1, a.shape[-1])
         a_2d, b_2d = a.reshape(*shape_2d), b.reshape(*shape_2d)
 
-        # Inner helper from your original code structure
         def get_cached_svd(matrix: torch.Tensor, name_suffix: str) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-            if debug: print(
-                f"LUMI_DEBUG ({key_prefix}.get_cached_svd.{name_suffix}): Input matrix shape {matrix.shape}")
-            # This uses the class's _get_standard_cached_svd
-            svd_cache_key_prefix = f"{key_prefix}_{name_suffix}"  # For _get_standard_cached_svd's internal caching
-            try:
-                u_svd, s_svd, vt_svd = MergeMethods._get_standard_cached_svd(matrix, cache, svd_cache_key_prefix,
-                                                                             device, dtype)
-            except Exception as e:
-                if debug: print(
-                    f"LUMI_DEBUG ({key_prefix}.get_cached_svd.{name_suffix}): ERROR in _get_standard_cached_svd for {name_suffix}: {e}",
-                    file=sys.stderr)
-                raise e
-            u_polar = u_svd @ vt_svd  # This is the R factor in A = RP if matrix is square
-            if debug:
-                s_min, s_max = (s_svd.min().item(), s_svd.max().item()) if s_svd.numel() > 0 else (0, 0)
-                cond_s = s_max / (s_min + EPSILON) if s_min > EPSILON else float('inf')  # Avoid div by zero for cond
-                print(
-                    f"LUMI_DEBUG ({key_prefix}.get_cached_svd.{name_suffix}): S_svd min={s_min:.3e}, max={s_max:.3e}, cond={cond_s:.3e}. U_polar norm={torch.norm(u_polar):.3e}, finite={torch.isfinite(u_polar).all()}")
-                if s_min < EPSILON * 10 and s_svd.numel() > 0: print(
-                    f"LUMI_DEBUG ({key_prefix}.get_cached_svd.{name_suffix}): WARNING small singular value s_min={s_min:.3e}",
-                    file=sys.stderr)
+            svd_cache_key_prefix = f"{key_prefix}_{name_suffix}"
+            u_svd, s_svd, vt_svd = MergeMethods._get_standard_cached_svd(matrix, cache, svd_cache_key_prefix,
+                                                                         device, dtype)
+            u_polar = u_svd @ vt_svd  # Orthogonal factor (closest orthogonal matrix)
             return u_polar, s_svd, vt_svd
 
         u_a_polar, s_a, vt_a = get_cached_svd(a_2d, "a")
         u_b_polar, s_b, vt_b = get_cached_svd(b_2d, "b")
 
-        transform_cache_key = f"{key_prefix}_transform"  # Make cache key specific to this layer
-        if cache is not None and transform_cache_key in cache:  # Use specific key
+        # Align orthogonal factors using Procrustes
+        transform_cache_key = f"{key_prefix}_transform"
+        if cache is not None and transform_cache_key in cache:
             transform = cache[transform_cache_key].to(device, dtype)
-            if debug: print(f"LUMI_DEBUG ({key_prefix}): Loaded transform from cache. Norm={torch.norm(transform):.3e}")
         else:
-            if debug: print(
-                f"LUMI_DEBUG ({key_prefix}): Computing orthogonal_procrustes_ml for U_a_polar={u_a_polar.shape}, U_b_polar={u_b_polar.shape}")
-            try:
-                transform = MergeMethods.orthogonal_procrustes_ml(u_a_polar, u_b_polar)
-            except Exception as e:
-                if debug: print(f"LUMI_DEBUG ({key_prefix}): ERROR in orthogonal_procrustes_ml: {e}", file=sys.stderr)
-                raise e
-            if debug: print(
-                f"LUMI_DEBUG ({key_prefix}): Computed transform norm={torch.norm(transform):.3e}, finite={torch.isfinite(transform).all()}")
-            if cache is not None: cache[transform_cache_key] = transform.to("cpu")
+            transform = MergeMethods.orthogonal_procrustes_ml(u_a_polar, u_b_polar)
+            if cache is not None:
+                cache[transform_cache_key] = transform.to("cpu")
 
         u_b_polar_aligned = u_b_polar @ transform
-        if debug:
-            align_diff = torch.norm(u_a_polar - u_b_polar_aligned)
-            print(
-                f"LUMI_DEBUG ({key_prefix}): U_b_polar_aligned norm={torch.norm(u_b_polar_aligned):.3e}. Alignment diff(Ua, Ub_aligned)={align_diff:.3e}")
 
-        p_a = vt_a.T @ torch.diag(s_a + regularization_eps) @ vt_a  # Original logic, reg_eps already on s_a
-        p_b = vt_b.T @ torch.diag(s_b + regularization_eps) @ vt_b  # Original logic
-        if debug:
-            for p_mat, name in [(p_a, "p_a"), (p_b, "p_b")]:
-                p_norm = torch.norm(p_mat)
-                p_finite = torch.isfinite(p_mat).all()
-                try:
-                    eig_p = torch.linalg.eigvalsh(p_mat) if p_mat.numel() > 0 and p_mat.shape[0] == p_mat.shape[
-                        1] else torch.tensor([0.0])  # eigvalsh for symmetric
-                    eig_min, eig_max = eig_p.min().item(), eig_p.max().item()
-                    print(
-                        f"LUMI_DEBUG ({key_prefix}): {name} norm={p_norm:.3e}, finite={p_finite}, eig_min={eig_min:.3e}, eig_max={eig_max:.3e}")
-                    if eig_min < -EPSILON: print(
-                        f"LUMI_DEBUG ({key_prefix}): WARNING {name} has negative eigenvalues: {eig_min:.3e}",
-                        file=sys.stderr)
-                except Exception as e_eig:
-                    print(f"LUMI_DEBUG ({key_prefix}): WARNING could not compute eigvalsh for {name}: {e_eig}",
-                          file=sys.stderr)
+        # Construct positive semidefinite factors with regularization
+        p_a = vt_a.T @ torch.diag(s_a + regularization_eps) @ vt_a
+        p_b = vt_b.T @ torch.diag(s_b + regularization_eps) @ vt_b
 
+        # SLERP on orthogonal factors (routing based on efficiency for matrix dimensions)
         M_polar, N_polar = u_a_polar.shape
-        slerp_sub_cache_key = f"{key_prefix}_slerp_cache"  # Unique key for slerp's own cache if it uses one
+        slerp_sub_cache_key = f"{key_prefix}_slerp_cache"
         slerp_internal_cache = cache.get(slerp_sub_cache_key, {}) if cache is not None else {}
 
-        if N_polar > M_polar:
-            if debug: print(f"LUMI_DEBUG ({key_prefix}): Path: slerp_grassmann for U_polar {u_a_polar.shape}")
-            merged_u = MergeMethods.slerp_grassmann(u_a_polar, u_b_polar_aligned, alpha, cache=slerp_internal_cache,
-                                                    key_prefix=f"{key_prefix}_grassmann", debug=debug)
-        else:
-            if debug: print(f"LUMI_DEBUG ({key_prefix}): Path: slerp_stiefel for U_polar {u_a_polar.shape}")
-            merged_u = MergeMethods.slerp_stiefel(u_a_polar, u_b_polar_aligned, alpha, cache=slerp_internal_cache,
-                                                  key_prefix=f"{key_prefix}_stiefel", debug=debug)
+        # Note: Routing choice is for computational efficiency
+        if N_polar > M_polar:  # Wide matrices
+            merged_u = MergeMethods.slerp_grassmann(u_a_polar, u_b_polar_aligned, alpha,
+                                                    cache=slerp_internal_cache,
+                                                    key_prefix=f"{key_prefix}_grassmann")
+        else:  # Tall or square matrices
+            merged_u = MergeMethods.slerp_stiefel(u_a_polar, u_b_polar_aligned, alpha,
+                                                  cache=slerp_internal_cache,
+                                                  key_prefix=f"{key_prefix}_stiefel")
 
-        if cache is not None and slerp_internal_cache: cache[slerp_sub_cache_key] = slerp_internal_cache
+        if cache is not None and slerp_internal_cache:
+            cache[slerp_sub_cache_key] = slerp_internal_cache
 
+        # LERP on positive factors
         merged_p = torch.lerp(p_a, p_b, alpha)
-        if debug:
-            mp_norm, mp_finite = torch.norm(merged_p), torch.isfinite(merged_p).all()
-            try:
-                eig_mp = torch.linalg.eigvalsh(merged_p) if merged_p.numel() > 0 and merged_p.shape[0] == \
-                                                            merged_p.shape[1] else torch.tensor([0.0])
-                eig_min, eig_max = eig_mp.min().item(), eig_mp.max().item()
-                print(
-                    f"LUMI_DEBUG ({key_prefix}): merged_u norm={torch.norm(merged_u):.3e}, finite={torch.isfinite(merged_u).all()}")
-                print(
-                    f"LUMI_DEBUG ({key_prefix}): merged_p norm={mp_norm:.3e}, finite={mp_finite}, eig_min={eig_min:.3e}, eig_max={eig_max:.3e}")
-                if eig_min < -EPSILON: print(
-                    f"LUMI_DEBUG ({key_prefix}): WARNING merged_p has negative eigenvalues: {eig_min:.3e}",
-                    file=sys.stderr)
-            except Exception as e_eig_mp:
-                print(f"LUMI_DEBUG ({key_prefix}): WARNING could not compute eigvalsh for merged_p: {e_eig_mp}",
-                      file=sys.stderr)
 
+        # Reconstruct result
         result = (merged_u @ merged_p).reshape(original_shape)
-        if debug:
-            print(
-                f"LUMI_DEBUG ({key_prefix}): polar_decomposition final result norm={torch.norm(result):.3e}, finite={torch.isfinite(result).all()}")
-            if not torch.isfinite(result).all(): print(
-                f"LUMI_DEBUG ({key_prefix}): CRITICAL_OUTPUT_ISSUE: Final result is not finite!", file=sys.stderr)
+
         return result
 
     @staticmethod
     def slerp_grassmann(  # Version 1.0 from user, minimally modified
-            u_a: torch.Tensor, u_b: torch.Tensor, alpha: float,
-            cache: Optional[Dict] = None, key_prefix: str = "grassmann", debug: bool = False  # ADDED key_prefix, debug
-    ) -> torch.Tensor:
-        if debug: print(
-            f"LUMI_DEBUG ({key_prefix}): slerp_grassmann initiated. alpha={alpha:.4f}, u_a.shape={u_a.shape}, u_b.shape={u_b.shape}")
+            u_a: Tensor, u_b: Tensor, alpha: float,
+            cache: Optional[Dict] = None, key_prefix: str = "grassmann"
+    ) -> Tensor:
+        # Based on Edelman, Arias, Smith (1998) "The Geometry of Algorithms with Orthogonality Constraints", Eq (2.4)
+        # Adapted for U_A, U_B being M x N with Orthonormal Rows (ONR)
+        # Original formula is for N x P with Orthonormal Columns (ONC)
+
         if alpha == 0.0: return u_a
         if alpha == 1.0: return u_b
+
         if torch.allclose(u_a, u_b, atol=1e-6):
-            if debug: print(f"LUMI_DEBUG ({key_prefix}): Inputs u_a, u_b are close, returning u_a.")
             return u_a
 
         device, dtype, M, N = u_a.device, u_a.dtype, u_a.shape[0], u_a.shape[1]
 
-        if M == N:  # Square matrix
-            if debug: print(f"LUMI_DEBUG ({key_prefix}): M==N, dispatching to slerp_square_unitary.")
-            return MergeMethods.slerp_square_unitary(u_a, u_b, alpha, key=f"{key_prefix}_sq_unitary",
-                                                     debug=debug)  # Pass debug
+        if M == N:  # Square matrix - delegate to specialized function
+            return MergeMethods.slerp_square_unitary(u_a, u_b, alpha,
+                                                     cache=cache,
+                                                     key_prefix=f"{key_prefix}_as_sq_unitary")
 
         C_matrix = u_a @ u_b.T  # M x M
-        if debug: print(f"LUMI_DEBUG ({key_prefix}): C_matrix (u_a @ u_b.T) norm={torch.norm(C_matrix):.3e}")
 
         svd_C_key_v, svd_C_key_s, svd_C_key_w_t = f"{key_prefix}_svd_C_v", f"{key_prefix}_svd_C_s", f"{key_prefix}_svd_C_w_t"
         if cache is not None and svd_C_key_v in cache:
             v_c, s_c_diag, w_c_t = cache[svd_C_key_v].to(device, dtype), cache[svd_C_key_s].to(device, dtype), cache[
                 svd_C_key_w_t].to(device, dtype)
-            if debug: print(f"LUMI_DEBUG ({key_prefix}): SVD of C_matrix loaded from cache.")
         else:
-            svd_driver = "gesvdj" if u_a.is_cuda and M == M else ("gesvda" if u_a.is_cuda else None)
-            try:
-                v_c, s_c_diag, w_c_t = torch.linalg.svd(C_matrix, driver=svd_driver)
-            except Exception as e:
-                if debug: print(f"LUMI_DEBUG ({key_prefix}): ERROR in SVD of C_matrix (u_a @ u_b.T): {e}",
-                                file=sys.stderr)
-                raise e  # Re-raise, no fallback in original
+            svd_driver = "gesvda" if u_a.is_cuda else None
+            v_c, s_c_diag, w_c_t = torch.linalg.svd(C_matrix, driver=svd_driver)
             if cache is not None: cache[svd_C_key_v], cache[svd_C_key_s], cache[
                 svd_C_key_w_t] = v_c.cpu(), s_c_diag.cpu(), w_c_t.cpu()
-        if debug: print(
-            f"LUMI_DEBUG ({key_prefix}): SVD of C_matrix: s_c_diag min={s_c_diag.min():.3e}, max={s_c_diag.max():.3e}")
 
-        s_c_diag_clamped = torch.clamp(s_c_diag, -1.0 + EPSILON, 1.0 - EPSILON)  # Original EPSILON
+        s_c_diag_clamped = torch.clamp(s_c_diag, -1.0 + EPSILON, 1.0 - EPSILON)
         theta_s = torch.acos(s_c_diag_clamped)
-        if debug: print(
-            f"LUMI_DEBUG ({key_prefix}): theta_s (principal angles) min={theta_s.min():.3e}, max={theta_s.max():.3e}")
 
         q_onc_key = f"{key_prefix}_q_onc"
         if cache is not None and q_onc_key in cache:
             q_onc = cache[q_onc_key].to(device, dtype)
-            if debug: print(f"LUMI_DEBUG ({key_prefix}): Q_onc loaded from cache.")
         else:
             identity_N = torch.eye(N, device=device, dtype=dtype)
             q_factor_cols = (identity_N - u_a.T @ u_a) @ u_b.T  # N x M
             q_factor_norm = torch.norm(q_factor_cols)
-            if debug: print(f"LUMI_DEBUG ({key_prefix}): q_factor_cols (for Q_onc QR) norm={q_factor_norm:.3e}")
-            if q_factor_norm < EPSILON * 100:  # Heuristic from before
-                if debug: print(
-                    f"LUMI_DEBUG ({key_prefix}): WARNING q_factor_cols norm is very small ({q_factor_norm:.3e}). Q_onc from QR might be unstable/unreliable.",
-                    file=sys.stderr)
-                # If q_factor_cols is effectively zero, QR might produce NaNs or arbitrary vectors.
-                # The original formula does not specify a fallback here. If term2_cols becomes NaN, the result is NaN.
-                # This state (ub in span of ua) implies theta_s might be mostly zeros or pis, making sin(alpha*theta_s) small.
-                # For safety, if it's extremely small, make Q_onc zero so it won't contribute NaNs if QR of tiny matrix fails.
-                # This is a minimal intervention to prevent NaNs from QR of (near) zero matrix.
-                q_onc = torch.zeros_like(q_factor_cols)  # If very small, make it zero to avoid QR issues
+            if q_factor_norm < EPSILON * 100:  # Numerical stability: avoid QR issues
+                q_onc = torch.zeros_like(q_factor_cols)
             else:
-                try:
-                    q_onc, _ = torch.linalg.qr(q_factor_cols)
-                except Exception as e:
-                    if debug: print(f"LUMI_DEBUG ({key_prefix}): ERROR in QR decomposition of q_factor_cols: {e}",
-                                    file=sys.stderr)
-                    raise e  # Re-raise, no fallback in original
+                q_onc, _ = torch.linalg.qr(q_factor_cols)  # mode='reduced' is default
             if cache is not None: cache[q_onc_key] = q_onc.cpu()
-        if debug: print(f"LUMI_DEBUG ({key_prefix}): Q_onc (after QR) norm={torch.norm(q_onc):.3e}")
 
         cos_interp_theta, sin_interp_theta = torch.cos(alpha * theta_s), torch.sin(alpha * theta_s)
         term1_cols = u_a.T @ w_c_t.T @ torch.diag(cos_interp_theta) @ v_c.T
         term2_cols = q_onc @ torch.diag(sin_interp_theta) @ v_c.T
         x_interp_cols = term1_cols + term2_cols
-        if debug: print(
-            f"LUMI_DEBUG ({key_prefix}): x_interp_cols norm={torch.norm(x_interp_cols):.3e}, finite={torch.isfinite(x_interp_cols).all()}")
 
         u_interp = x_interp_cols.T
-        if debug: print(
-            f"LUMI_DEBUG ({key_prefix}): slerp_grassmann final u_interp norm={torch.norm(u_interp):.3e}, finite={torch.isfinite(u_interp).all()}")
+
         return u_interp
 
     @staticmethod
-    def slerp_stiefel(a: torch.Tensor, b: torch.Tensor, alpha: float,
-                      cache: Optional[Dict] = None, key_prefix: str = "stiefel",
-                      debug: bool = False) -> torch.Tensor:  # ADDED key_prefix, debug
-        if debug: print(
-            f"LUMI_DEBUG ({key_prefix}): slerp_stiefel initiated. alpha={alpha:.4f}, a.shape={a.shape}, b.shape={b.shape}")
+    def slerp_stiefel(a: Tensor, b: Tensor, alpha: float,
+                      cache: Optional[Dict] = None, key_prefix: str = "stiefel") -> Tensor:
+        """Complete Stiefel manifold interpolation"""
         if alpha == 0.0: return a
         if alpha == 1.0: return b
+
         m, n = a.shape
         if m == n:
-            if debug: print(f"LUMI_DEBUG ({key_prefix}): M==N, dispatching to slerp_square_unitary.")
-            return MergeMethods.slerp_square_unitary(a, b, alpha, key=f"{key_prefix}_sq_unitary",
-                                                     debug=debug)  # Pass debug
+            return MergeMethods.slerp_square_unitary(a, b, alpha,
+                                                     cache=cache,
+                                                     key_prefix=f"{key_prefix}_as_sq_unitary")
+
         if torch.allclose(a, b, atol=1e-6):
-            if debug: print(f"LUMI_DEBUG ({key_prefix}): Inputs a, b are close, returning a.")
             return a
 
-        try:  # This is your original primary path
-            if debug: print(f"LUMI_DEBUG ({key_prefix}): Trying Stiefel log/exp path.")
-            tangent_vector = MergeMethods.log_stiefel(a, b, cache=cache, key_prefix=f"{key_prefix}_log",
-                                                      debug=debug)  # Pass debug
-            if debug: print(
-                f"LUMI_DEBUG ({key_prefix}): Tangent_vector from log_stiefel norm={torch.norm(tangent_vector):.3e}, finite={torch.isfinite(tangent_vector).all()}")
+        try:  # Primary path with proper caching
+            tangent_vector = MergeMethods.log_stiefel(a, b, cache=cache, key_prefix=f"{key_prefix}_log")
             scaled_tangent = alpha * tangent_vector
-            result = MergeMethods.exp_stiefel(a, scaled_tangent, key_prefix=f"{key_prefix}_exp",
-                                              debug=debug)  # Pass debug
-            if debug: print(
-                f"LUMI_DEBUG ({key_prefix}): Result from exp_stiefel norm={torch.norm(result):.3e}, finite={torch.isfinite(result).all()}")
+            result = MergeMethods.exp_stiefel(a, scaled_tangent)
             return result
-        except Exception as e_logexp:  # This is your original fallback path
-            if debug: print(
-                f"LUMI_DEBUG ({key_prefix}): Stiefel log/exp path FAILED: {e_logexp}. Using original SVD-based fallback.",
-                file=sys.stderr)
-            # --- Your Original Fallback Logic ---
+        except Exception as e_logexp:  # Fallback path
+            print(f"Warning: slerp_stiefel fallback triggered for {key_prefix}. "
+                  f"Reason: {type(e_logexp).__name__}. Using direct SVD method.", file=sys.stderr)
+
             svd_driver = "gesvda" if a.is_cuda else None
-            try:
-                u, s, vt = torch.linalg.svd(a.T @ b, driver=svd_driver, full_matrices=False)
-            except Exception as e_svd_fallback:
-                if debug: print(f"LUMI_DEBUG ({key_prefix}): ERROR in SVD of fallback path (a.T @ b): {e_svd_fallback}",
-                                file=sys.stderr)
-                raise e_svd_fallback  # If SVD here fails, the fallback fails
-            s_clamped = torch.clamp(s, -1 + 1e-7, 1 - 1e-7)  # Original 1e-7
+            u, s, vt = torch.linalg.svd(a.T @ b, driver=svd_driver, full_matrices=False)
+            s_clamped = torch.clamp(s, -1 + 1e-7, 1 - 1e-7)
             theta = torch.acos(s_clamped)
-            if debug: print(
-                f"LUMI_DEBUG ({key_prefix}): Fallback theta (from acos(s_clamped)) min={theta.min():.3e}, max={theta.max():.3e}")
-            theta_interp, cos_interp, sin_interp = alpha * theta, torch.cos(alpha * theta), torch.sin(
-                alpha * theta)  # Corrected: alpha*theta for interp
+
+            # More efficient calculation but keeping the corrected formula
+            theta_interp = alpha * theta  # Corrected: alpha*theta for interp
+            cos_interp = torch.cos(theta_interp)
+            sin_interp = torch.sin(theta_interp)
 
             y = b - a @ (a.T @ b)
-            try:
-                q, _ = torch.linalg.qr(y)
-            except Exception as e_qr_fallback:
-                if debug: print(f"LUMI_DEBUG ({key_prefix}): ERROR in QR of fallback path (y): {e_qr_fallback}",
-                                file=sys.stderr)
-                raise e_qr_fallback
-            if debug: print(
-                f"LUMI_DEBUG ({key_prefix}): Fallback y norm={torch.norm(y):.3e}, q_of_y norm={torch.norm(q):.3e}")
-
+            q, _ = torch.linalg.qr(y)
             result = a @ (u @ torch.diag(cos_interp) @ vt) + q @ (u @ torch.diag(sin_interp) @ vt)
-            if debug: print(
-                f"LUMI_DEBUG ({key_prefix}): slerp_stiefel fallback result norm={torch.norm(result):.3e}, finite={torch.isfinite(result).all()}")
+
             return result
 
     @staticmethod
     def log_stiefel(a, b, tau=None, max_iter=30, cache: Optional[Dict] = None,
-                    key_prefix: str = "log_stiefel", debug: bool = False):  # ADDED key_prefix, debug
-        if debug: print(
-            f"LUMI_DEBUG ({key_prefix}): log_stiefel initiated. a.shape={a.shape}, b.shape={b.shape}, max_iter={max_iter}")
-        log_stiefel_key = f"{key_prefix}_result_log_stiefel_cpu"  # Make cache key unique
+                    key_prefix: str = "log_stiefel"):
+        assert max_iter >= 1
+
+        log_stiefel_key = f"{key_prefix}_result_log_stiefel_cpu"
         if cache is not None and log_stiefel_key in cache:
-            if debug: print(f"LUMI_DEBUG ({key_prefix}): Loaded cached log_stiefel result.")
             return cache[log_stiefel_key].to(a.device, a.dtype)
 
-        n, p = a.shape;
+        n, p = a.shape
         device, dtype = a.device, a.dtype
         tau = tau or 100 * torch.finfo(dtype).eps * p
 
         m_mat = a.T @ b
         b_minus_am = b - a @ m_mat
-        if debug: print(
-            f"LUMI_DEBUG ({key_prefix}): M (a.T@b) norm={torch.norm(m_mat):.3e}. (B-AM) norm={torch.norm(b_minus_am):.3e}")
-        q_orth, n_mat = MergeMethods.qr_pos(b_minus_am, debug=debug,
-                                            key_prefix=f"{key_prefix}_qr_pos_b_am")  # Pass debug
+        q_orth, n_mat = MergeMethods.qr_pos(b_minus_am)
 
         v_intermediate_cat = torch.cat((m_mat, n_mat), dim=0)
-        v = MergeMethods.orthogonal_complete(v_intermediate_cat, debug=debug,
-                                             key_prefix=f"{key_prefix}_orth_compl_v_interm")  # Pass debug
-        if debug: print(
-            f"LUMI_DEBUG ({key_prefix}): V after orthogonal_complete, shape={v.shape}, norm={torch.norm(v):.3e}")
+        v = MergeMethods.orthogonal_complete(v_intermediate_cat)
 
-        try:
-            r_svd, sigma_svd, r_hat_t_svd = torch.linalg.svd(v[p:, p:], driver="gesvda" if v.is_cuda else None)
-        except Exception as e:
-            if debug: print(f"LUMI_DEBUG ({key_prefix}): ERROR SVD(v[p:,p:]) in log_stiefel loop setup: {e}",
-                            file=sys.stderr)
-            raise e
+        r_svd, sigma_svd, r_hat_t_svd = torch.linalg.svd(v[p:, p:], driver="gesvda" if v.is_cuda else None)
         q_orth @= r_svd
         v[p:, :p] = r_svd.T @ n_mat
         v[:p, p:] @= r_hat_t_svd.T
         p_arange = torch.arange(p, 2 * p, device=device)
-        v[p:, p:].zero_();
+        v[p:, p:].zero_()
         v[p_arange, p_arange] = sigma_svd
         del r_svd, sigma_svd, r_hat_t_svd, p_arange
-        if debug: print(f"LUMI_DEBUG ({key_prefix}): V after SVD adjustment, norm={torch.norm(v):.3e}")
 
-        iter_count = 0
         for i in range(max_iter):
-            iter_count = i + 1
-            l_iter = MergeMethods.logm(v, key_prefix=f"{key_prefix}_logm_iter{i}", debug=debug)  # Pass debug
+            l_iter = MergeMethods.logm(v)
             c_syl, lh_block = l_iter[p:, p:], l_iter[p:, :p]
             c_norm = torch.linalg.matrix_norm(c_syl)
-            if debug: print(
-                f"LUMI_DEBUG ({key_prefix}): log_stiefel iter {i + 1}/{max_iter}, c_norm={c_norm:.3e} (target < {tau:.1e})")
-            if c_norm <= tau: break
-            s_syl = (lh_block @ lh_block.mH) / 12.0 - torch.eye(p, device=device, dtype=dtype) / 2.0  # Original .mH
-            g_syl = MergeMethods.solve_symmetric_sylvester(s_syl, c_syl, debug=debug,
-                                                           key_prefix=f"{key_prefix}_sylv_iter{i}")  # Pass debug
-            try:
-                v_update_exp = torch.linalg.matrix_exp(g_syl)
-            except Exception as e:
-                if debug: print(f"LUMI_DEBUG ({key_prefix}): ERROR matrix_exp(g_syl) in iter {i + 1}: {e}",
-                                file=sys.stderr)
-                raise e
+            if c_norm <= tau:
+                break
+            s_syl = (lh_block @ lh_block.mH) / 12.0 - torch.eye(p, device=device, dtype=dtype) / 2.0
+            g_syl = MergeMethods.solve_symmetric_sylvester(s_syl, c_syl)
+            v_update_exp = torch.linalg.matrix_exp(g_syl)
             v[:, p:] @= v_update_exp
-        else:  # No break
-            if debug: print(
-                f"LUMI_DEBUG ({key_prefix}): WARNING Max iterations ({max_iter}) reached in log_stiefel. c_norm was {c_norm:.3e}",
-                file=sys.stderr)
 
-        l_final = MergeMethods.logm(v, key_prefix=f"{key_prefix}_logm_final", debug=debug)  # Pass debug
+        # Robust final computation - always recompute after iterations
+        l_final = MergeMethods.logm(v)
         delta = a @ l_final[:p, :p] + q_orth @ l_final[p:, :p]
-        if debug: print(
-            f"LUMI_DEBUG ({key_prefix}): log_stiefel final delta norm={torch.norm(delta):.3e}, finite={torch.isfinite(delta).all()}, iters={iter_count}")
-        if cache is not None: cache[log_stiefel_key] = delta.to("cpu")
+        if cache is not None:
+            cache[log_stiefel_key] = delta.to("cpu")
+
         return delta
 
     @staticmethod
-    def logm(m: torch.Tensor, key_prefix: str = "logm", debug: bool = False):  # ADDED key_prefix, debug
-        # This is your original eigendecomposition-based logm
-        if debug: print(
-            f"LUMI_DEBUG ({key_prefix}): logm (user's eig-based) initiated. m.shape={m.shape}, dtype={m.dtype}, norm={torch.norm(m):.3e}")
+    def logm(m: Tensor) -> Tensor:  # Removed unused key_prefix
+        """Matrix logarithm using eigendecomposition with numerically stable reconstruction"""
         original_dtype = m.dtype
+
         # Promote to complex for eig if real, as eigenvalues/vectors can be complex
-        # Using m.dtype for compute_dtype if already complex.
         compute_dtype = m.dtype if m.is_complex() else (
             torch.complex64 if m.dtype == torch.float32 else torch.complex128)
         m_c = m.to(compute_dtype)
-        if debug: print(f"LUMI_DEBUG ({key_prefix}): logm compute_dtype={compute_dtype}")
 
-        try:
-            eigenvalues, eigenvectors_V = torch.linalg.eig(m_c)
-        except Exception as e:
-            if debug: print(f"LUMI_DEBUG ({key_prefix}): ERROR in torch.linalg.eig(m_c): {e}", file=sys.stderr)
-            raise e  # Re-raise, no fallback in original for this part
-        if debug:
-            abs_eig = eigenvalues.abs()
-            print(
-                f"LUMI_DEBUG ({key_prefix}): Eigenvalues from eig(m_c): abs_min={abs_eig.min():.3e}, abs_max={abs_eig.max():.3e}")
+        eigenvalues, eigenvectors_V = torch.linalg.eig(m_c)
+        log_eigenvalues = torch.log(eigenvalues)
 
-        log_eigenvalues = torch.log(eigenvalues)  # Complex log
-        if debug and not torch.isfinite(log_eigenvalues).all():
-            print(
-                f"LUMI_DEBUG ({key_prefix}): WARNING log_eigenvalues contains non-finite values. Problematic eigenvalues (before log): {eigenvalues[~torch.isfinite(log_eigenvalues)]}",
-                file=sys.stderr)
+        # vs * v_log broadcasts to vs @ diag(v_log), then solve gives diag(v_log) @ vs^-1
+        res_c = torch.linalg.solve(eigenvectors_V, eigenvectors_V * log_eigenvalues, left=False)
 
-        try:
-            if debug:
-                # Approximate condition number. Can be expensive.
-                # cond_V = torch.linalg.cond(eigenvectors_V)
-                # print(f"LUMI_DEBUG ({key_prefix}): Eigenvector matrix V cond ~ {cond_V:.3e}")
-                # if cond_V > 1e8: print(f"LUMI_DEBUG ({key_prefix}): WARNING Eigenvector matrix V might be ill-conditioned ({cond_V:.3e}).", file=sys.stderr)
-                pass  # Cond check can be slow, omitting for now unless specifically needed
-            # V @ diag(log_eig) @ V_inv
-            res_c = eigenvectors_V @ torch.diag_embed(log_eigenvalues) @ torch.linalg.inv(eigenvectors_V)
-        except Exception as e:
-            if debug: print(f"LUMI_DEBUG ({key_prefix}): ERROR reconstructing logm from eig (inv or multiply): {e}",
-                            file=sys.stderr)
-            raise e  # Re-raise
-
-        # If original input was real, result should ideally be real (e.g. log of real orthogonal is real skew-symmetric)
-        # Your original code returned res.real
-        if not m.is_complex():  # original_dtype was real
-            if torch.is_complex(res_c) and res_c.imag.abs().max() > EPSILON * 1000:  # Check for significant imag part
-                if debug: print(
-                    f"LUMI_DEBUG ({key_prefix}): WARNING logm of real matrix gave complex result with imag_max={res_c.imag.abs().max():.3e}. Taking .real as per original.",
-                    file=sys.stderr)
+        if not m.is_complex():  # Original was real
+            if torch.is_complex(res_c) and res_c.imag.abs().max() > EPSILON * 1000:
+                # Significant imaginary part - this shouldn't happen for real orthogonal matrices
+                pass  # Could add warning here
             res = res_c.real.to(original_dtype)
-        else:  # Original was complex, result is complex
+        else:  # Original was complex, keep complex result
             res = res_c.to(original_dtype)
 
-        if debug: print(
-            f"LUMI_DEBUG ({key_prefix}): logm final result norm={torch.norm(res):.3e}, finite={torch.isfinite(res).all()}")
         return res
 
     @staticmethod
-    def orthogonal_complete(q: torch.Tensor, debug: bool = False,
-                            key_prefix="orth_compl") -> torch.Tensor:  # ADDED debug, key_prefix
-        # This is your original logic for orthogonal_complete
-        if debug: print(f"LUMI_DEBUG ({key_prefix}): orthogonal_complete initiated. q.shape={q.shape}")
+    def orthogonal_complete(q: Tensor) -> Tensor:
+        """Complete matrix q to full orthogonal basis (orthonormalizes q first if needed)"""
         n, k = q.shape
         if n <= k:
-            if debug: print(
-                f"LUMI_DEBUG ({key_prefix}): n ({n}) <= k ({k}), cannot complete columns in n-dim space. Returning q (or its orthonormalized version if not square).")
-            # If q is already n x n, it's its own completion (assuming it's orthogonal)
-            # If q is n x k with k > n (wide), QR gives n x n Q.
-            # The original code returns q. To be safe and match intent of "orthogonal" basis part:
-            q_ortho, _ = torch.linalg.qr(q)  # Returns n x min(n,k) Q
-            return q_ortho[:, :n] if q_ortho.shape[1] > n else q_ortho  # Ensure n x n or n x k (k<n)
+            q_ortho, _ = torch.linalg.qr(q)  # Ensure orthonormal
+            return q_ortho
 
-        # Original logic for n > k:
-        m_ident_cols = torch.eye(n, device=q.device, dtype=q.dtype)[:, k:]  # Select last n-k columns of Identity
-        # Orthonormalize q first to ensure correct projection properties
-        q_ortho, _ = torch.linalg.qr(q)  # q_ortho is n x k
-        p_project = m_ident_cols - q_ortho @ (q_ortho.T @ m_ident_cols)  # Project identity columns
-        if debug: print(f"LUMI_DEBUG ({key_prefix}): p_project (for q2) norm={torch.norm(p_project):.3e}")
+        # Orthonormalize input first
+        q_ortho, _ = torch.linalg.qr(q)
 
-        # torch.geqrf is deprecated. Use torch.linalg.qr(..., mode='raw') for householder_product
-        try:
-            # If p_project is rank deficient or zero, qr might behave unexpectedly or q2 might not have enough columns.
-            # For householder_product, it expects output of qr(mode='raw')
-            raw_qr_output = torch.linalg.qr(p_project, mode='raw')
-            q2 = torch.linalg.householder_product(*raw_qr_output)
-        except Exception as e:
-            if debug: print(
-                f"LUMI_DEBUG ({key_prefix}): ERROR in QR(p_project, mode='raw') or householder_product: {e}",
-                file=sys.stderr)
-            raise e
+        # Project identity matrix columns onto orthogonal complement
+        identity_cols = torch.eye(n, device=q.device, dtype=q.dtype)[:, k:]
+        projected = identity_cols - q_ortho @ (q_ortho.T @ identity_cols)
 
-        # Ensure q2 has the correct number of columns (n-k)
-        # householder_product on (N x M) input gives (N x M) output. p_project is N x (N-K). So q2 is N x (N-K).
-        # result = torch.cat([q_ortho, q2], dim=1) # This should be N x N
-        # defensive slicing for q2 in case its number of columns is less than N-K (e.g. if p_project was rank deficient)
-        num_cols_q2_needed = n - k
-        q2_selected = q2[:, :num_cols_q2_needed]
-        if q2_selected.shape[1] < num_cols_q2_needed:
-            if debug: print(
-                f"LUMI_DEBUG ({key_prefix}): WARNING q2 from householder_product has {q2_selected.shape[1]} cols, needed {num_cols_q2_needed}. Resulting matrix might not be square or fully orthogonal.",
-                file=sys.stderr)
-            # Pad with zeros if really needed, but this indicates an issue.
-            padding = torch.zeros(n, num_cols_q2_needed - q2_selected.shape[1], device=q.device, dtype=q.dtype)
-            q2_selected = torch.cat([q2_selected, padding], dim=1)
+        q2 = torch.linalg.householder_product(*torch.linalg.qr(projected, mode='raw'))
 
-        result = torch.cat([q_ortho, q2_selected], dim=1)
-        if debug: print(
-            f"LUMI_DEBUG ({key_prefix}): orthogonal_complete final result shape={result.shape}, norm={torch.norm(result):.3e}")
-        return result
+        return torch.cat([q_ortho, q2[:, :n - k]], dim=1)
 
     @staticmethod
-    def solve_symmetric_sylvester(s, c, debug: bool = False, key_prefix="sylvester"):  # ADDED debug, key_prefix
-        # This is your original logic
-        if debug: print(f"LUMI_DEBUG ({key_prefix}): solve_symmetric_sylvester. s.shape={s.shape}, c.shape={c.shape}")
-        try:
-            v_eigvals, vs_eigvecs = torch.linalg.eigh(s)  # s is symmetric
-        except Exception as e:
-            if debug: print(f"LUMI_DEBUG ({key_prefix}): ERROR in torch.linalg.eigh(s): {e}", file=sys.stderr)
-            raise e
+    def solve_symmetric_sylvester(s, c):
+        """Solve symmetric Sylvester equation AX + XA = C where A=s, C=c"""
+        v, vs = torch.linalg.eigh(s)  # s is symmetric/Hermitian
 
-        # Original used .mH. For real symmetric s, eigvecs are real, so .T is fine.
-        # If s could be complex Hermitian, .mH is correct. Assuming s is real symmetric based on context.
-        c_t = vs_eigvecs.T @ c @ vs_eigvecs  # V.T C V
-        d_denom = v_eigvals.unsqueeze(0) + v_eigvals.unsqueeze(1)
+        # Transform to diagonal coordinates: vs.mH @ c @ vs
+        c_t = vs.mH @ c @ vs
 
-        # Your original singularity check:
-        if torch.any(torch.abs(d_denom) < 1e-12):
-            # Original code just printed this to stderr.
-            if debug: print(
-                f"LUMI_DEBUG ({key_prefix}): Singular Sylvester operator: some lambda_i+lambda_j approx 0. min_abs_denom={d_denom.abs().min():.1e}",
-                file=sys.stderr)
-            # The original code did not regularize d_denom, so division by near-zero could occur.
-            # This can lead to Infs if not handled. For "just logging", we let it happen.
-            # If you want to avoid Inf, you'd add: d_denom[torch.abs(d_denom) < 1e-12] = 1e-12 * torch.sign(d_denom[torch.abs(d_denom) < 1e-12])
+        # Denominator matrix: λ_i + λ_j for all pairs
+        d = v.unsqueeze(0) + v.unsqueeze(1)
 
-        g_t = c_t / d_denom
-        g = vs_eigvecs @ g_t @ vs_eigvecs.T  # Original used .T
-        if debug: print(
-            f"LUMI_DEBUG ({key_prefix}): solve_symmetric_sylvester final g norm={torch.norm(g):.3e}, finite={torch.isfinite(g).all()}")
+        # Check for singularity (λ_i + λ_j ≈ 0)
+        if torch.any(torch.abs(d) < 1e-12):
+            print("Warning: Singular Sylvester operator: some λ_i+λ_j ≈ 0", file=sys.stderr)
+            # Could regularize with: d[torch.abs(d) < 1e-12] = 1e-12 * torch.sign(d[torch.abs(d) < 1e-12])
+
+        # Solve in diagonal coordinates
+        g_t = c_t / d
+
+        # Transform back: vs @ g_t @ vs.mH
+        g = vs @ g_t @ vs.mH  # Fixed: consistent use of .mH
+
         return g
 
     @staticmethod
-    def qr_pos(a: torch.Tensor, debug: bool = False, key_prefix="qr_pos") -> tuple[
-        torch.Tensor, torch.Tensor]:  # ADDED debug, key_prefix
-        # This is your original logic
-        if debug: print(f"LUMI_DEBUG ({key_prefix}): qr_pos initiated. a.shape={a.shape}, norm={torch.norm(a):.3e}")
-        if debug and not torch.isfinite(a).all(): print(
-            f"LUMI_DEBUG ({key_prefix}): WARNING input 'a' to qr_pos contains non-finite values!", file=sys.stderr)
-        try:
-            q, r = torch.linalg.qr(a)
-        except Exception as e:
-            if debug: print(f"LUMI_DEBUG ({key_prefix}): ERROR in torch.linalg.qr(a): {e}", file=sys.stderr)
-            raise e
+    def qr_pos(a: Tensor) -> tuple[Tensor, Tensor]:
+        """QR decomposition with positive diagonal in R"""
+        q, r = torch.linalg.qr(a)
 
-        d = torch.diagonal(r, dim1=-2, dim2=-1)  # Original
-        ph = d.sign().clone()  # Clone for modification
-        ph[ph == 0] = 1.0  # Original: ph, not ph.unsqueeze
+        d = torch.diagonal(r, dim1=-2, dim2=-1)
+        ph = d.sign()
 
-        # Original: q *= ph.unsqueeze(-2); r *= ph.unsqueeze(-1)
-        # ph is 1D vector of length K=min(M,N).
-        # q is M x K. To scale columns of q by ph: q * ph (broadcasts ph along M rows)
-        # r is K x N. To scale rows of r by ph: r * ph.unsqueeze(-1) (ph becomes Kx1, broadcasts along N columns)
-        q_scaled = q * ph
-        r_scaled = r * ph.unsqueeze(-1)
+        # Handle zero diagonal elements (critical for numerical stability)
+        ph[ph == 0] = 1.0
 
-        if debug:
-            diag_r_new = torch.diagonal(r_scaled, dim1=-2, dim2=-1)
-            all_pos = (diag_r_new.min() >= -EPSILON) if diag_r_new.numel() > 0 else True
-            print(
-                f"LUMI_DEBUG ({key_prefix}): qr_pos final q_scaled norm={torch.norm(q_scaled):.3e}, r_scaled norm={torch.norm(r_scaled):.3e}. R_diag_all_pos={all_pos}")
-        return q_scaled, r_scaled
+        # Scale Q columns and R rows to make R diagonal positive
+        q *= ph.unsqueeze(-2)  # ph broadcasts across rows (M dimension)
+        r *= ph.unsqueeze(-1)  # ph broadcasts across columns (N dimension)
+
+        return q, r
 
     @staticmethod
-    def exp_stiefel(a: torch.Tensor, delta: torch.Tensor,
-                    key_prefix: str = "exp_stiefel", debug: bool = False) -> torch.Tensor:  # ADDED key_prefix, debug
-        if debug: print(
-            f"LUMI_DEBUG ({key_prefix}): exp_stiefel initiated. a.shape={a.shape}, delta.shape={delta.shape}")
+    def exp_stiefel(a: Tensor, delta: Tensor) -> torch.Tensor:
+        """Exponential map on Stiefel manifold: exp_a(delta)"""
         n, p = a.shape
-        augmented = torch.cat([a, delta], dim=1)
-        if debug: print(
-            f"LUMI_DEBUG ({key_prefix}): Augmented matrix shape {augmented.shape}, norm={torch.norm(augmented):.3e}")
-        try:
-            q_aug, r_aug = torch.linalg.qr(augmented)  # Q: n x min(n,2p), R: min(n,2p) x 2p
-        except Exception as e:
-            if debug: print(f"LUMI_DEBUG ({key_prefix}): ERROR in QR of augmented matrix: {e}", file=sys.stderr)
-            raise e
-        if debug: print(f"LUMI_DEBUG ({key_prefix}): Q_aug={q_aug.shape}, R_aug={r_aug.shape}")
 
-        # Original block extraction logic
-        q1 = q_aug[:, :p]
-        # q2 needs to be n x p. If q_aug has fewer than 2p columns (i.e. n < 2p), adjust.
-        if q_aug.shape[1] >= 2 * p:
-            q2 = q_aug[:, p:2 * p]
-        elif q_aug.shape[1] > p:  # p < n < 2p, q_aug is n x n. q2 is q_aug[:, p:n]
-            q2_partial = q_aug[:, p:]  # This is n x (n-p)
-            q2 = torch.zeros(n, p, device=a.device, dtype=a.dtype)  # Pad to n x p
-            q2[:, :q2_partial.shape[1]] = q2_partial
-            if debug: print(
-                f"LUMI_DEBUG ({key_prefix}): q2 was {q2_partial.shape}, padded to {q2.shape} as n < 2p and q_aug.shape[1]={q_aug.shape[1]}.")
-        else:  # q_aug.shape[1] == p (i.e. n == p), q2 is empty.
+        # Construct augmented matrix [a, delta]
+        augmented = torch.cat([a, delta], dim=1)  # Shape: (n, 2p)
+        q, r = torch.linalg.qr(augmented)  # q: (n, min(n,2p)), r: (min(n,2p), 2p)
+
+        # Extract blocks safely
+        q1 = q[:, :p]  # First p columns
+
+        # Handle q2 extraction for edge cases
+        if q.shape[1] >= 2 * p:
+            q2 = q[:, p:2 * p]
+        else:
+            # When n < 2p, pad q2 with zeros
             q2 = torch.zeros(n, p, device=a.device, dtype=a.dtype)
-            if debug: print(
-                f"LUMI_DEBUG ({key_prefix}): q2 is effectively zero matrix as n == p (q_aug.shape[1]={q_aug.shape[1]}).")
+            available_cols = q.shape[1] - p
+            if available_cols > 0:
+                q2[:, :available_cols] = q[:, p:p + available_cols]
 
-        r12 = r_aug[:p, p:2 * p]
-        r22 = r_aug[p:2 * p, p:2 * p]  # This block should be p x p
-        if debug: print(
-            f"LUMI_DEBUG ({key_prefix}): R22 shape={r22.shape}, norm={torch.norm(r22):.3e}, cond={torch.linalg.cond(r22) if r22.numel() > 0 and r22.shape[0] == r22.shape[1] else float('nan'):.1e}")
+        # Extract R blocks safely
+        r12 = r[:p, p:2 * p]
 
-        # Original try-except for k
+        # Handle r22 extraction for edge cases
+        min_dim = min(r.shape[0], 2 * p)
+        if min_dim >= 2 * p:
+            r22 = r[p:2 * p, p:2 * p]
+        else:
+            # Degenerate case: pad with identity to avoid singularity
+            r22 = torch.eye(p, device=a.device, dtype=a.dtype)
+            if min_dim > p:
+                actual_size = min_dim - p
+                r22[:actual_size, :actual_size] = r[p:min_dim, p:2 * p][:, :actual_size]
+
+        # Solve for k with fallback
         try:
             k = torch.linalg.solve(r22, r12.T)
-        except Exception as e_solve:  # Original code uses broad except
-            if debug: print(
-                f"LUMI_DEBUG ({key_prefix}): torch.linalg.solve(r22, r12.T) FAILED: {e_solve}. Using pinv as per original fallback.",
-                file=sys.stderr)
-            try:
-                k = torch.linalg.pinv(r22) @ r12.T
-            except Exception as e_pinv:
-                if debug: print(
-                    f"LUMI_DEBUG ({key_prefix}): torch.linalg.pinv(r22) also FAILED: {e_pinv}. Raising pinv error.",
-                    file=sys.stderr)
-                raise e_pinv  # If pinv also fails, raise the error from pinv
-        if debug: print(f"LUMI_DEBUG ({key_prefix}): k (for M_skew) norm={torch.norm(k):.3e}")
+        except Exception:
+            k = torch.linalg.pinv(r22) @ r12.T
 
-        m_skew = torch.zeros(2 * p, 2 * p, device=a.device, dtype=a.dtype)  # Original m
-        m_skew[:p, p:], m_skew[p:, :p] = k, -k.T
-        try:
-            exp_m = torch.linalg.matrix_exp(m_skew)
-        except Exception as e:
-            if debug: print(f"LUMI_DEBUG ({key_prefix}): ERROR in torch.linalg.matrix_exp(m_skew): {e}",
-                            file=sys.stderr)
-            raise e
-        if debug: print(f"LUMI_DEBUG ({key_prefix}): exp_m (matrix_exp result) norm={torch.norm(exp_m):.3e}")
+        # Construct skew-symmetric matrix
+        m = torch.zeros(2 * p, 2 * p, device=a.device, dtype=a.dtype)
+        m[:p, p:] = k
+        m[p:, :p] = -k.T
 
+        # Matrix exponential and result
+        exp_m = torch.linalg.matrix_exp(m)
         result = q1 @ exp_m[:p, :p] + q2 @ exp_m[p:, :p]
-        if debug:
-            ortho_dev = torch.norm(result.T @ result - torch.eye(p, device=a.device, dtype=a.dtype)) if p > 0 else 0.0
-            print(
-                f"LUMI_DEBUG ({key_prefix}): exp_stiefel final result norm={torch.norm(result):.3e}, ortho_dev={ortho_dev:.3e}, finite={torch.isfinite(result).all()}")
+
         return result
 
     @staticmethod
-    def _matrix_logarithm_eig(matrix: torch.Tensor, key: str, debug: bool = False) -> torch.Tensor:  # ADDED debug
-        # This is your original _matrix_logarithm_eig
-        if debug: print(
-            f"LUMI_DEBUG ({key}): _matrix_logarithm_eig initiated. matrix.shape={matrix.shape}, key='{key}'")
+    def _matrix_logarithm_eig(matrix: torch.Tensor,
+                              cache: Optional[Dict] = None,
+                              key_prefix: str = "logm_eig_default") -> torch.Tensor:
+        log_eig_cache_key = f"{key_prefix}_result_cpu"
+
+        if cache is not None and log_eig_cache_key in cache:
+            cached_log_A = cache[log_eig_cache_key].to(device=matrix.device, dtype=matrix.dtype)
+            return cached_log_A
+
         if not (matrix.ndim == 2 and matrix.shape[0] == matrix.shape[1]):
-            if debug: print(
-                f"LUMI_DEBUG ({key}): ERROR Matrix logarithm expects a square matrix. Got shape: {matrix.shape}",
-                file=sys.stderr)
             raise ValueError(f"Matrix logarithm expects a square matrix. Got shape: {matrix.shape}")
 
         original_dtype = matrix.dtype
         compute_dtype = matrix.dtype if matrix.is_complex() else (
             torch.complex64 if matrix.dtype == torch.float32 else torch.complex128)
         matrix_c = matrix.to(compute_dtype)
-        if debug: print(f"LUMI_DEBUG ({key}): _matrix_logarithm_eig compute_dtype={compute_dtype}")
 
-        try:
-            eigenvalues, eigenvectors_V = torch.linalg.eig(matrix_c)
-        except Exception as e:
-            if debug: print(f"LUMI_DEBUG ({key}): ERROR in torch.linalg.eig for key '{key}': {e}", file=sys.stderr)
-            raise e
-        if debug: print(
-            f"LUMI_DEBUG ({key}): Eigenvalues from eig abs_min={eigenvalues.abs().min():.3e}, abs_max={eigenvalues.abs().max():.3e}")
-
+        eigenvalues, eigenvectors_V = torch.linalg.eig(matrix_c)
         log_eigenvalues = torch.log(eigenvalues)
-        if debug and not torch.isfinite(log_eigenvalues).all():
-            print(
-                f"LUMI_DEBUG ({key}): WARNING log_eigenvalues contains non-finite values. Problematic eigenvalues (before log): {eigenvalues[~torch.isfinite(log_eigenvalues)]}",
-                file=sys.stderr)
 
-        try:
-            V_inv = torch.linalg.inv(eigenvectors_V)
-            log_A = eigenvectors_V @ torch.diag_embed(log_eigenvalues) @ V_inv
-        except Exception as e:
-            if debug: print(
-                f"LUMI_DEBUG ({key}): ERROR reconstructing _matrix_logarithm_eig from eig (inv or mul) for key '{key}': {e}",
-                file=sys.stderr)
-            raise e
+        # FIXED: Use numerically stable approach instead of explicit inverse
+        log_A_complex = torch.linalg.solve(eigenvectors_V, eigenvectors_V * log_eigenvalues, left=False)
 
-        # Original logic for returning to original dtype. For slerp_square_unitary, input A can be real.
-        # If matrix was real, log_A should be real (skew-symmetric).
-        if not matrix.is_complex():  # original was real
-            if torch.is_complex(log_A) and log_A.imag.abs().max() > EPSILON * 1000:
-                if debug: print(
-                    f"LUMI_DEBUG ({key}): WARNING _matrix_logarithm_eig of real matrix gave complex result with imag_max={log_A.imag.abs().max():.3e}. Taking .real for key '{key}'.",
-                    file=sys.stderr)
-            log_A_final = log_A.real.to(original_dtype)
-        else:  # original was complex
-            log_A_final = log_A.to(original_dtype)
+        # Rest of dtype handling stays the same...
+        if not matrix.is_complex():
+            if torch.is_complex(log_A_complex) and log_A_complex.imag.abs().max() > EPSILON * 1000:
+                pass
+            log_A_final = log_A_complex.real.to(original_dtype)
+        else:
+            log_A_final = log_A_complex.to(original_dtype)
 
-        if debug: print(
-            f"LUMI_DEBUG ({key}): _matrix_logarithm_eig final result norm={torch.norm(log_A_final):.3e}, finite={torch.isfinite(log_A_final).all()}")
+        if cache is not None:
+            cache[log_eig_cache_key] = log_A_final.cpu()
+
         return log_A_final
 
     @staticmethod
-    def slerp_square_unitary(  # Version 3 from user, minimally modified
+    def slerp_square_unitary(
             A: torch.Tensor, B: torch.Tensor, alpha: float,
-            key: Optional[str] = None, debug: bool = False  # ADDED debug
+            cache: Optional[Dict] = None,
+            key_prefix: str = "sq_unitary_default"
     ) -> torch.Tensor:
-        if debug: print(
-            f"LUMI_DEBUG ({key}): slerp_square_unitary initiated. alpha={alpha:.4f}, A.shape={A.shape}, key='{key}'")
+        """
+        SLERP for square unitary/orthogonal matrices using matrix logarithm.
+        Caches the expensive, alpha-independent matrix logarithm computation.
+        """
         if alpha == 0.0: return A
-        if alpha == 1.0:  # Original logic for alpha=1.0
-            if debug and key: print(f"LUMI_DEBUG ({key}): alpha is 1.0, returning B directly for slerp.")
-            return B
-        if torch.allclose(A, B, atol=1e-6):
-            if debug: print(f"LUMI_DEBUG ({key}): Inputs A, B are close, returning A.")
-            return A
+        if alpha == 1.0: return B
+        if torch.allclose(A, B, atol=1e-6): return A
 
         device, original_dtype = A.device, A.dtype
         compute_c_dtype = torch.complex64 if original_dtype in [torch.float32, torch.complex64] else torch.complex128
         was_real_input = not A.is_complex()
         A_c, B_c = A.to(compute_c_dtype), B.to(compute_c_dtype)
-        if debug: print(
-            f"LUMI_DEBUG ({key}): slerp_square_unitary compute_dtype={compute_c_dtype}, was_real_input={was_real_input}")
 
-        try:  # This is your original try block
+        try:
             relative_rotation = B_c @ A_c.mH
-            if debug: print(f"LUMI_DEBUG ({key}): Relative_rotation norm={torch.norm(relative_rotation):.3e}")
-            log_R = MergeMethods._matrix_logarithm_eig(relative_rotation, key=f"{key}_log_rel_rot",
-                                                       debug=debug)  # Pass debug
 
+            # Cache the expensive matrix logarithm (alpha-independent)
+            log_R_key_prefix_for_helper = f"{key_prefix}_log_rel_rot"
+            log_R = MergeMethods._matrix_logarithm_eig(
+                relative_rotation,
+                cache=cache,
+                key_prefix=log_R_key_prefix_for_helper
+            )
+
+            # Project to skew-symmetric/skew-Hermitian
             if was_real_input:
                 log_R_proj = (log_R - log_R.T) / 2.0
             else:
                 log_R_proj = (log_R - log_R.mH) / 2.0
-            if debug: print(f"LUMI_DEBUG ({key}): log_R_proj norm={torch.norm(log_R_proj):.3e}")
 
+            # Alpha-dependent computation (not cached)
             interpolated_log = alpha * log_R_proj
             delta_rotation = torch.linalg.matrix_exp(interpolated_log)
-            if debug: print(f"LUMI_DEBUG ({key}): Delta_rotation (from expm) norm={torch.norm(delta_rotation):.3e}")
             interpolated_unitary_c = delta_rotation @ A_c
 
+            # Convert back to original dtype
             if was_real_input:
-                if torch.is_complex(interpolated_unitary_c) and torch.max(
-                        torch.abs(interpolated_unitary_c.imag)) < 1e-5:  # Original check
-                    final_result = interpolated_unitary_c.real.to(original_dtype)
-                elif torch.is_complex(interpolated_unitary_c):  # Original warning
-                    if debug and key: print(
-                        f"LUMI_DEBUG ({key}): WARN ({key}): slerp_robust produced significant complex output for real input. Max imag: {torch.max(torch.abs(interpolated_unitary_c.imag)):.1e}. Taking real part.",
-                        file=sys.stderr)
-                    final_result = interpolated_unitary_c.real.to(original_dtype)
-                else:
-                    final_result = interpolated_unitary_c.to(original_dtype)  # Already real
+                final_result = interpolated_unitary_c.real.to(original_dtype)
             else:
                 final_result = interpolated_unitary_c.to(original_dtype)
 
-            if debug and not torch.isfinite(final_result).all():  # Original check
-                print(
-                    f"LUMI_DEBUG ({key}): ERROR ({key}): slerp_robust produced non-finite result! Inputs A sum: {A.sum()}, B sum: {B.sum()}, alpha: {alpha}",
-                    file=sys.stderr)
-                raise RuntimeError(f"slerp_robust produced non-finite result for key {key}")
-            if debug: print(
-                f"LUMI_DEBUG ({key}): slerp_square_unitary final result norm={torch.norm(final_result):.3e}, finite={torch.isfinite(final_result).all()}")
+            if not torch.isfinite(final_result).all():
+                raise RuntimeError(f"slerp_square_unitary produced non-finite result for key_prefix {key_prefix}")
+
             return final_result
-        except Exception as e:  # This is your original fallback
-            if debug and key: print(
-                f"LUMI_DEBUG ({key}): ERROR ({key}): Exception in slerp_robust: {e}. Inputs A sum: {A.sum()}, B sum: {B.sum()}, alpha: {alpha}. Falling back to re-orthogonalized LERP.",
-                file=sys.stderr)
-            lerped_val = torch.lerp(A, B, alpha)  # Original fallback lerps on original A, B
+
+        except Exception as e:  # Fallback for any numerical issues
+            print(f"Warning: slerp_square_unitary fallback triggered for {key_prefix}. "
+                  f"Reason: {type(e).__name__}. Using LERP+SVD.", file=sys.stderr)
+            lerped_val = torch.lerp(A, B, alpha)
             try:
                 u_lerp, _, vh_lerp = torch.linalg.svd(lerped_val, full_matrices=False)
                 fallback_result = (u_lerp @ vh_lerp).to(original_dtype)
-                if debug: print(f"LUMI_DEBUG ({key}): Fallback LERP+SVD result norm={torch.norm(fallback_result):.3e}")
                 return fallback_result
-            except Exception as e_ortho:
-                if debug and key: print(
-                    f"LUMI_DEBUG ({key}): ERROR ({key}): Fallback LERP re-orthogonalization failed: {e_ortho}. Returning raw LERP.",
-                    file=sys.stderr)
-                return lerped_val  # Return raw lerped_val if SVD re-ortho fails.
+            except Exception as e2:
+                print(f"Warning: SVD fallback also failed for {key_prefix}. "
+                      f"Reason: {type(e2).__name__}. Using raw LERP.", file=sys.stderr)
+                return lerped_val
 
     @staticmethod
     def clip_embedding_merge_v3(a: Tensor, b: Tensor, alpha: float = 0.5) -> Tensor:
@@ -2148,39 +1880,44 @@ class MergeMethods:
     #
     #     # Normalize importance scores
     #     return F.softmax(importance, dim=-1).unsqueeze(-1)
-    #
+
     # @merge_method
-    # def pqr_projected_merge(
+    # def pqr_projected_merge1(
     #         a: Parameter(Tensor, "weight"),
     #         b: Parameter(Tensor, "weight"),
     #         *,
-    #         alpha: Parameter(Tensor) =0.5,
-    #         rank_ratio: float = 0.25,
-    #         epsilon: float = 1e-6,
+    #         alpha: Parameter(Tensor) = 0.5,
+    #         rank_ratio: Parameter(float) = 0.25,
+    #         epsilon: Parameter(float) = 1e-6,  # Used for stable pivot sorting
+    #         early_exit: Parameter(bool) = True,
     #         **kwargs
-    # ) -> Return(Tensor):
+    # ) -> Return(Tensor, "weight"):
     #     """
     #     Merges tensors 'a' and 'b' using pivoted QR, projection, and low-rank.
     #
-    #     Version: 1.4 (Corrected projection, pivoted QR, handles CLIP, added tsqr,
-    #                     fixed return values/pivoting, fixed tsqr, correct conv reshape)
+    #     Version: 1.8 (Concise style, fail-fast, corrected math, internal block_size)
     #
     #     Args:
     #         a: First input tensor.
     #         b: Second input tensor.
     #         alpha: Interpolation factor.
     #         rank_ratio:  The ratio of the dimensions to keep.
-    #         epsilon: Small value for numerical stability.
-    #         **kwargs: Keyword arguments, including 'key' for layer identification.
-    #
-    #     Returns:
-    #         Merged tensor, reshaped to original shape of 'a'.
+    #         epsilon: Small value for numerical stability (used in stable pivot sorting).
+    #         **kwargs: Keyword arguments, including 'key'.
     #     """
     #     original_shape = a.shape
     #     key = kwargs["key"]
     #
+    #     # Early exit if alpha is 0.0 and flag is above 0.0
+    #     if early_exit and alpha == 0.0:  # Changed from: early_exit > 0.0
+    #         return a
+    #
     #     if len(original_shape) <= 1:
     #         return (1 - alpha) * a + alpha * b
+    #
+    #     if key:  # Only print if key is available
+    #     # The 'alpha' variable here is ALREADY the specific float value for this key
+    #         print(f"[merge_layers] Key: {key} -- Using alpha: {alpha:.4f}")
     #
     #     # Reshape based on layer type and key
     #     if "token_embedding" in key:  # CLIP text embedding
@@ -2291,32 +2028,33 @@ class MergeMethods:
     ### v2 ###
 
     @merge_method
-    def pqr_projected_merge(
+    def pop_lora(
             a: Parameter(Tensor, "weight"),
             b: Parameter(Tensor, "weight"),
+            *,
             alpha: Parameter(Tensor) = 0.5,
             rank_ratio: Parameter(float) = 0.25,
-            epsilon: Parameter(float) = 1e-6,  # Used for stable pivot sorting
+            epsilon: Parameter(float) = 1e-6,
+            early_exit: Parameter(bool) = True,
             **kwargs
-    ) -> Return(Tensor):
+    ) -> Return(Tensor, "weight"):
         """
+        Pivoted Orthogonal Projection
         Merges tensors 'a' and 'b' using pivoted QR, projection, and low-rank.
-
-        Version: 1.8 (Concise style, fail-fast, corrected math, internal block_size)
-
-        Args:
-            a: First input tensor.
-            b: Second input tensor.
-            alpha: Interpolation factor.
-            rank_ratio:  The ratio of the dimensions to keep.
-            epsilon: Small value for numerical stability (used in stable pivot sorting).
-            **kwargs: Keyword arguments, including 'key'.
+        Fixed version incorporating shape-specific unpivoting.
         """
         original_shape = a.shape
-        key = kwargs.get("key", "")
+        key = kwargs["key"]
+
+        # Early exit if alpha is 0.0 and flag is above 0.0
+        if early_exit and alpha == 0.0:
+            return a
 
         if len(original_shape) <= 1:
             return (1 - alpha) * a + alpha * b
+
+        if key:
+            print(f"[merge_layers] Key: {key} -- Using alpha: {alpha:.4f}")
 
         # Reshaping logic (unchanged)
         if "token_embedding" in key:
@@ -2332,7 +2070,7 @@ class MergeMethods:
             a_2d = a.reshape(original_shape[0], -1)
             b_2d = b.reshape(original_shape[0], -1)
 
-        # --- _tsqr (Internal helper with default block_size) ---
+        # --- helper for tall skinny matrices ---
         def _tsqr(x: Tensor, block_size: int = 2048):
             m, n = x.shape
 
@@ -2359,21 +2097,21 @@ class MergeMethods:
                                                                                         dtype=x.dtype)
 
             stacked_R = torch.vstack(Rs)
-            Q_sR, R_f = torch.linalg.qr(stacked_R, mode='reduced')  # R_f is final R from TSQR
+            Q_sR, R_f = torch.linalg.qr(stacked_R, mode='reduced')
 
             Q_parts = []
             offset = 0
-            for Qi_b, Ri_b in zip(Qs, Rs):  # Qi_block, Ri_block
-                k_rows = Ri_b.shape[0]  # num_rows_from_Ri_block
-                Q_sR_seg = Q_sR[offset: offset + k_rows, :]  # Q_stackedR_segment
+            for Qi_b, Ri_b in zip(Qs, Rs):
+                k_rows = Ri_b.shape[0]
+                Q_sR_seg = Q_sR[offset: offset + k_rows, :]
                 Q_parts.append(Qi_b @ Q_sR_seg)
                 offset += k_rows
 
-            Q_f = torch.vstack(Q_parts)  # Q_f is final Q from TSQR
+            Q_f = torch.vstack(Q_parts)
             return Q_f, R_f
 
-        # --- _stable_qr (Internal helper) ---
-        def _stable_qr(x: Tensor, tsqr_func: callable):  # epsilon from outer scope
+        # --- pivoted qr decomp ---
+        def _stable_qr(x: Tensor, tsqr_func: callable):
             if x.numel() == 0:
                 return torch.empty((x.shape[0], 0), device=x.device, dtype=x.dtype), \
                     torch.empty((0, x.shape[1]), device=x.device, dtype=x.dtype), \
@@ -2383,10 +2121,10 @@ class MergeMethods:
             sort_val = col_norms + torch.arange(x.shape[1], 0, -1, device=x.device, dtype=x.dtype) * epsilon / (
                         x.shape[1] + 1.0)
             _, pivots = torch.sort(sort_val, descending=True)
-            x_p = x[:, pivots]  # x_pivoted
+            x_p = x[:, pivots]
 
             if x_p.shape[1] > 0 and x_p.shape[0] > 4 * x_p.shape[1]:
-                Q_r, R_r = tsqr_func(x_p)  # Q_raw, R_raw; tsqr uses its own default block_size
+                Q_r, R_r = tsqr_func(x_p)
             elif x_p.shape[1] == 0:
                 Q_r = torch.empty((x_p.shape[0], 0), device=x.device, dtype=x.dtype)
                 R_r = torch.empty((0, x_p.shape[1]), device=x.device, dtype=x.dtype)
@@ -2397,16 +2135,38 @@ class MergeMethods:
                 diag_sign = torch.sign(torch.diag(R_r))
                 diag_sign[diag_sign == 0] = 1.0
 
-                k_q = min(Q_r.shape[1], diag_sign.shape[0])  # num_q_cols_to_correct
-                k_r = min(R_r.shape[0], diag_sign.shape[0])  # num_r_rows_to_correct
+                k_q = min(Q_r.shape[1], diag_sign.shape[0])
+                k_r = min(R_r.shape[0], diag_sign.shape[0])
                 Q_r[:, :k_q] *= diag_sign[None, :k_q]
                 R_r[:k_r, :] *= diag_sign[:k_r, None]
 
+            # Shape-specific unpivoting
             inv_pivots = torch.argsort(pivots)
-            R_f = R_r[:, inv_pivots]  # R_final
-            return Q_r, R_f, pivots  # Q_r is the Q_final for stable_qr
 
-        # --- Main logic ---
+            # Check if this is a wide matrix (more columns than rows)
+            is_wide = x.shape[1] > x.shape[0]
+
+            if is_wide:
+                # For wide matrices, only unpivot R columns
+                R_unpivoted = torch.zeros((R_r.shape[0], x.shape[1]), device=R_r.device, dtype=R_r.dtype)
+                R_unpivoted[:, inv_pivots[:R_r.shape[1]]] = R_r
+                return Q_r, R_unpivoted, pivots
+            else:
+                # For tall/square matrices, unpivot both Q columns and R rows
+                if Q_r.shape[1] == inv_pivots.shape[0]:
+                    Q_r = Q_r[:, inv_pivots]
+                    R_r = R_r[inv_pivots, :]
+                else:
+                    # Handle shape mismatches
+                    R_unpivoted = torch.zeros((min(R_r.shape[0], x.shape[0]), x.shape[1]),
+                                              device=R_r.device, dtype=R_r.dtype)
+                    valid_pivots = min(R_r.shape[0], inv_pivots.shape[0])
+                    R_unpivoted[:, inv_pivots[:valid_pivots]] = R_r[:, :valid_pivots]
+                    return Q_r, R_unpivoted, pivots
+
+                return Q_r, R_r, pivots
+
+        # --- safer rank handling ---
         Qa, Ra, pa = _stable_qr(a_2d, tsqr_func=_tsqr)
         diff = b_2d - a_2d
 
@@ -2815,18 +2575,18 @@ class MergeMethods:
     #
     #         return torch.cat(diverse_inputs, dim=0)
 
-    @staticmethod
     @merge_method
     def butterfly_merge(
-            a: Parameter(Tensor),
-            b: Parameter(Tensor),
+            a: Parameter(Tensor, "weight"),
+            b: Parameter(Tensor, "weight"),
             *,
             alpha: Parameter(float) = 0.5,
             rank_ratio: Parameter(float) = 0.25,
             lora_dim: Parameter(int) = 64,
             constraint: Parameter(float) = 0.05,
+            early_exit: Parameter(bool) = True,
             **kwargs
-    ) -> Return(Tensor):
+    ) -> Return(Tensor, "weight"):
         """
         Merges tensors 'a' and 'b' using butterfly orthogonalization.
 
@@ -2847,6 +2607,13 @@ class MergeMethods:
         key = kwargs.get("key", "")
         print(
             f"DEBUG butterfly_merge called for key: {key} | alpha type: {type(alpha)}, value: {alpha} | rank_ratio type: {type(rank_ratio)}, value: {rank_ratio}")
+
+        # Early exit if alpha is 0.0 and flag is above 0.0
+        if early_exit and alpha == 0.0:
+            return a
+
+        if early_exit and alpha == 1.0:
+            return b
 
         if key.endswith(("in_proj_weight", "in_proj_bias")):
             # workaround for concatenated attention projection layers
@@ -2913,6 +2680,7 @@ class MergeMethods:
 
         return merged.reshape(original_shape)
 
+    @staticmethod
     def butterfly_orthogonalize(x, lora_dim=4, constraint=0.01, device=None):
         """
         Creates an orthogonal basis for matrix x using butterfly factorization.
@@ -2935,12 +2703,21 @@ class MergeMethods:
         # Determine butterfly factorization parameters (with safety checks)
         try:
             block_size, block_num = MergeMethods.butterfly_factor(out_dim, lora_dim)
-            # Calculate butterfly stages
             boft_m = sum(int(i) for i in f"{block_num - 1:b}") + 1
+            use_butterfly = True
         except Exception as e:
             print(f"Falling back to QR for dimension {out_dim}: {str(e)}")
-            # Fall back to QR if butterfly factorization fails
+            use_butterfly = False
+
+        if not use_butterfly:
+            # Proper QR fallback that returns orthogonal basis
             Q, _ = torch.linalg.qr(x, mode='reduced')
+            # Apply constraint if needed
+            if constraint > 0:
+                Q_norm = torch.norm(Q)
+                constraint_value = constraint * x.shape[0]
+                if Q_norm > constraint_value:
+                    Q = Q * constraint_value / Q_norm
             return Q
 
         # Initialize butterfly blocks
@@ -2949,6 +2726,7 @@ class MergeMethods:
         # Apply butterfly orthogonalization
         return MergeMethods.apply_butterfly_transform(x, oft_blocks, boft_m, block_size, block_num, constraint, device)
 
+    @staticmethod
     def butterfly_factor(dimension: int, factor: int = -1) -> tuple[int, int]:
         """
         Factorize dimension into butterfly-compatible factors.
@@ -2987,6 +2765,7 @@ class MergeMethods:
             # but allows the algorithm to work with any dimension
             return dimension, 1
 
+    @staticmethod
     def initialize_butterfly_blocks(x, boft_m, block_num, block_size, device):
         """
         Initialize butterfly blocks efficiently.
@@ -3009,41 +2788,52 @@ class MergeMethods:
 
         return blocks
 
+    @staticmethod
     def apply_butterfly_transform(x, oft_blocks, boft_m, block_size, block_num, constraint, device):
         """
         Apply butterfly orthogonal transformation to input x, preserving the
         elegant approach from the original BOFT implementation.
         """
-        import torch
-
         # Identity matrix for Cayley transform
         I = torch.eye(block_size, device=device)
 
-        # Make blocks anti-symmetric and normalize if constrained
+        # Make blocks anti-symmetric first
         q = oft_blocks - oft_blocks.transpose(-1, -2)
 
+        # Apply constraint per block rather than globally
         if constraint > 0:
-            q_norm = torch.norm(q) + 1e-8
-            constraint_value = constraint * x.shape[0]
-            if q_norm > constraint_value:
-                q = q * constraint_value / q_norm
+            constraint_value = constraint * x.shape[0] / (boft_m * block_num)  # Scale by number of blocks
+            for i in range(boft_m):
+                for j in range(block_num):
+                    block_norm = torch.norm(q[i, j]) + 1e-8
+                    if block_norm > constraint_value:
+                        q[i, j] = q[i, j] * constraint_value / block_norm
 
         # Convert to orthogonal matrices via Cayley transform: R = (I+Q)(I-Q)^-1
-        r = (I + q) @ torch.inverse(I - q + 1e-10 * I)
+        try:
+            r = (I + q) @ torch.linalg.solve(I - q + 1e-10 * I, I)
+        except torch.linalg.LinAlgError:
+            # Fallback if matrix is singular
+            r = torch.eye(block_size, device=device).expand_as(q)
 
-        # Create padded identity matrix to handle arbitrary dimensions
+        # Create identity matrix to handle arbitrary dimensions
         out_dim = x.shape[0]
         padded_dim = block_size * block_num
 
         if out_dim > padded_dim:
-            # If matrix is bigger than our factorization allows, we need to extend
+            # Matrix is bigger than butterfly factorization can handle
+            # Create full-size identity, but only transform the first padded_dim dimensions
             result = torch.eye(out_dim, device=device)
-            # We'll only transform the first padded_dim rows/columns
             transform_size = padded_dim
+            print(f"DEBUG: Large matrix {out_dim} > {padded_dim}, transforming first {transform_size} dims")
         else:
-            # If matrix is smaller, we'll pad it temporarily
+            # Matrix fits within butterfly factorization
+            # Create padded identity, transform all actual dimensions
             result = torch.eye(padded_dim, device=device)
             transform_size = out_dim
+
+        # Safety check
+        transform_size = max(1, min(transform_size, padded_dim, out_dim))
 
         # Apply butterfly transformation using original approach
         for i in range(boft_m):

@@ -159,9 +159,15 @@ def resolve_merge_method(merge_method_name: str) -> MergeMethod:
                     logger.warning(f"Manually wrapping local method '{merge_method_name}'. Decorate with @sd_mecha.merge_method for proper registration.")
                     return wrapped_func
                 except Exception as wrap_e:
-                    raise ValueError(f"Local method '{merge_method_name}' exists but is not a valid sd-mecha MergeMethod and couldn't be wrapped: {wrap_e}")
+                    # CRASH: Local method exists but couldn't be wrapped
+                    logger.error(f"FATAL: Local method '{merge_method_name}' exists but is not a valid sd-mecha MergeMethod and couldn't be wrapped: {wrap_e}")
+                    logger.error("Process will now crash due to unrecoverable error")
+                    os.abort()  # Crash the process immediately
         else:
-            raise ValueError(f"Merge method '{merge_method_name}' not found in sd-mecha built-ins or local MergeMethods.")
+            # CRASH: Merge method not found anywhere
+            logger.error(f"FATAL: Merge method '{merge_method_name}' not found in sd-mecha built-ins or local MergeMethods")
+            logger.error("Process will now crash due to missing merge method")
+            os.abort()  # Crash the process immediately
 
 
 #############################

@@ -1,4 +1,5 @@
 import asyncio
+import io
 import platform
 import subprocess
 import threading
@@ -6,6 +7,10 @@ import threading
 import numpy as np
 import requests
 import logging
+
+from rembg import new_session, remove
+from sklearn.cluster import KMeans
+import joblib # <<< ADDED JOBLIB
 
 from dataclasses import dataclass
 from pathlib import Path
@@ -126,6 +131,11 @@ class AestheticScorer:
         # Initialize instance attributes
         self.model: Dict[str, Any] = {} # Dictionary to hold loaded scorer instances
         self.model_path: Dict[str, Path] = {} # Dictionary to hold Path objects for models
+
+        self.rembg_session = None
+        if self.cfg.get("background_check", {}).get("enabled", False):
+            logger.info("Background check feature is enabled. Initializing rembg session...")
+            self.rembg_session = new_session(providers=['CPUExecutionProvider'])
 
         self.setup_img_saving()
 
@@ -381,7 +391,8 @@ class AestheticScorer:
         # --- Instantiation Loop ---
         for evaluator in self.cfg.scorer_method:
             evaluator_lower = evaluator.lower()
-            if evaluator_lower == 'manual': continue
+            if evaluator_lower in ['manual', 'background_blackness']:
+                continue
 
             logger.info(f"Loading instance for scorer: '{evaluator}'")
 
@@ -478,31 +489,6 @@ class AestheticScorer:
         scorer_weights: List[float] = []
         logger.info("Entering score method.")
 
-        # --- Optional Background Check ---
-        # Read settings from config ONCE before the loop
-        # Use .get() to safely access nested keys and provide defaults
-        background_check_cfg = self.cfg.get("background_check", {})  # Get the whole sub-config or empty dict
-        enable_background_check = background_check_cfg.get("enabled", False)  # Default to False if key missing
-        payloads_to_check = background_check_cfg.get("payloads", [])  # Get list of payloads or empty list
-
-        # Determine if check applies to THIS image and perform it IF enabled
-        run_check_for_this_image = False
-        background_check_passed = True  # Assume passes unless check fails
-        if enable_background_check and name is not None and name in payloads_to_check:
-            logger.debug(f"Background check enabled for payload '{name}'. Performing check...")
-            run_check_for_this_image = True
-            try:
-                background_check_passed = self.check_background_color(image)
-                if not background_check_passed:
-                    logger.info(f"Image from '{name}' failed background color check.")
-                else:
-                    logger.debug(f"Image from '{name}' passed background color check.")
-            except Exception as e_bc:
-                logger.error(f"Error during background check for '{name}': {e_bc}")
-                background_check_passed = False  # Treat check error as failure? Or ignore? Let's treat as fail.
-        # --- End Optional Background Check ---
-
-        # --- Manual Score Image Display Helper (if needed) ---
         def show_image():
             try:
                 image.show()
@@ -511,57 +497,60 @@ class AestheticScorer:
 
         # --- Scoring Loop ---
         for evaluator in self.cfg.scorer_method:
-            individual_eval_score: float = 0.0  # Explicitly type hint
-            weight: float = 1.0
-
-            # Check if manual scoring is selected
+            # --- Manual Scoring Path ---
             if evaluator == 'manual':
                 threading.Thread(target=show_image, daemon=True).start()
                 individual_eval_score = await asyncio.to_thread(self.get_user_score)
-                if individual_eval_score == -1.0:
-                    return -1.0  # Exit early on override signal
+                if individual_eval_score == -1.0: return -1.0
+
                 weight = self.cfg.scorer_weight.get(evaluator, 1.0)
+                values.append(individual_eval_score)
+                scorer_weights.append(weight)
+
+                # Print its own score
+                if self.cfg.scorer_print_individual:
+                    print(f"{evaluator}:{individual_eval_score:.4f}")
+
+            # --- ### FIX #3: The CORRECT Targeted Scorer Logic ### ---
+            elif evaluator == 'background_blackness':
+                # Read the config to get our instructions.
+                bg_cfg = self.cfg.get("background_check", {})
+                is_enabled = bg_cfg.get("enabled", False)
+                target_payloads = bg_cfg.get("payloads", [])
+
+                # Check if we should run for this image.
+                if is_enabled and name is not None and name in target_payloads:
+                    individual_eval_score = self.score_background_blackness(image)
+                    weight = self.cfg.scorer_weight.get(evaluator, 1.0)
+                    values.append(individual_eval_score)
+                    scorer_weights.append(weight)
+
+                    if self.cfg.scorer_print_individual:
+                        print(f"{evaluator}:{individual_eval_score:.4f}")
+                # If not enabled or not a target payload, we do nothing.
+
+            # --- General Automatic Scorer Path ---
             else:
-                # --- Automatic Scoring ---
-                # Check if background check failed FOR THIS specific image
-                if run_check_for_this_image and not background_check_passed:
-                    logger.info(
-                        f"Assigning 0 score for '{evaluator}' due to background check failure for image '{name}'.")
+                try:
+                    scorer_instance = self.model.get(evaluator)
+                    if scorer_instance is None:
+                        logger.error(f"Scorer instance for '{evaluator}' not found.")
+                        individual_eval_score = 0.0
+                    else:
+                        individual_eval_score = scorer_instance.score(image=image, prompt=prompt)
+                except Exception as e:
+                    logger.error(f"Error scoring with {evaluator}: {e}", exc_info=True)
                     individual_eval_score = 0.0
-                else:
-                    # Proceed with scoring
-                    try:
-                        # Get the specific scorer instance
-                        scorer_instance = self.model.get(evaluator)  # Use .get() for safety
-                        if scorer_instance is None:
-                            logger.error(f"Scorer instance for '{evaluator}' not found in self.model. Skipping.")
-                            individual_eval_score = 0.0  # Assign 0 if scorer missing
-                        else:
-                            # --- VVV CORRECTED ARGUMENT ORDER VVV ---
-                            logger.debug(f"[AestheticScorer] Preparing to call {evaluator}.score.")
-                            # Pass image first, then prompt. Use keywords for clarity.
-                            individual_eval_score = scorer_instance.score(image=image, prompt=prompt)
-                            # --- ^^^ END CORRECTION ^^^ ---
-                            logger.debug(f"[AestheticScorer] Call to {evaluator}.score finished.")
-
-                    except Exception as e:
-                        logger.error(f"Error scoring image with {evaluator}: {e}", exc_info=True)
-                        individual_eval_score = 0.0  # Assign 0 on scoring error
 
                 weight = self.cfg.scorer_weight.get(evaluator, 1.0)
-            # --- End Automatic Scoring Path ---
+                values.append(individual_eval_score)
+                scorer_weights.append(weight)
 
-            # Append results for this evaluator
-            values.append(individual_eval_score)
-            scorer_weights.append(weight)
-
-            if self.cfg.scorer_print_individual:
-                score_str = f"{individual_eval_score:.4f}" if isinstance(individual_eval_score, (int, float)) else str(
-                    individual_eval_score)
-                print(f"{evaluator}:{score_str}")
+                # Print its own score
+                if self.cfg.scorer_print_individual:
+                    print(f"{evaluator}:{individual_eval_score:.4f}")
         # --- End Scoring Loop ---
 
-        # Calculate average only if no override signal was passed up
         score = self.average_calc(values, scorer_weights, self.cfg.scorer_average_type)
         return score
 
@@ -674,55 +663,61 @@ class AestheticScorer:
             except ValueError:
                 print("\tInvalid input. Please enter a number between 0 and 10.")
 
-    def check_background_color(self, image: Image.Image) -> bool:
+    ### REFORGED FUNCTION - CORRECTED SCALE ###
+    def score_background_blackness(self, image: Image.Image) -> float:
         """
-        Robust black background detection that handles subjects extending to borders.
-        Returns True if background is black, False otherwise.
+        Calculates a score from 0.0 to 10.0 based on how close the dominant
+        background color is to pure black (0, 0, 0).
         """
-        if image.mode != 'RGB':
-            image = image.convert('RGB')
+        if self.rembg_session is None:
+            logger.error("Rembg session not initialized. Cannot perform blackness scoring.")
+            return 0.0
 
-        img_array = np.array(image)
-        height, width = img_array.shape[:2]
+        target_black = np.array([0, 0, 0])
+        n_clusters = 4
+        sensitivity = 0.008
 
-        # Sample multiple small segments along each border instead of entire border
-        segment_size = max(5, min(width, height) // 30)
-        segments_per_side = 8  # Sample 8 segments per border
+        try:
+            original_image = image.convert('RGB')
+            original_pixels = np.array(original_image)
+            buffer = io.BytesIO()
+            original_image.save(buffer, format="PNG")
+            input_bytes = buffer.getvalue()
 
-        def check_border_segments(border_coords):
-            """Check if majority of border segments are black"""
-            black_segments = 0
-            total_segments = 0
+            output_bytes = remove(input_bytes, session=self.rembg_session)
+            output_image = Image.open(io.BytesIO(output_bytes))
+            output_pixels = np.array(output_image)
 
-            for coord_list in border_coords:
-                if len(coord_list) < segment_size:
-                    continue
+            alpha_channel = output_pixels[:, :, 3]
+            background_mask = (alpha_channel == 0)
 
-                # Sample evenly spaced segments along this border
-                step = len(coord_list) // segments_per_side
-                for i in range(0, len(coord_list) - segment_size, step):
-                    segment_coords = coord_list[i:i + segment_size]
+            if not np.any(background_mask):
+                logger.warning("Blackness score: AI found no background pixels.")
+                return 0.0
 
-                    # Check if this segment is predominantly black
-                    black_pixels_in_segment = 0
-                    for y, x in segment_coords:
-                        if np.all(img_array[y, x] <= 12):  # Black with tolerance
-                            black_pixels_in_segment += 1
+            original_background_pixels = original_pixels[background_mask]
 
-                    # Segment is "black" if 80% of its pixels are black
-                    if black_pixels_in_segment / len(segment_coords) >= 0.8:
-                        black_segments += 1
-                    total_segments += 1
+            if len(original_background_pixels) < n_clusters:
+                dominant_color = np.mean(original_background_pixels, axis=0)
+            else:
+                kmeans = KMeans(n_clusters=n_clusters, random_state=42, n_init='auto')
+                with joblib.parallel_backend('threading', n_jobs=1):
+                    kmeans.fit(original_background_pixels)
 
-            # Background is black if 60% of segments are black (allows for character intrusion)
-            return total_segments > 0 and (black_segments / total_segments) >= 0.6
+                unique, counts = np.unique(kmeans.labels_, return_counts=True)
+                dominant_cluster_index = unique[counts.argmax()]
+                dominant_color = kmeans.cluster_centers_[dominant_cluster_index]
 
-        # Generate border coordinates for each side
-        border_depth = max(2, min(width, height) // 20)
+            distance = np.linalg.norm(dominant_color - target_black)
+            # Calculate the score on a 0-1 scale first
+            score_0_to_1 = np.exp(-sensitivity * distance)
 
-        top_coords = [(y, x) for y in range(border_depth) for x in range(width)]
-        bottom_coords = [(y, x) for y in range(height - border_depth, height) for x in range(width)]
-        left_coords = [(y, x) for y in range(height) for x in range(border_depth)]
-        right_coords = [(y, x) for y in range(height) for x in range(width - border_depth, width)]
+            # <<< THE ONLY CHANGE IS HERE >>>
+            # Scale the score to the 0-10 range for consistency
+            final_score = score_0_to_1 * 10.0
 
-        return check_border_segments([top_coords, bottom_coords, left_coords, right_coords])
+            return np.clip(final_score, 0.0, 10.0)
+
+        except Exception as e:
+            logger.error(f"An error occurred during blackness scoring: {e}", exc_info=True)
+            return 0.0

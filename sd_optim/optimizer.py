@@ -145,7 +145,7 @@ class Optimizer:
         logger.info(f"Optimizer proposed parameters: {params}")
 
         # Update the output file name for this iteration
-        self.merger.create_model_out_name(self.iteration)
+        self.merger.output_file = self.merger._create_model_output_name(iteration=self.iteration)
 
         # --- Unload / Merge / Load (Synchronous parts remain similar) ---
         try:
@@ -166,28 +166,37 @@ class Optimizer:
         model_path: Optional[Path] = None
         try:
             start_merge_time = time.time()
+
+            # --- THIS IS THE FIX ---
             if self.cfg.optimization_mode == "merge":
                 model_path = self.merger.merge(
                     params=params,
-                    param_info=self.param_info, # <<< PASS param_info HERE
+                    param_info=self.param_info,
                     cache=self.cache,
                     iteration=self.iteration
                 )
             elif self.cfg.optimization_mode == "layer_adjust":
                 model_path = self.merger.layer_adjust(params, self.cfg)
+
             elif self.cfg.optimization_mode == "recipe":
-                 # Assuming recipe_optimization takes params, path, device, cache
-                 logger.warning("Recipe optimization parameter handling needs review for concurrency.")
-                 # model_path = self.merger.recipe_optimization(params, self.merger.output_file, self.cfg.device, self.cache)
-                 raise NotImplementedError("Recipe optimization concurrency not fully reviewed.")
+                # This is it! We're calling our beautiful new function!
+                model_path = self.merger.recipe_optimization(
+                    params=params,
+                    param_info=self.param_info,
+                    cache=self.cache,
+                    iteration=self.iteration
+                )
+
             else:
                 raise ValueError(f"Invalid optimization mode: {self.cfg.optimization_mode}")
+
             merge_duration = time.time() - start_merge_time
             logger.info(f"Model processing took {merge_duration:.2f} seconds.")
 
         except Exception as e_merge:
-            logger.error(f"Error during model processing (mode: {self.cfg.optimization_mode}): {e_merge}", exc_info=True)
-            return 0.0 # Return low score on failure
+            logger.error(f"Error during model processing (mode: {self.cfg.optimization_mode}): {e_merge}",
+                         exc_info=True)
+            return 0.0  # Return low score on failure
 
         if not model_path or not model_path.exists():
              logger.error(f"Model processing failed to produce a valid file at {model_path}")
@@ -441,21 +450,31 @@ class Optimizer:
             logger.info("\n NEW BEST!")
             self.best_rolling_score = avg_score
 
-            # Define potential previous best path before updating filename
-            potential_prev_best = self.merger.best_output_file
+            # The current model's path is already set in self.merger.output_file
+            current_model_path = self.merger.output_file
 
-            # Update the best model filename for THIS iteration
-            self.merger.create_best_model_out_name(self.iteration)
+            # Instead of calling a naming function, we just derive the "best" name
+            # from the current file's name. It's simple and has no dependencies!
+            if current_model_path:
+                new_best_path = current_model_path.with_name(
+                    current_model_path.stem + "_best" + current_model_path.suffix
+                )
+            else:
+                logger.error("Cannot determine new best path because output_file is not set.")
+                return
 
-            # Check if a *different* previous best model exists and delete it
-            if potential_prev_best and potential_prev_best != self.merger.best_output_file and potential_prev_best.exists():
-                 try:
-                      os.remove(potential_prev_best)
-                      logger.info(f"Deleted previous best model: {potential_prev_best}")
-                 except OSError as e_del:
-                      logger.error(f"Error deleting previous best model {potential_prev_best}: {e_del}")
+            # Check if a different previous best model exists and delete it
+            if self.merger.best_output_file and self.merger.best_output_file.exists() and self.merger.best_output_file != new_best_path:
+                try:
+                    os.remove(self.merger.best_output_file)
+                    logger.info(f"Deleted previous best model: {self.merger.best_output_file}")
+                except OSError as e_del:
+                    logger.error(f"Error deleting previous best model: {e_del}")
 
-            # Move the current iteration's model to the new best model filename
+            # Update the best model path in the merger
+            self.merger.best_output_file = new_best_path
+
+            # Move the current model to the new "best" path
             try:
                 if self.merger.output_file and self.merger.output_file.exists():
                      shutil.move(self.merger.output_file, self.merger.best_output_file)

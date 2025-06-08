@@ -110,8 +110,7 @@ class Merger:
         self.models: List[ModelRecipeNode] = self._create_model_nodes() # Hint as specific type initially
         self.output_file: Optional[Path] = None
         self.best_output_file: Optional[Path] = None
-        self.create_model_out_name() # Set initial output name
-        self.create_best_model_out_name() # Set initial best name
+
         logger.info(f"Merger initialized with {len(self.models)} model nodes.")
 
     def validate_config(self):
@@ -122,13 +121,30 @@ class Merger:
                     "For 'merge' mode, 'model_paths' must contain at least one model path."
                 )
             if not self.cfg.merge_method:
-                 raise ValueError("Configuration missing required field: 'merge_method'")
+                raise ValueError("Configuration missing required field: 'merge_method'")
         elif self.cfg.optimization_mode == "recipe":
-            # Keep recipe validation as is for now
-            if not self.cfg.recipe_optimization.recipe_path:
-                raise ValueError("`recipe_optimization.recipe_path` must be specified.")
-            if not self.cfg.recipe_optimization.target_nodes:
-                raise ValueError("`recipe_optimization.target_nodes` must be specified.")
+                # Get the recipe config section safely
+                recipe_cfg = self.cfg.get('recipe_optimization')
+
+                # If the mode is "recipe", the recipe_optimization block MUST exist.
+                if not recipe_cfg:
+                    raise ValueError(
+                        "`optimization_mode` is 'recipe', but the 'recipe_optimization' section is missing in the config.")
+
+                # Check 1: The recipe file itself must exist.
+                recipe_path = recipe_cfg.get("recipe_path")
+                if not recipe_path:
+                    raise ValueError("Recipe optimization selected, but 'recipe_path' is missing in the config.")
+                if not Path(recipe_path).exists():
+                    raise FileNotFoundError(f"The specified recipe file does not exist: {recipe_path}")
+
+                # Check 2: We must know which node to target.
+                if not recipe_cfg.get("target_nodes"):
+                    raise ValueError("Recipe optimization requires 'target_nodes' to be specified (e.g., '&8').")
+
+                # Check 3 (NEW!): We must know which parameter inside that node to optimize.
+                if not recipe_cfg.get("target_params"):
+                    raise ValueError("Recipe optimization requires 'target_params' to be specified (e.g., 'alpha').")
         elif self.cfg.optimization_mode == "layer_adjust":
             if not self.cfg.model_paths or len(self.cfg.model_paths) < 1:
                 raise ValueError("`model_paths` must contain at least one model for 'layer_adjust' mode.")
@@ -139,140 +155,152 @@ class Merger:
         if not hasattr(self.cfg, 'merge_dtype') or self.cfg.merge_dtype not in precision_mapping:
             raise ValueError(f"Invalid or missing 'merge_dtype': {self.cfg.get('merge_dtype')}. Must be one of {list(precision_mapping.keys())}")
         if not hasattr(self.cfg, 'save_dtype') or self.cfg.save_dtype not in precision_mapping:
-             raise ValueError(f"Invalid or missing 'save_dtype': {self.cfg.get('save_dtype')}. Must be one of {list(precision_mapping.keys())}")
+            raise ValueError(f"Invalid or missing 'save_dtype': {self.cfg.get('save_dtype')}. Must be one of {list(precision_mapping.keys())}")
 
-    # --- Fully Written _create_model_nodes Function ---
     def _create_model_nodes(self) -> List[ModelRecipeNode]:
         """
-        Creates sd_mecha ModelRecipeNodes using paths relative to the
-        determined models_dir, ensuring only ModelRecipeNodes are returned.
+        Creates sd_mecha ModelRecipeNodes from the config. This version correctly
+        calculates relative paths for the recipe, ensuring portability, while handling
+        potential cross-drive issues on Windows.
         """
-        # Hint the list we are building as the specific type
         model_nodes: List[ModelRecipeNode] = []
+        model_paths_list = self.cfg.get("model_paths", [])
 
-        # Check if models_dir was successfully determined in __init__
+        if not isinstance(model_paths_list, (list, ListConfig)):
+            logger.warning("'model_paths' in config is not a list. No model nodes will be created.")
+            model_paths_list = []
+
+        if not model_paths_list:
+            logger.info("No model paths provided, returning an empty list of model nodes.")
+            return model_nodes
+
         if not hasattr(self, 'models_dir') or not self.models_dir or not self.models_dir.is_dir():
-             logger.error("Cannot create model nodes: valid models_dir is not set or invalid.")
-             return [] # Return empty list if base directory isn't valid
+            logger.error(
+                f"Cannot create model nodes: models_dir '{getattr(self, 'models_dir', 'Not Set')}' is invalid.")
+            return model_nodes
 
         logger.info(f"Creating model nodes relative to base directory: {self.models_dir}")
-
-        # Safely get model_paths list from config, default to empty list
-        model_paths_list = self.cfg.get("model_paths", [])
-        # --- MODIFIED CHECK ---
-        if not isinstance(model_paths_list, (list, ListConfig)):  # Check for list OR ListConfig
-            logger.warning(
-                f"'model_paths' in config is not a list or ListConfig ({type(model_paths_list)}). Treating as empty.")
-            model_paths_list = []
-        # --- END MODIFIED CHECK ---
-        else:
-            # Optional: Convert ListConfig to plain list for easier processing later if needed
-            model_paths_list = list(model_paths_list)
-
         for model_path_str in model_paths_list:
-            if not isinstance(model_path_str, str):
-                logger.warning(f"Skipping non-string path in model_paths: {model_path_str}")
-                continue
-
             try:
-                resolved_path: Path # Type hint for clarity
-                original_path = Path(model_path_str)
+                if not isinstance(model_path_str, str):
+                    logger.warning(f"Skipping non-string path in model_paths: {model_path_str}")
+                    continue
 
-                # Attempt to resolve the path
+                original_path = Path(model_path_str)
+                resolved_path: Optional[Path] = None
+
                 if original_path.is_absolute():
                     if original_path.exists():
-                        resolved_path = original_path.resolve()
+                        resolved_path = original_path
                     else:
                         logger.error(f"Absolute model path not found: {original_path}. Skipping node.")
                         continue
                 else:
-                    # Try relative to models_dir
-                    path_relative_to_models_dir = self.models_dir / original_path
-                    if path_relative_to_models_dir.exists():
-                        resolved_path = path_relative_to_models_dir.resolve()
-                    # Maybe try relative to current working directory as a fallback?
+                    path_in_models_dir = self.models_dir / original_path
+                    if path_in_models_dir.exists():
+                        resolved_path = path_in_models_dir
                     elif original_path.exists():
-                         logger.warning(f"Model path '{original_path}' not found relative to models_dir, but found relative to current working directory. Using absolute path.")
-                         resolved_path = original_path.resolve()
+                        resolved_path = original_path.resolve()
                     else:
-                        logger.error(f"Relative model path not found: '{original_path}' (checked in '{self.models_dir}' and CWD). Skipping node.")
+                        logger.error(f"Relative model path not found: '{original_path}'. Skipping node.")
                         continue
 
-                # Determine path string for sd_mecha.model() (prefer relative)
+                # We now calculate the path to be used inside the recipe.
+                path_for_recipe: str
                 try:
-                    # Use os.path.relpath for cross-drive compatibility if needed, otherwise Path.relative_to
-                    relative_path_str = os.path.relpath(resolved_path, self.models_dir)
-                    # Check if relpath actually worked (it might return absolute if on different drives on Windows)
-                    if Path(relative_path_str).is_absolute():
-                         relative_path_str = str(resolved_path) # Use absolute if relpath failed
+                    # Attempt to create a path relative to our main models directory.
+                    path_for_recipe = os.path.relpath(resolved_path, self.models_dir)
                 except ValueError:
-                    logger.warning(f"Cannot create relative path for {resolved_path} (potentially different drives). Using absolute path.")
-                    relative_path_str = str(resolved_path)
+                    # This happens on Windows if paths are on different drives (e.g., C: vs D:).
+                    # In that case, we have no choice but to fall back to the absolute path.
+                    logger.warning(
+                        f"Could not create relative path for {resolved_path} (likely on a different drive). Using absolute path in recipe.")
+                    path_for_recipe = str(resolved_path)
 
-                # Create the node using the determined path string
-                # sd_mecha.model() is hinted to return RecipeNode
-                node: RecipeNode = sd_mecha.model(relative_path_str)
+                logger.debug(f"Resolved path '{resolved_path}' to recipe path '{path_for_recipe}'")
 
-                # --- Explicitly check if it's a ModelRecipeNode ---
+                # Create the node using our calculated (preferably relative) path string.
+                node = sd_mecha.model(path_for_recipe)
+
                 if isinstance(node, ModelRecipeNode):
-                    model_nodes.append(node) # Add it to our specific list
+                    model_nodes.append(node)
                 else:
-                    # Log an error if sd_mecha.model(path) returns something unexpected
-                    logger.error(f"Node created for path '{relative_path_str}' is not a ModelRecipeNode! Type: {type(node)}. Skipping.")
-                    # Decide if this should be a fatal error:
-                    # raise TypeError(f"Expected ModelRecipeNode for path '{relative_path_str}', got {type(node)}")
+                    logger.warning(f"Node created for path '{path_for_recipe}' was not a ModelRecipeNode. Skipping.")
 
-            except Exception as e:
-                 # Catch potential errors during path resolution or node creation
-                 logger.error(f"Error processing path '{model_path_str}': {e}", exc_info=True)
-                 # Continue to the next path
+            except Exception as e_node:
+                logger.error(f"Failed to create node for path '{model_path_str}': {e_node}", exc_info=True)
+                continue
 
-        logger.info(f"Merger: Created {len(model_nodes)} ModelRecipeNodes using relative paths.")
-        return model_nodes # Return the list guaranteed to contain ModelRecipeNodes
+        logger.info(f"Finished creating nodes. Total successful: {len(model_nodes)}.")
+        return model_nodes
 
-    def _create_model_output_name(self, it: int = 0, best: bool = False) -> Path:
-        """Generates the output file name for the merged model."""
-        # Simplified logic for "merge" mode
+    def _create_model_output_name(
+            self,
+            iteration: int,
+            best: bool = False,
+            recipe_node: Optional[RecipeNode] = None
+    ) -> Path:
+        """
+        Generates the output file name for the merged model based on the optimization mode.
+        Uses full names and applies a hard cutoff only if the final name is excessively long.
+        """
+        combined_name = "fallback_merge_name"  # Default fallback name
+        max_filename_len = 120  # A safe length for most filesystems
+
+        # --- Mode 1: MERGE (Uses full names) ---
         if self.cfg.optimization_mode == "merge":
+            # Get full model names without the extension
             model_names = [Path(path).stem for path in self.cfg.model_paths]
-            # Handle cases with single model or more models appropriately
-            if len(model_names) == 1:
-                 name_part = model_names[0]
-            elif len(model_names) >= 2:
-                 name_part = f"{model_names[0]}-{model_names[1]}" # Keep first two for consistency
+
+            if len(model_names) >= 2:
+                name_part = f"{model_names[0]}-{model_names[1]}"
+            elif len(model_names) == 1:
+                name_part = model_names[0]
             else:
-                 name_part = "merged_model" # Fallback name
+                name_part = "merged_model"
+
             merge_method_name = self.cfg.merge_method
-            combined_name = f"{name_part}-{merge_method_name}-it_{it}"
+            combined_name = f"{name_part}-{merge_method_name}-it_{iteration}"
+
+        # --- Mode 2: LAYER_ADJUST (Uses full name) ---
         elif self.cfg.optimization_mode == "layer_adjust":
             model_name = Path(self.cfg.model_paths[0]).stem
-            combined_name = f"layer_adjusted-{model_name}-it_{it}"
+            combined_name = f"layer_adjusted-{model_name}-it_{iteration}"
+
+        # --- Mode 3: RECIPE (This is our new logic!) ---
         elif self.cfg.optimization_mode == "recipe":
-             # Keep recipe logic as is for now
-            recipe_path = self.cfg.recipe_optimization.recipe_path
-            recipe = sd_mecha.deserialize_path(recipe_path)
-            model_names_recipe = utils.get_model_names_from_recipe(recipe) # Assuming utils.get_model_names_from_recipe exists
-            if len(model_names_recipe) < 2: model_names_recipe.extend(["unknown"] * (2 - len(model_names_recipe)))
-            target_node = self.cfg.recipe_optimization.target_nodes
-            if isinstance(target_node, list): target_node = target_node[0]
-            merge_method_name = utils.get_merge_method(recipe_path, target_node) # Assuming utils.get_merge_method exists
-            combined_name = f"{model_names_recipe[0]}-{model_names_recipe[1]}-{merge_method_name}-it_{it}"
-        else:
-             raise ValueError(f"Invalid optimization mode for naming: {self.cfg.optimization_mode}")
+            if recipe_node is not None:
+                recipe_cfg = self.cfg.get('recipe_optimization', {})
+                target_node_ref = recipe_cfg.get("target_nodes")
+                node_info = utils.get_info_from_target_node(recipe_node, target_node_ref)
 
+                if node_info:
+                    method_name = node_info["method_name"]
+                    model_names = [Path(name).stem for name in node_info["model_names"]]  # Get stems here
+                    if len(model_names) >= 2:
+                        name_part = f"{model_names[0]}-{model_names[1]}"
+                    elif len(model_names) == 1:
+                        name_part = model_names[0]
+                    else:
+                        name_part = "optimized_merge"
+                    combined_name = f"{name_part}-{method_name}-it_{iteration}"
+                else:
+                    # Fallback if info can't be retrieved
+                    recipe_name = Path(recipe_cfg.get("recipe_path", "unknown")).stem
+                    combined_name = f"recipe_{recipe_name}-it_{iteration}"
+
+            # --- Final Assembly and Truncation ---
         if best:
-            combined_name += f"_best"
+            combined_name += "_best"
 
-        # Ensure the output path is within the models directory
+            # Now, we only truncate if the name is too long.
+        if len(combined_name) > max_filename_len:
+            logger.warning(f"Generated filename is too long. Truncating to {max_filename_len} characters.")
+            combined_name = combined_name[:max_filename_len]
+
         output_dir = self.models_dir
         output_dir.mkdir(parents=True, exist_ok=True)
         return output_dir / f"{combined_name}.safetensors"
-
-    def create_model_out_name(self, it: int = 0) -> None:
-        self.output_file = self._create_model_output_name(it=it)
-
-    def create_best_model_out_name(self, it: int = 0) -> None:
-        self.best_output_file = self._create_model_output_name(it=it, best=True)
 
     def _select_base_model(self) -> Optional[ModelRecipeNode]:
         """Selects the base model node based on configuration index."""
@@ -773,6 +801,16 @@ class Merger:
 
         logger.info(f"Merge process completed. Output: {model_path}")
         return model_path
+
+
+    def recipe_optimization(
+            self,
+            params: Dict[str, Any],
+            param_info: BoundsInfo,
+            cache: Optional[Dict],
+            iteration: int,
+    ) -> Path:
+        # todo
 
 
     def layer_adjust(self, params: Dict, cfg: DictConfig) -> Path:  # Takes params

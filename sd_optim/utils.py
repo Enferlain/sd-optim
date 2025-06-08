@@ -39,6 +39,7 @@ from sd_mecha.extensions import model_configs, merge_methods
 from sd_mecha.extensions.merge_methods import merge_method, Parameter, Return, StateDict, T, MergeMethod
 from sd_mecha.streaming import StateDictKeyError
 from sd_mecha.extensions.model_configs import ModelConfigImpl, KeyMetadata # Need these for creation
+from sd_mecha.recipe_nodes import RecipeNode, MergeRecipeNode, RecipeVisitor, LiteralRecipeNode, ModelRecipeNode
 from omegaconf import DictConfig, OmegaConf # If reading from Hydra config
 
 logger = logging.getLogger(__name__)
@@ -91,7 +92,9 @@ def load_and_register_custom_configs(config_dir: Path):
     logger.info(f"Finished custom config scan. Registered {registered_count} config(s).")
 
 
-# --- NEW conversion Loading Function ---
+############################################
+### --- Conevrsion loading fuunction --- ###
+############################################
 # V1.0 - Scans directory, imports modules to trigger decorator registration
 def load_and_register_custom_conversion(conversion_dir: Path):
     """Scans a directory for Python files and imports them to register merge methods."""
@@ -130,9 +133,6 @@ def load_and_register_custom_conversion(conversion_dir: Path):
     logger.info(f"Finished custom conversion scan. Imported {registered_count} module(s).")
 
 
-# --- REMOVE setup_custom_blocks, generate_block_model_config, generate_conversion_function_code_v3 ---
-
-
 ##############################
 ### --- Method resolve --- ###
 ##############################
@@ -168,6 +168,13 @@ def resolve_merge_method(merge_method_name: str) -> MergeMethod:
             logger.error(f"FATAL: Merge method '{merge_method_name}' not found in sd-mecha built-ins or local MergeMethods")
             logger.error("Process will now crash due to missing merge method")
             os.abort()  # Crash the process immediately
+
+
+###########################
+### Recipe Optimization ###
+###########################
+
+# todo
 
 
 #############################

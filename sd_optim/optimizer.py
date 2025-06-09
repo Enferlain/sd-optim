@@ -144,9 +144,6 @@ class Optimizer:
         logger.info(f"\n--- {iteration_type} - Iteration: {self.iteration} ---")
         logger.info(f"Optimizer proposed parameters: {params}")
 
-        # Update the output file name for this iteration
-        self.merger.output_file = self.merger._create_model_output_name(iteration=self.iteration)
-
         # --- Unload / Merge / Load (Synchronous parts remain similar) ---
         try:
             api_url = f"{self.cfg.url}/sd_optim/unload-model"
@@ -167,8 +164,8 @@ class Optimizer:
         try:
             start_merge_time = time.time()
 
-            # --- THIS IS THE FIX ---
             if self.cfg.optimization_mode == "merge":
+                self.merger.output_file = self.merger._create_model_output_name(iteration=self.iteration)
                 model_path = self.merger.merge(
                     params=params,
                     param_info=self.param_info,
@@ -176,10 +173,10 @@ class Optimizer:
                     iteration=self.iteration
                 )
             elif self.cfg.optimization_mode == "layer_adjust":
+                self.merger.output_file = self.merger._create_model_output_name(iteration=self.iteration)
                 model_path = self.merger.layer_adjust(params, self.cfg)
 
             elif self.cfg.optimization_mode == "recipe":
-                # This is it! We're calling our beautiful new function!
                 model_path = self.merger.recipe_optimization(
                     params=params,
                     param_info=self.param_info,
@@ -193,14 +190,23 @@ class Optimizer:
             merge_duration = time.time() - start_merge_time
             logger.info(f"Model processing took {merge_duration:.2f} seconds.")
 
+        # --- THIS IS THE CORRECTED ERROR HANDLING ---
+        except (ValueError, TypeError, FileNotFoundError) as config_error:
+            # These errors indicate a fundamental problem with the user's setup or config.
+            # The program should not continue.
+            logger.error(f"FATAL CONFIGURATION ERROR: {config_error}", exc_info=True)
+            logger.error("Halting optimization due to unrecoverable setup error.")
+            # Re-raising the exception will crash the program and stop Optuna.
+            raise config_error
         except Exception as e_merge:
-            logger.error(f"Error during model processing (mode: {self.cfg.optimization_mode}): {e_merge}",
-                         exc_info=True)
-            return 0.0  # Return low score on failure
+            # This will now only catch other, more general runtime errors.
+            logger.error(f"A non-fatal error occurred during model processing: {e_merge}", exc_info=True)
+            return 0.0  # Return low score for this specific trial on non-config errors
+        # --- END OF CORRECTION ---
 
         if not model_path or not model_path.exists():
-             logger.error(f"Model processing failed to produce a valid file at {model_path}")
-             return 0.0
+            logger.error(f"Model processing failed to produce a valid file at {model_path}")
+            return 0.0
 
         # --- Load new model (keep as is, assumes synchronous is okay) ---
         try:

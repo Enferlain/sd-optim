@@ -267,38 +267,47 @@ class Merger:
             model_name = Path(self.cfg.model_paths[0]).stem
             combined_name = f"layer_adjusted-{model_name}-it_{iteration}"
 
-        # --- Mode 3: RECIPE (This is our new logic!) ---
+        # --- Mode 3: RECIPE (This is the fixed logic) ---
         elif self.cfg.optimization_mode == "recipe":
+            # Pass the ROOT of the recipe graph to the utility
             if recipe_node is not None:
                 recipe_cfg = self.cfg.get('recipe_optimization', {})
                 target_node_ref = recipe_cfg.get("target_nodes")
+
+                # Call our NEW utility function
                 node_info = utils.get_info_from_target_node(recipe_node, target_node_ref)
 
                 if node_info:
                     method_name = node_info["method_name"]
-                    model_names = [Path(name).stem for name in node_info["model_names"]]  # Get stems here
+                    # Get the stems of the file paths
+                    model_names = [Path(name).stem for name in node_info["model_names"]]
+
                     if len(model_names) >= 2:
                         name_part = f"{model_names[0]}-{model_names[1]}"
                     elif len(model_names) == 1:
                         name_part = model_names[0]
                     else:
-                        name_part = "optimized_merge"
+                        name_part = "optimized_merge"  # Should not happen if models exist
+
                     combined_name = f"{name_part}-{method_name}-it_{iteration}"
                 else:
-                    # Fallback if info can't be retrieved
+                    # Fallback if info can't be retrieved from the node
                     recipe_name = Path(recipe_cfg.get("recipe_path", "unknown")).stem
                     combined_name = f"recipe_{recipe_name}-it_{iteration}"
+            else:
+                # Fallback if no recipe_node was passed at all
+                combined_name = f"recipe_fallback-it_{iteration}"
 
-            # --- Final Assembly and Truncation ---
+        # --- Final Assembly and Truncation (unchanged) ---
         if best:
             combined_name += "_best"
 
-            # Now, we only truncate if the name is too long.
         if len(combined_name) > max_filename_len:
             logger.warning(f"Generated filename is too long. Truncating to {max_filename_len} characters.")
             combined_name = combined_name[:max_filename_len]
 
         output_dir = self.models_dir
+        # This will fail if models_dir isn't set, which is a critical error anyway
         output_dir.mkdir(parents=True, exist_ok=True)
         return output_dir / f"{combined_name}.safetensors"
 
@@ -802,7 +811,6 @@ class Merger:
         logger.info(f"Merge process completed. Output: {model_path}")
         return model_path
 
-
     def recipe_optimization(
             self,
             params: Dict[str, Any],
@@ -810,7 +818,65 @@ class Merger:
             cache: Optional[Dict],
             iteration: int,
     ) -> Path:
-        # todo
+        logger.info(f"--- Starting Recipe Optimization (Patcher vFINAL) for Iteration {iteration} ---")
+        recipe_cfg = self.cfg.recipe_optimization
+
+        recipe_path = Path(recipe_cfg.recipe_path)
+        if not recipe_path.exists():
+            raise FileNotFoundError(f"Recipe file not found: {recipe_path}")
+
+        recipe_text = recipe_path.read_text(encoding="utf-8")
+
+        # Create ONE graph representation and derive everything from it ---
+        # 1. Build the definitive node map. This is our single source of truth.
+        def get_all_nodes(text):
+            lines = text.strip().split('\n')
+            node_map = {}
+            for i in range(1, len(lines)):
+                # This is the only place deserialize is called repeatedly, to build the map.
+                node_map[i - 1] = sd_mecha.deserialize(lines[:i + 1])
+            return node_map
+
+        all_nodes_map = get_all_nodes(recipe_text)
+
+        # 2. The root node is simply the node with the highest index in our map.
+        if not all_nodes_map:
+            raise ValueError("Failed to parse any nodes from the recipe.")
+        root_node = all_nodes_map[max(all_nodes_map.keys())]
+
+        # 3. The target node is also pulled from this SAME map.
+        target_node_ref = recipe_cfg.target_nodes
+        target_node_idx = int(target_node_ref.strip('&'))
+        target_merge_node = all_nodes_map.get(target_node_idx)
+
+        # Now, `root_node` and `target_merge_node` are guaranteed to be from the same object graph.
+        # The `is` check inside the patcher will now work correctly.
+
+        if not isinstance(target_merge_node, recipe_nodes.MergeRecipeNode):
+            raise TypeError(f"Target node &{target_node_idx} is not a merge node.")
+
+        # This part of the logic remains the same, as it was correct.
+        self.output_file = self._create_model_output_name(
+            iteration=iteration,
+            recipe_node=root_node
+        )
+        logger.info(f"Set output path for this iteration to: {self.output_file}")
+
+        target_param_name = recipe_cfg.target_params
+
+        new_param_node = self._prepare_param_recipe_args(
+            params, param_info, target_merge_node.merge_method
+        )[target_param_name]
+
+        patcher = utils.RecipePatcher(target_merge_node, target_param_name, new_param_node)
+        new_root_node = root_node.accept(patcher)
+
+        model_path = self.output_file
+        self._execute_recipe(new_root_node, model_path)
+        self._save_recipe_etc(new_root_node, model_path)
+
+        logger.info(f"Recipe optimization completed. Output: {model_path}")
+        return model_path
 
 
     def layer_adjust(self, params: Dict, cfg: DictConfig) -> Path:  # Takes params

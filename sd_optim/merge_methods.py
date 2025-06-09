@@ -1005,7 +1005,12 @@ class MergeMethods:
             a: Parameter(Tensor, "weight"),
             b: Parameter(Tensor, "weight"),
             alpha: Parameter(Tensor) = 0.5,
+            **kwargs
     ) -> Return(Tensor, "weight"):
+        key = kwargs["key"]
+        if key: # Only print if key is available
+            # The 'alpha' variable here is ALREADY the specific float value for this key
+            print(f"[geosum] Key: {key} -- Using alpha: {alpha:.4f}")
         a = torch.complex(a, torch.zeros_like(a))
         b = torch.complex(b, torch.zeros_like(b))
         res = a ** (1 - alpha) * b ** alpha

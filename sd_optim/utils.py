@@ -27,6 +27,8 @@ from fnmatch import fnmatch
 from pathlib import Path
 from typing import List, Tuple, TypeVar, Dict, Set, Union, Any, ClassVar, Optional, MutableMapping, Mapping
 from dataclasses import field, dataclass
+
+from sd_mecha import recipe_nodes
 from torch import Tensor
 
 from hydra.core.hydra_config import HydraConfig
@@ -46,9 +48,9 @@ logger = logging.getLogger(__name__)
 # Define T if not already imported from merge_methods
 
 
-########################################
-### --- Config loading fuunction --- ###
-########################################
+#######################################
+### --- Config loading function --- ###
+#######################################
 # V1.0 - Scans directory, parses YAML, registers configs
 def load_and_register_custom_configs(config_dir: Path):
     """Scans a directory for YAML files, parses them as ModelConfig, and registers them."""
@@ -92,9 +94,9 @@ def load_and_register_custom_configs(config_dir: Path):
     logger.info(f"Finished custom config scan. Registered {registered_count} config(s).")
 
 
-############################################
-### --- Conevrsion loading fuunction --- ###
-############################################
+###########################################
+### --- Conversion loading function --- ###
+###########################################
 # V1.0 - Scans directory, imports modules to trigger decorator registration
 def load_and_register_custom_conversion(conversion_dir: Path):
     """Scans a directory for Python files and imports them to register merge methods."""
@@ -173,8 +175,158 @@ def resolve_merge_method(merge_method_name: str) -> MergeMethod:
 ###########################
 ### Recipe Optimization ###
 ###########################
+class RecipePatcher(recipe_nodes.RecipeVisitor):
+    """
+    Traverses an existing recipe graph and builds a new one, patching in
+    new logic for a specific parameter on a target node. This operates
+    entirely on RecipeNode objects, avoiding text manipulation.
+    """
 
-# todo
+    def __init__(self,
+                 target_merge_node: recipe_nodes.MergeRecipeNode,
+                 target_param_name: str,
+                 new_param_node: recipe_nodes.RecipeNode):
+
+        self.target_merge_node = target_merge_node
+        self.target_param_name = target_param_name
+        self.new_param_node = new_param_node
+        self.memo: Dict[recipe_nodes.RecipeNode, recipe_nodes.RecipeNode] = {}
+
+    def visit(self, node: recipe_nodes.RecipeNode) -> recipe_nodes.RecipeNode:
+        if node in self.memo:
+            return self.memo[node]
+        new_node = node.accept(self)
+        self.memo[node] = new_node
+        return new_node
+
+    def visit_literal(self, node: recipe_nodes.LiteralRecipeNode) -> recipe_nodes.RecipeNode:
+        # This is correct. Terminal nodes are returned as-is.
+        return node
+
+    def visit_model(self, node: recipe_nodes.ModelRecipeNode) -> recipe_nodes.RecipeNode:
+        # This is also correct.
+        return node
+
+    def visit_merge(self, node: recipe_nodes.MergeRecipeNode) -> recipe_nodes.RecipeNode:
+        if node in self.memo:
+            return self.memo[node]
+
+        # Rebuild children first by recursively visiting them.
+        new_args = tuple(arg.accept(self) for arg in node.args)
+        new_kwargs = {k: v.accept(self) for k, v in node.kwargs.items()}
+
+        rebuilt_node = recipe_nodes.MergeRecipeNode(node.merge_method, new_args, new_kwargs, node.cache)
+
+        # NOW, check if this REBUILT node is our target.
+        if node is self.target_merge_node:
+            logger.debug(
+                f"PATCHER: Found target node {node.merge_method.identifier}. Patching param '{self.target_param_name}'.")
+
+            # This is the final, correct patching logic.
+            # We take the freshly rebuilt node and create a final version with our new parameter.
+            param_info = rebuilt_node.merge_method.get_param_names()
+            final_args = list(rebuilt_node.args)
+            final_kwargs = rebuilt_node.kwargs.copy()
+
+            patched = False
+            if self.target_param_name in param_info.args:
+                idx = param_info.args.index(self.target_param_name)
+                if idx < len(final_args):
+                    final_args[idx] = self.new_param_node
+                    patched = True
+
+            if not patched and self.target_param_name in param_info.kwargs:
+                final_kwargs[self.target_param_name] = self.new_param_node
+                patched = True
+
+            if not patched:
+                # This handles implicit defaults.
+                final_kwargs[self.target_param_name] = self.new_param_node
+
+            rebuilt_node = recipe_nodes.MergeRecipeNode(rebuilt_node.merge_method, tuple(final_args), final_kwargs,
+                                                        rebuilt_node.cache)
+
+        self.memo[node] = rebuilt_node
+        return rebuilt_node
+
+
+class ModelVisitor(recipe_nodes.RecipeVisitor):
+    """A simple visitor to find all ModelRecipeNodes in a graph."""
+
+    def __init__(self):
+        self.models: List[recipe_nodes.ModelRecipeNode] = []
+        # Memoization to prevent visiting the same node multiple times in complex graphs
+        self.visited: Set[recipe_nodes.RecipeNode] = set()
+
+    # REMOVED the incorrect generic .visit() method.
+    # We will rely on the default dispatching mechanism.
+
+    def visit_model(self, node: recipe_nodes.ModelRecipeNode):
+        # We only add a model if we haven't seen its object reference before.
+        if node not in self.visited:
+            self.models.append(node)
+            self.visited.add(node)
+
+    def visit_merge(self, node: recipe_nodes.MergeRecipeNode):
+        # We only process a merge node if we haven't seen it before.
+        if node in self.visited:
+            return
+        self.visited.add(node)
+
+        # CORRECT TRAVERSAL:
+        # Politely ask each child node to accept this visitor, which continues the process.
+        for arg in node.args:
+            arg.accept(self)
+        for kwarg in node.kwargs.values():
+            kwarg.accept(self)
+
+    def visit_literal(self, node: recipe_nodes.LiteralRecipeNode):
+        # Literals don't contain models, so we just mark as visited and stop.
+        if node in self.visited:
+            return
+        self.visited.add(node)
+
+
+def get_info_from_target_node(root_node: recipe_nodes.RecipeNode, target_node_ref: str) -> Dict[str, Any]:
+    """
+    Analyzes a recipe graph to extract the merge method name and input model names
+    for a specific target node.
+    """
+
+    # Helper to find a node by its serialized representation's last line
+    def find_node_by_ref(start_node, ref_str):
+        target_line_num = int(ref_str.strip('&'))
+
+        # We can find the node by traversing and checking its line number during serialization
+        # This is complex, a simpler way is to build a map first.
+        # Let's reuse the helper from the merger.
+        def get_all_nodes(node_to_serialize):
+            text = sd_mecha.serialize(node_to_serialize)
+            lines = text.strip().split('\n')
+            node_map = {}
+            for i in range(1, len(lines)):
+                # This is inefficient but robust for finding the node object by index
+                node_map[i - 1] = sd_mecha.deserialize(lines[:i + 1])
+            return node_map
+
+        node_map = get_all_nodes(start_node)
+        return node_map.get(target_line_num)
+
+    target_node = find_node_by_ref(root_node, target_node_ref)
+
+    if not isinstance(target_node, recipe_nodes.MergeRecipeNode):
+        return {}
+
+    # Find all base model nodes that are ancestors of this target node
+    model_visitor = ModelVisitor()
+    target_node.accept(model_visitor)
+
+    model_names = [model.path for model in model_visitor.models]
+
+    return {
+        "method_name": target_node.merge_method.identifier,
+        "model_names": model_names,
+    }
 
 
 #############################

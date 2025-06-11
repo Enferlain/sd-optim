@@ -19,7 +19,7 @@ from omegaconf import DictConfig, open_dict, ListConfig
 from sd_mecha import serialization, extensions, recipe_nodes
 from sd_mecha.extensions.merge_methods import MergeMethod, RecipeNodeOrValue
 from sd_mecha.recipe_nodes import RecipeNodeOrValue, ModelRecipeNode, RecipeNode
-from sd_mecha.extensions import model_configs # Import model_configs
+from sd_mecha.extensions import model_configs, merge_methods  # Import model_configs
 
 # Assuming utils contains MergeMethodCodeSaver and add_extra_keys
 from sd_optim import utils
@@ -311,31 +311,40 @@ class Merger:
         output_dir.mkdir(parents=True, exist_ok=True)
         return output_dir / f"{combined_name}.safetensors"
 
-    def _select_base_model(self) -> Optional[ModelRecipeNode]:
+    def _select_base_model(self) -> Optional[recipe_nodes.ModelRecipeNode]:
         """Selects the base model node based on configuration index."""
         base_model_index = self.cfg.get("base_model_index", None)
         if base_model_index is None:
-            return None # No base model needed or specified
+            return None
 
-        if not isinstance(base_model_index, int) or base_model_index < 0 or base_model_index >= len(self.models):
+        if not isinstance(base_model_index, int) or not (0 <= base_model_index < len(self.models)):
             raise ValueError(f"Invalid base_model_index: {base_model_index}. Must be an integer within range [0, {len(self.models) - 1}).")
 
         base_model_node = self.models[base_model_index]
 
         # Infer config to check if it's a LoRA - Requires sd_mecha context
         try:
-            with sd_mecha.open_input_dicts(base_model_node, [Path(self.cfg.models_dir)]):
-                 # A simple heuristic: check if common LoRA identifiers are in the config name
-                 # This might need refinement based on how sd-mecha identifies LoRAs
+            # Use the self.models_dir attribute that was safely determined during __init__.
+            # Do not access self.cfg directly for this path.
+            if not hasattr(self, 'models_dir') or not self.models_dir:
+                raise FileNotFoundError("Merger's models_dir attribute is not set.")
+
+            with sd_mecha.open_input_dicts(base_model_node, [self.models_dir]):
+                 # The LoRA check logic itself is fine.
                  if "lora" in base_model_node.model_config.identifier or \
                     "lycoris" in base_model_node.model_config.identifier:
                      raise ValueError(
-                         f"The selected base model ({base_model_node.path}) appears to be a LoRA/LyCORIS based on its inferred config '{base_model_node.model_config.identifier}'. These cannot be used as base models."
+                         f"The selected base model ('{base_model_node.path}') appears to be a LoRA/LyCORIS. These cannot be used as base models."
                      )
+        except (ValueError, FileNotFoundError) as e:
+            # Re-raise configuration and setup errors as they are critical.
+            logger.error(f"Error during base model validation: {e}")
+            raise
         except Exception as e:
-             logger.error(f"Error during base model config inference for LoRA check: {e}")
-             # Decide whether to raise an error or proceed cautiously
-             # raise ValueError(f"Could not infer configuration for base model {base_model_node.path} to check if it's a LoRA.") from e
+             # Log other unexpected errors during the check
+             logger.error(f"Unexpected error during base model config inference for LoRA check: {e}", exc_info=True)
+             # We can decide to proceed cautiously or halt, halting is safer.
+             raise ValueError(f"Could not verify base model '{base_model_node.path}'. Halting.") from e
 
         return base_model_node
 
@@ -418,92 +427,101 @@ class Merger:
 
     def _prepare_model_recipe_args(
             self,
-            initial_model_nodes: List[ModelRecipeNode],
-            base_model_node: Optional[ModelRecipeNode],
-            merge_method: MergeMethod
-    ) -> List[RecipeNodeOrValue]:  # Return type might not always be just RecipeNode now
-        prepared_nodes = []
-        input_types = merge_method.get_input_types()
+            initial_model_nodes: List[recipe_nodes.ModelRecipeNode],
+            base_model_node: Optional[recipe_nodes.ModelRecipeNode],
+            # FIX 1: Use the correct reference
+            merge_method: merge_methods.MergeMethod
+    ) -> List[recipe_nodes.RecipeNode]:
+        """
+        Prepares the list of model nodes to be passed as positional arguments to a merge method.
+        This function handles:
+        1. Automatic detection and conversion of LoRA models to delta nodes.
+        2. Creation of delta nodes for standard models if the merge method expects them.
+        3. Exclusion of the base model itself when creating deltas.
+        """
+        prepared_nodes: List[recipe_nodes.RecipeNode] = []
+        param_info = merge_method.get_param_names()
         input_spaces = merge_method.get_input_merge_spaces()
-        param_names = merge_method.get_param_names()
-        delta_space_obj = sd_mecha.extensions.merge_spaces.resolve("delta")  # Resolve once
+        delta_space = extensions.merge_spaces.resolve("delta")
 
         conversion_target_node = base_model_node if base_model_node else (
             initial_model_nodes[0] if initial_model_nodes else None)
-        if not conversion_target_node:
-            logger.error("Cannot prepare model args: No target node for potential conversions.")
-            return []
 
         for i, model_node in enumerate(initial_model_nodes):
-            current_node: RecipeNode = model_node  # Start with original node
+            current_node: recipe_nodes.RecipeNode = model_node
+            should_add_node = True
             is_lora = False
-            should_add_node = True  # Flag to control adding to prepared_nodes
 
-            # --- LoRA Detection & Conversion (remains the same) ---
+            # Keep a reference to the original path for logging, before it gets converted
+            original_path_for_logging = model_node.path
+
+            # --- Step 1: LoRA Detection ---
             try:
-                if not self.models_dir: raise FileNotFoundError("models_dir not set")
                 with sd_mecha.open_input_dicts(current_node, [self.models_dir]):
-                    if current_node.model_config:
-                        inferred_config_id = current_node.model_config.identifier
-                        if "lora" in inferred_config_id or "lycoris" in inferred_config_id: is_lora = True; logger.info(
-                            f"Detected LoRA/LyCORIS: {current_node.path}")
-            except Exception as e_inf:
-                logger.warning(f"Error during LoRA check for {current_node.path}: {e_inf}.")
+                    inferred_config_id = current_node.model_config.identifier
+                    if "lora" in inferred_config_id or "lycoris" in inferred_config_id:
+                        is_lora = True
+                        # FIX 2: We use the guaranteed original path for this log message
+                        logger.info(
+                            f"Identified LoRA/LyCORIS: '{original_path_for_logging}' with config '{inferred_config_id}'")
+            except Exception as e:
+                logger.error(f"Could not infer config for model {original_path_for_logging}: {e}")
+                is_lora = False
 
+            # --- Step 2: LoRA Conversion ---
             if is_lora:
-                logger.info(f"Converting LoRA node {current_node.path} relative to {conversion_target_node.path}")
+                if not conversion_target_node:
+                    raise ValueError(
+                        f"LoRA '{original_path_for_logging}' detected, but no base model was provided to convert it against.")
+
+                logger.info(f"Converting LoRA '{original_path_for_logging}' to a delta...")
                 try:
                     current_node = sd_mecha.convert(current_node, conversion_target_node, model_dirs=[self.models_dir])
+                    logger.info(
+                        f"LoRA converted successfully. New node is in '{current_node.merge_space.identifier}' space.")
                 except Exception as e:
-                    logger.error(f"LoRA conversion failed for {current_node.path}: {e}"); raise ValueError from e
+                    logger.error(f"CRITICAL: LoRA conversion failed for {original_path_for_logging}: {e}",
+                                 exc_info=True)
+                    raise
 
-            # --- Delta Subtraction / Exclusion ---
+            # --- Step 3: Delta Subtraction Logic ---
             is_delta_expected = False
             expected_space_for_arg = None
-            # Determine expected space (same logic as before)
-            if param_names.has_varargs() and i >= len(param_names.args):
+            if param_info.has_varargs() and i >= len(param_info.args):
                 expected_space_for_arg = input_spaces.vararg
-            elif i < len(param_names.args):
+            elif i < len(param_info.args):
                 expected_space_for_arg = input_spaces.args[i]
 
-            if expected_space_for_arg is not None:
-                if isinstance(expected_space_for_arg, set):
-                    is_delta_expected = delta_space_obj in expected_space_for_arg
-                elif isinstance(expected_space_for_arg, sd_mecha.extensions.merge_spaces.MergeSpace):
-                    is_delta_expected = expected_space_for_arg == delta_space_obj
+            if isinstance(expected_space_for_arg, set):
+                is_delta_expected = delta_space in expected_space_for_arg
+            elif isinstance(expected_space_for_arg, extensions.merge_spaces.MergeSpace):
+                is_delta_expected = expected_space_for_arg == delta_space
 
-            logger.debug(
-                f"Arg {i}: Path={getattr(model_node, 'path', 'N/A')}, Expected space={expected_space_for_arg}, Needs Delta={is_delta_expected}")
-
-            if is_delta_expected:
-                logger.debug(f"  Parameter {i} expects delta. Base model selected: {base_model_node is not None}")
-                if base_model_node:
-                    is_base = current_node == base_model_node
-                    logger.debug(f"  Node is base model: {is_base}")
-                    if not is_base:
-                        logger.info(f"  Creating delta for node {getattr(current_node, 'path', 'N/A')}...")
-                        current_node = sd_mecha.subtract(current_node, base_model_node)  # Perform subtraction
-                        logger.info(
-                            f"  Delta node created. New merge space: {current_node.merge_space.identifier if current_node.merge_space else 'N/A'}")
-                    else:
-                        # --- CHANGE: Don't add the base model itself to the list ---
-                        logger.warning(
-                            f"  Base model '{getattr(current_node, 'path', 'N/A')}' matches arg {i} which expects delta. EXCLUDING this node from arguments passed to '{merge_method.identifier}'.")
-                        should_add_node = False  # Set flag to skip adding
-                        # --- END CHANGE ---
-                else:
-                    # No base model selected, cannot create delta - raise error
+            if is_delta_expected and current_node.merge_space != delta_space:
+                if not base_model_node:
                     raise ValueError(
-                        f"Merge method '{merge_method.identifier}' requires a delta for positional argument {i}, but no base model was selected.")
+                        f"Merge method '{merge_method.identifier}' requires a delta for argument {i}, but no base_model was selected.")
 
-            # --- Add the node only if the flag allows ---
+                if current_node is base_model_node:
+                    # FIX 2: Check the type before accessing .path
+                    log_path = base_model_node.path if isinstance(base_model_node,
+                                                                  recipe_nodes.ModelRecipeNode) else "the base model"
+                    logger.warning(
+                        f"Base model '{log_path}' matches arg {i} which expects a delta. Excluding it from arguments.")
+                    should_add_node = False
+                else:
+                    # FIX 2: Check the type before accessing .path
+                    log_path = current_node.path if isinstance(current_node,
+                                                               recipe_nodes.ModelRecipeNode) else "a model node"
+                    logger.info(f"Creating delta for '{log_path}'...")
+                    current_node = sd_mecha.subtract(current_node, base_model_node)
+
+            # --- Step 4: Final Append ---
             if should_add_node:
                 prepared_nodes.append(current_node)
-            # --- End Add Node ---
 
-        # Log the final list of nodes being passed
-        logger.debug(
-            f"Prepared {len(prepared_nodes)} nodes for method '{merge_method.identifier}': {[getattr(n, 'path', type(n).__name__) for n in prepared_nodes]}")
+        logger.info(
+            f"Finished preparing {len(prepared_nodes)} model arguments for merge method '{merge_method.identifier}'.")
         return prepared_nodes
 
     # V1.5 - Block AND key, uses fallback to merge (and overwrite from keys to block)
@@ -738,11 +756,11 @@ class Merger:
 
              if self.cfg.get("save_merge_method_code", False):
                  # Assuming MergeMethods is accessible and methods are decorated
-                 utils.MergeMethodCodeSaver.save_merge_method_code(self.cfg.merge_method, model_path, MergeMethods)
+                 utils.MergeMethodCodeSaver.save_merge_method_code(self.cfg.merge_method, model_path)
 
              # Add extra keys only if the option is enabled
-             if self.cfg.get("add_extra_keys", False):
-                 utils.add_extra_keys(model_path)
+             # if self.cfg.get("add_extra_keys", False):
+                 # utils.add_extra_keys(model_path)
          except Exception as e:
               logger.error(f"Error during post-merge saving operations: {e}")
 
@@ -802,11 +820,11 @@ class Merger:
         )
         # --- End Recipe Building ---
 
-        # 9. Execute the final recipe (includes fallback logic)
-        self._execute_recipe(final_recipe_node, model_path)
-
-        # 10. Optional post-merge steps (save recipe, code, add keys)
+        # 9. Optional steps (save recipe, code, add keys)
         self._save_recipe_etc(final_recipe_node, model_path)
+
+        # 10. Execute the final recipe (includes fallback logic)
+        self._execute_recipe(final_recipe_node, model_path)
 
         logger.info(f"Merge process completed. Output: {model_path}")
         return model_path
@@ -822,58 +840,72 @@ class Merger:
         recipe_cfg = self.cfg.recipe_optimization
 
         recipe_path = Path(recipe_cfg.recipe_path)
-        if not recipe_path.exists():
-            raise FileNotFoundError(f"Recipe file not found: {recipe_path}")
-
         recipe_text = recipe_path.read_text(encoding="utf-8")
 
-        # Create ONE graph representation and derive everything from it ---
-        # 1. Build the definitive node map. This is our single source of truth.
+        # --- Step 1: Build the initial object graph ONCE ---
         def get_all_nodes(text):
             lines = text.strip().split('\n')
             node_map = {}
             for i in range(1, len(lines)):
-                # This is the only place deserialize is called repeatedly, to build the map.
                 node_map[i - 1] = sd_mecha.deserialize(lines[:i + 1])
             return node_map
 
         all_nodes_map = get_all_nodes(recipe_text)
-
-        # 2. The root node is simply the node with the highest index in our map.
-        if not all_nodes_map:
-            raise ValueError("Failed to parse any nodes from the recipe.")
         root_node = all_nodes_map[max(all_nodes_map.keys())]
 
-        # 3. The target node is also pulled from this SAME map.
-        target_node_ref = recipe_cfg.target_nodes
-        target_node_idx = int(target_node_ref.strip('&'))
-        target_merge_node = all_nodes_map.get(target_node_idx)
-
-        # Now, `root_node` and `target_merge_node` are guaranteed to be from the same object graph.
-        # The `is` check inside the patcher will now work correctly.
-
-        if not isinstance(target_merge_node, recipe_nodes.MergeRecipeNode):
-            raise TypeError(f"Target node &{target_node_idx} is not a merge node.")
-
-        # This part of the logic remains the same, as it was correct.
+        # --- Step 2: Set the output name (this is fine here) ---
         self.output_file = self._create_model_output_name(
             iteration=iteration,
             recipe_node=root_node
         )
         logger.info(f"Set output path for this iteration to: {self.output_file}")
 
-        target_param_name = recipe_cfg.target_params
+        # --- Step 3: THE MULTI-PARAMETER FIX ---
 
-        new_param_node = self._prepare_param_recipe_args(
-            params, param_info, target_merge_node.merge_method
-        )[target_param_name]
+        # Ensure target_params is a list so we can loop over it
+        target_params = recipe_cfg.target_params
+        if isinstance(target_params, str):
+            target_params = [target_params]
 
-        patcher = utils.RecipePatcher(target_merge_node, target_param_name, new_param_node)
-        new_root_node = root_node.accept(patcher)
+        # Start with the original root_node. We will update this in the loop.
+        current_root_node = root_node
 
+        for target_param_name in target_params:
+            logger.info(f"Processing target parameter: '{target_param_name}'")
+
+            target_node_ref = recipe_cfg.target_nodes
+            target_node_idx = int(target_node_ref.strip('&'))
+            target_merge_node = all_nodes_map.get(target_node_idx)
+
+            if not isinstance(target_merge_node, recipe_nodes.MergeRecipeNode):
+                raise TypeError(f"Target node &{target_node_idx} is not a merge node.")
+
+            # Generate the dictionary of ALL possible parameter nodes for this method
+            new_param_nodes_dict = self._prepare_param_recipe_args(
+                params, param_info, target_merge_node.merge_method
+            )
+
+            # Extract the specific node for the CURRENT parameter in the loop
+            if target_param_name not in new_param_nodes_dict:
+                logger.warning(
+                    f"Could not generate a node for param '{target_param_name}'. It might be using a default. Skipping patch for this param.")
+                continue  # Move to the next parameter in the list
+
+            new_param_node_for_patcher = new_param_nodes_dict[target_param_name]
+
+            # Patch the graph, making sure to use the MOST RECENT version of the graph
+            patcher = utils.RecipePatcher(target_merge_node, target_param_name, new_param_node_for_patcher)
+            current_root_node = current_root_node.accept(patcher)
+
+            logger.info(f"Successfully patched graph for parameter '{target_param_name}'.")
+
+        # After the loop, current_root_node is the final, fully-patched graph
+        final_recipe_node = current_root_node
+
+        # --- Step 4: Execute and Save ---
         model_path = self.output_file
-        self._execute_recipe(new_root_node, model_path)
-        self._save_recipe_etc(new_root_node, model_path)
+        self._save_recipe_etc(final_recipe_node, model_path)
+        self._execute_recipe(final_recipe_node, model_path)
 
         logger.info(f"Recipe optimization completed. Output: {model_path}")
         return model_path

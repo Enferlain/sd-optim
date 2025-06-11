@@ -1,5 +1,5 @@
 # optimizer.py - Version 1.1 (Concurrent Gen/Score)
-
+import gc
 import os
 import shutil
 import asyncio # <<< Import asyncio
@@ -190,7 +190,6 @@ class Optimizer:
             merge_duration = time.time() - start_merge_time
             logger.info(f"Model processing took {merge_duration:.2f} seconds.")
 
-        # --- THIS IS THE CORRECTED ERROR HANDLING ---
         except (ValueError, TypeError, FileNotFoundError) as config_error:
             # These errors indicate a fundamental problem with the user's setup or config.
             # The program should not continue.
@@ -202,11 +201,20 @@ class Optimizer:
             # This will now only catch other, more general runtime errors.
             logger.error(f"A non-fatal error occurred during model processing: {e_merge}", exc_info=True)
             return 0.0  # Return low score for this specific trial on non-config errors
-        # --- END OF CORRECTION ---
 
         if not model_path or not model_path.exists():
             logger.error(f"Model processing failed to produce a valid file at {model_path}")
             return 0.0
+
+        # This is the most critical point to free up VRAM.
+        logger.info("Performing immediate post-merge memory cleanup before image generation...")
+        # We can create a simple helper for this or just put it inline.
+        # For clarity, let's keep it here.
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+            logger.info("PyTorch CUDA cache cleared.")
+        # --- END OF FIX ---
 
         # --- Load new model (keep as is, assumes synchronous is okay) ---
         try:
@@ -398,22 +406,6 @@ class Optimizer:
 
         iteration_duration = time.time() - iteration_start_time
         logger.info(f"Iteration {self.iteration} finished. Final Score for Optimizer: {avg_score:.4f}. Duration: {iteration_duration:.2f}s")
-
-        # --- ADD EXPLICIT CLEANUP HERE ---
-        logger.debug(f"Performing cleanup for iteration {self.iteration}...")
-        # Clear potential large objects from this iteration explicitly? (Optional)
-        # E.g., if 'image' or 'scores' list could be huge and we don't need them
-        # del scores, norm_weights, payloads, image # Or specific large variables if applicable
-        # Force Python garbage collection
-        import gc # Make sure gc is imported at the top of the file
-        gc.collect()
-        logger.debug("Python garbage collection triggered.")
-        # Tell PyTorch to release unused cached VRAM
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
-            logger.debug("PyTorch CUDA cache cleared.")
-        logger.debug(f"Cleanup for iteration {self.iteration} complete.")
-        # --- END OF ADDED CLEANUP ---
 
         return avg_score
 

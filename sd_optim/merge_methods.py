@@ -2199,12 +2199,12 @@ class MergeMethods:
 
     @staticmethod
     @merge_method
-    def delta_dist(
+    def delta_dis(
             *models: Parameter(Tensor, "delta"), # subtract
-            magnitude_ratio: Parameter(Tensor) =0.6,
-            direction_ratio: Parameter(Tensor) =0.75,
-            above_average_ratio: Parameter(Tensor) =1.2,
-            calibration_value: Parameter(Tensor) =1.0,
+            magnitude_ratio: Parameter(Tensor) = 0.6,
+            direction_ratio: Parameter(Tensor) = 0.75,
+            above_average_ratio: Parameter(Tensor) = 1.2,
+            calibration_value: Parameter(Tensor) = 1.0,
             **kwargs,
     ) -> Return(Tensor, "delta"): # add diff
         """Improved delta disentanglement merge based on WIDEN"""
@@ -2303,6 +2303,128 @@ class MergeMethods:
                 merged = merged / weight_sum
         else:
             merged = merged / (weight_sum + 1e-7)
+
+        return merged
+
+    @merge_method
+    def delta_dis2(
+            *models: Parameter(Tensor, "delta"),  # subtract
+            magnitude_ratio: Parameter(Tensor) = 0.6,
+            direction_ratio: Parameter(Tensor) = 0.75,
+            above_average_ratio: Parameter(Tensor) = 1.2,
+            calibration_value: Parameter(Tensor) = 1.0,
+            **kwargs,
+    ) -> Return(Tensor, "delta"):  # add diff
+        """Improved delta disentanglement merge based on WIDEN"""
+
+        def tensor_components(t: Tensor):
+            """Disentangle tensor into magnitude and direction components"""
+            if t.numel() == 0:
+                return torch.tensor([0.0], device=t.device), torch.tensor([1.0], device=t.device)
+            if t.dim() == 0:  # Scalar
+                return torch.tensor([torch.abs(t)], device=t.device), torch.tensor([torch.sign(t)], device=t.device)
+            if t.dim() == 1:  # 1D vector
+                mag = torch.norm(t)
+                dir = t / (mag + 1e-8)
+                return mag.unsqueeze(0), dir.unsqueeze(0)
+            elif t.dim() == 2:  # Linear/embedding layers
+                mag = torch.norm(t, p=2, dim=0)  # Column-wise
+                dir = t / (mag.unsqueeze(0) + 1e-8)
+            elif t.dim() == 4:  # Conv layers - explicit like your original
+                t_2d = t.reshape(t.shape[0], -1)  # [out_channels, in_channels*H*W]
+                mag = torch.norm(t_2d, p=2, dim=0)  # Column-wise (was dim=1 in your code)
+                dir = t_2d / (mag.unsqueeze(0) + 1e-8)
+                dir = dir.reshape(t.shape)  # Back to 4D
+            else:  # Higher dimensions
+                orig_shape = t.shape
+                t_2d = t.reshape(t.shape[0], -1)
+                mag = torch.norm(t_2d, p=2, dim=0)
+                dir = t_2d / (mag.unsqueeze(0) + 1e-8)
+                dir = dir.reshape(orig_shape)
+
+            return mag, dir
+
+        def compute_divergence(mag, dir, ref_mag, ref_dir):
+            """Compute divergence from reference (backbone)"""
+            # Magnitude divergence: |m - m_ref|
+            mag_div = torch.abs(mag - ref_mag)
+
+            # Direction divergence: 1 - cosine_similarity
+            if dir.dim() == 1:
+                cos_sim = torch.cosine_similarity(dir, ref_dir, dim=0)
+            else:
+                # Column-wise cosine similarity for 2D tensors
+                cos_sim = torch.cosine_similarity(dir, ref_dir, dim=0)
+
+            dir_div = 1 - cos_sim
+
+            return mag_div, dir_div
+
+        def rank_within_model(values: Tensor):
+            """Rank values within [0, 1] range"""
+            if values.numel() == 0:
+                return torch.tensor([], device=values.device, dtype=values.dtype)
+            if values.dim() == 0:
+                return torch.tensor(0.5, device=values.device, dtype=values.dtype)
+
+            # Sort and create normalized ranks
+            sorted_vals, sorted_idx = torch.sort(values.flatten())
+            ranks = torch.arange(len(sorted_vals), device=values.device, dtype=values.dtype) / len(sorted_vals)
+
+            # Scatter back to original positions
+            result = torch.zeros_like(values.flatten())
+            result.scatter_(0, sorted_idx, ranks)
+            return result.view(values.shape)
+
+        # Use zero tensor as backbone reference (since we're working with deltas)
+        ref_mag, ref_dir = tensor_components(torch.zeros_like(models[0]))
+
+        # Process each model and compute divergences
+        mag_ranks = []
+        dir_ranks = []
+
+        for model in models:
+            mag, dir = tensor_components(model)
+            mag_div, dir_div = compute_divergence(mag, dir, ref_mag, ref_dir)
+
+            mag_ranks.append(rank_within_model(mag_div))
+            dir_ranks.append(rank_within_model(dir_div))
+
+        # Stack ranks
+        mag_ranks = torch.stack(mag_ranks)
+        dir_ranks = torch.stack(dir_ranks)
+
+        # Combined weighted ranks
+        combined_ranks = magnitude_ratio * mag_ranks + direction_ratio * dir_ranks
+
+        # Apply softmax for importance scores
+        importance_scores = torch.softmax(combined_ranks, dim=0)
+
+        # Score calibration (as per WIDEN paper)
+        avg_importance = importance_scores.mean(dim=0, keepdim=True)
+        critical_mask = importance_scores > (avg_importance * above_average_ratio)
+        importance_scores[critical_mask] = calibration_value
+
+        # Final weighted merge
+        merged = torch.zeros_like(models[0])
+        for i, model in enumerate(models):
+            weight = importance_scores[i]
+
+            if model.dim() == 0:  # Scalar
+                merged += model * weight.squeeze()
+            elif model.dim() == 1:  # 1D tensor
+                merged += model * weight
+            elif model.dim() == 2:  # 2D tensor (linear layers)
+                # weight has shape [k], model has shape [d, k]
+                # Expand to [1, k] for broadcasting
+                weight_expanded = weight.unsqueeze(0)
+                merged += model * weight_expanded
+            else:  # 4D conv layers
+                # weight has shape [in_channels*H*W], model has shape [out_channels, in_channels, H, W]
+                # Reshape weight to match spatial structure, then add batch dimension
+                in_channels, H, W = model.shape[1], model.shape[2], model.shape[3]
+                weight_reshaped = weight.reshape(1, in_channels, H, W)  # [1, in_channels, H, W]
+                merged += model * weight_reshaped  # Broadcasts to [out_channels, in_channels, H, W]
 
         return merged
 
@@ -4788,22 +4910,22 @@ class MergeMethods:
     # @merge_method
     # def svd_ties_sum_extended(
     #         *models: Parameter(Tensor, "delta"),
-    #         k: Parameter(Tensor) =1.0,
-    #         max_singular_values: Parameter(Tensor) =64,
-    #         energy_threshold: Parameter(Tensor) =0.9,
-    #         power_iterations: Parameter(Tensor) =1,
-    #         vote_sgn: Parameter(Tensor) =1.0,
-    #         apply_stock: Parameter(Tensor) =0.0,
-    #         cos_eps: Parameter(Tensor) =1e-6,
-    #         apply_median: Parameter(Tensor) =1.0,
-    #         eps: Parameter(Tensor) =1e-6,
-    #         maxiter: Parameter(Tensor) =150,
-    #         ftol: Parameter(Tensor) =1e-22,
-    #         weight_decay: Parameter(Tensor) =0.0218, # .0218,
-    #         min_agreement: Parameter(Tensor) =0.3,
+    #         k: Parameter(Tensor) = 1.0,
+    #         max_singular_values: Parameter(Tensor) = 64,
+    #         energy_threshold: Parameter(Tensor) = 0.9,
+    #         power_iterations: Parameter(Tensor) = 1,
+    #         vote_sgn: Parameter(Tensor) = 1.0,
+    #         apply_stock: Parameter(Tensor) = 0.0,
+    #         cos_eps: Parameter(Tensor) = 1e-6,
+    #         apply_median: Parameter(Tensor) = 1.0,
+    #         eps: Parameter(Tensor) = 1e-6,
+    #         maxiter: Parameter(Tensor) = 150,
+    #         ftol: Parameter(Tensor) = 1e-22,
+    #         weight_decay: Parameter(Tensor) = 0.0218, # .0218,
+    #         min_agreement: Parameter(Tensor) = 0.3,
     #         chunk_size: int = 4,
     #         memory_safety_margin: float = 0.9,  # Default to 90% usage
-    #         tensor_chunk_size: Parameter(Tensor) =-1.0,
+    #         tensor_chunk_size: Parameter(Tensor) = -1.0,
     #         **kwargs,
     # ) -> Return(Tensor, "delta"):
     #     """

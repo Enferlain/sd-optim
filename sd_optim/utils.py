@@ -138,38 +138,47 @@ def load_and_register_custom_conversion(conversion_dir: Path):
 ##############################
 ### --- Method resolve --- ###
 ##############################
-def resolve_merge_method(merge_method_name: str) -> MergeMethod:
-    """Resolves merge method from sd-mecha built-ins or local MergeMethods class."""
+def resolve_merge_method(merge_method_name: str) -> merge_methods.MergeMethod:
+    """
+    Resolves merge method, prioritizing our local MergeMethods class before
+    checking the sd-mecha global registry to ensure correct log attribution.
+    """
+
+    # --- Step 1: Check our own local MergeMethods class FIRST ---
+    # This is the crucial step to correctly identify our custom methods.
+    if hasattr(MergeMethods, merge_method_name):
+        merge_func = getattr(MergeMethods, merge_method_name)
+
+        # Check if it's already a decorated sd-mecha method object
+        if isinstance(merge_func, merge_methods.MergeMethod):
+            logger.debug(f"Resolved merge method '{merge_method_name}' from local merge_methods.py.")
+            return merge_func
+        else:
+            # This is a fallback for safety, in case we forget a decorator.
+            # It attempts to wrap the raw function into a temporary MergeMethod object.
+            try:
+                wrapped_func = sd_mecha.merge_method(merge_func, identifier=merge_method_name, register=False)
+                logger.warning(
+                    f"Manually wrapping local method '{merge_method_name}'. Decorate with @merge_method for proper registration.")
+                return wrapped_func
+            except Exception as wrap_e:
+                # If it exists but can't be wrapped, it's a critical error in our code.
+                logger.error(
+                    f"FATAL: Local method '{merge_method_name}' exists but is not a valid sd-mecha MergeMethod and couldn't be wrapped: {wrap_e}")
+                os.abort()
+
+    # --- Step 2: If not found locally, check the sd-mecha global registry ---
+    # This will now only find true built-in methods, since we checked our local
+    # ones (which are also registered here) in Step 1.
     try:
-        # Try resolving built-in method
         merge_func = sd_mecha.extensions.merge_methods.resolve(merge_method_name)
         logger.debug(f"Resolved merge method '{merge_method_name}' from sd-mecha built-ins.")
         return merge_func
     except ValueError:
-        # If not found, try getting from our custom class
-        logger.debug(f"'{merge_method_name}' not found in sd-mecha built-ins, checking local MergeMethods...")
-        if hasattr(MergeMethods, merge_method_name):
-            merge_func = getattr(MergeMethods, merge_method_name)
-            # IMPORTANT: Assumes methods in MergeMethods are decorated with @merge_method
-            if isinstance(merge_func, MergeMethod):
-                logger.debug(f"Resolved merge method '{merge_method_name}' from local MergeMethods.")
-                return merge_func
-            else:
-                # Attempt to manually wrap if not decorated (less ideal)
-                try:
-                    wrapped_func = sd_mecha.merge_method(merge_func, identifier=merge_method_name, register=False)
-                    logger.warning(f"Manually wrapping local method '{merge_method_name}'. Decorate with @sd_mecha.merge_method for proper registration.")
-                    return wrapped_func
-                except Exception as wrap_e:
-                    # CRASH: Local method exists but couldn't be wrapped
-                    logger.error(f"FATAL: Local method '{merge_method_name}' exists but is not a valid sd-mecha MergeMethod and couldn't be wrapped: {wrap_e}")
-                    logger.error("Process will now crash due to unrecoverable error")
-                    os.abort()  # Crash the process immediately
-        else:
-            # CRASH: Merge method not found anywhere
-            logger.error(f"FATAL: Merge method '{merge_method_name}' not found in sd-mecha built-ins or local MergeMethods")
-            logger.error("Process will now crash due to missing merge method")
-            os.abort()  # Crash the process immediately
+        # --- Step 3: If it's not in our class and not in sd-mecha's registry, it doesn't exist. ---
+        logger.error(
+            f"FATAL: Merge method '{merge_method_name}' not found in local MergeMethods or in sd-mecha's registry.")
+        os.abort()
 
 
 ###########################
@@ -249,7 +258,6 @@ class RecipePatcher(recipe_nodes.RecipeVisitor):
         self.memo[node] = rebuilt_node
         return rebuilt_node
 
-
 class ModelVisitor(recipe_nodes.RecipeVisitor):
     """A simple visitor to find all ModelRecipeNodes in a graph."""
 
@@ -285,7 +293,6 @@ class ModelVisitor(recipe_nodes.RecipeVisitor):
         if node in self.visited:
             return
         self.visited.add(node)
-
 
 def get_info_from_target_node(root_node: recipe_nodes.RecipeNode, target_node_ref: str) -> Dict[str, Any]:
     """
@@ -328,6 +335,255 @@ def get_info_from_target_node(root_node: recipe_nodes.RecipeNode, target_node_re
         "model_names": model_names,
     }
 
+
+#####################
+### MM code saver ###
+#####################
+class _CodeParser(ast.NodeVisitor):
+    """An AST visitor to find all names used and local methods called within a function's AST."""
+
+    def __init__(self, local_method_names: Set[str]):
+        self.used_names: Set[str] = set()
+        self.called_local_methods: Set[str] = set()
+        self.local_method_names = local_method_names
+
+    def visit_Name(self, node: ast.Name):
+        """Catches variables, functions, and modules being used."""
+        if isinstance(node.ctx, ast.Load):
+            self.used_names.add(node.id)
+        self.generic_visit(node)
+
+    def visit_Attribute(self, node: ast.Attribute):
+        """Catches attribute access like `torch.nn` to get the root `torch`."""
+        # Traverse down to the root of an attribute chain, e.g., torch.nn.functional -> torch
+        curr_node = node
+        while isinstance(curr_node, ast.Attribute):
+            curr_node = curr_node.value
+        if isinstance(curr_node, ast.Name):
+            self.used_names.add(curr_node.id)
+        self.generic_visit(node)
+
+    def visit_Call(self, node: ast.Call):
+        """Catches function calls to identify dependencies on other local methods."""
+        func = node.func
+        if isinstance(func, ast.Name) and func.id in self.local_method_names:
+            self.called_local_methods.add(func.id)
+        # Also check for `self.method_name()` calls
+        elif isinstance(func, ast.Attribute) and isinstance(func.value, ast.Name):
+            if func.value.id in ('self', 'cls') and func.attr in self.local_method_names:
+                self.called_local_methods.add(func.attr)
+        self.generic_visit(node)
+
+class MergeMethodCodeSaver:
+    """
+    Analyzes and saves the source code of a merge method and all its local
+    dependencies into a self-contained, readable Python script.
+    """
+    _source_cache: Dict[str, str] = {}
+    _dependency_cache: Dict[str, Set[str]] = {}
+    _imports_cache: Dict[str, str] = {}
+
+    @classmethod
+    def _get_method_dependencies(cls, method_name: str, class_obj: Any) -> Set[str]:
+        """Recursively finds all local methods called by a given method."""
+        if method_name in cls._dependency_cache:
+            return cls._dependency_cache[method_name]
+
+        all_local_methods = {name for name, func in inspect.getmembers(class_obj, inspect.isfunction)}
+
+        try:
+            method = getattr(class_obj, method_name)
+            source = inspect.getsource(method)
+            tree = ast.parse(textwrap.dedent(source))
+
+            parser = _CodeParser(all_local_methods)
+            parser.visit(tree)
+
+            dependencies = parser.called_local_methods
+            # Recursively get dependencies of dependencies
+            recursive_deps = set(dependencies)
+            for dep_name in dependencies:
+                recursive_deps.update(cls._get_method_dependencies(dep_name, class_obj))
+
+            cls._dependency_cache[method_name] = recursive_deps
+            return recursive_deps
+        except (TypeError, OSError, AttributeError):
+            return set()
+
+    @classmethod
+    def _get_source(cls, method_name: str, class_obj: Any) -> str:
+        """Gets and caches the dedented source code of a method."""
+        if method_name not in cls._source_cache:
+            try:
+                method = getattr(class_obj, method_name)
+                cls._source_cache[method_name] = textwrap.dedent(inspect.getsource(method))
+            except (TypeError, OSError, AttributeError):
+                cls._source_cache[method_name] = f"# Could not retrieve source for {method_name}\n"
+        return cls._source_cache[method_name]
+
+    @classmethod
+    def save_merge_method_code(cls, merge_method_name: str, model_path: Path):
+        """
+        Saves the source code for the given merge method, including all relevant
+        local helper functions and necessary imports, to a file.
+        """
+        try:
+            class_obj = MergeMethods
+            if not hasattr(class_obj, merge_method_name):
+                logger.debug(f"Method '{merge_method_name}' not found in local MergeMethods. Assuming it's a built-in.")
+                return
+
+            # Step 1: Find all dependencies (target method + helpers)
+            dependencies = cls._get_method_dependencies(merge_method_name, class_obj)
+            all_methods_to_save = {merge_method_name} | dependencies
+
+            # Step 2: Get the source code and analyze the AST for all needed functions
+            all_used_names = set()
+            all_source_code = {}
+            all_local_method_names = {name for name, _ in inspect.getmembers(class_obj, inspect.isfunction)}
+
+            for method_name in all_methods_to_save:
+                source = cls._get_source(method_name, class_obj)
+                all_source_code[method_name] = source
+                tree = ast.parse(source)
+                parser = _CodeParser(all_local_method_names)
+                parser.visit(tree)
+                all_used_names.update(parser.used_names)
+
+            # Step 3: Find all imports in the source file and filter them
+            source_file_path = inspect.getfile(class_obj)
+            with open(source_file_path, 'r', encoding='utf-8') as f:
+                file_source = f.read()
+
+            file_tree = ast.parse(file_source)
+            relevant_imports = []
+            # We iterate through the top-level body of the module, which is where imports live.
+            for node in file_tree.body:
+                if isinstance(node, (ast.Import, ast.ImportFrom)):
+                    # Check if this import statement defines any name we actually use
+                    is_relevant = False
+                    for alias in node.names:
+                        # Check the imported name (e.g., 'torch') or its alias (e.g., 't')
+                        if (alias.asname or alias.name) in all_used_names:
+                            is_relevant = True
+                            break
+                    if is_relevant:
+                        # ast.unparse correctly takes ast.Import or ast.ImportFrom nodes
+                        relevant_imports.append(ast.unparse(node)) # Fake complaint
+
+            # Step 4: Assemble the final script
+            output_lines = [
+                f"# Merge Method: {merge_method_name}",
+                f"# Source generated for model: {model_path.name}",
+                "# ---------------------------------------------------\n",
+                "# Relevant Imports",
+                *sorted(list(set(relevant_imports))),
+                "\n# ---------------------------------------------------\n",
+                "# Helper Functions (Dependencies)\n"
+            ]
+
+            # Add dependencies first (everything except the main method)
+            for method_name in sorted(list(dependencies)):
+                output_lines.append(all_source_code[method_name])
+                output_lines.append("\n")
+
+            # Add the main method last
+            output_lines.extend([
+                "# Main Merge Method\n",
+                all_source_code[merge_method_name]
+            ])
+
+            final_script = "\n".join(output_lines)
+
+            # Step 5: Save the file
+            log_dir = Path(HydraConfig.get().runtime.output_dir)
+            code_dir = log_dir / "merge_methods"
+            code_dir.mkdir(exist_ok=True, parents=True)
+
+            code_file_path = code_dir / f"{model_path.stem}_method.py"
+            with open(code_file_path, "w", encoding="utf-8") as f:
+                f.write(final_script)
+
+            logger.info(f"Saved self-contained merge method script to: {code_file_path}")
+
+        except Exception as e:
+            logger.error(f"Failed to save merge method code for '{merge_method_name}': {e}", exc_info=True)
+
+
+#############################
+### Recipe to python code ###
+#############################
+class MechaToPythonConverter:
+    def __init__(self, recipe_str: str):
+        # We start with the full, correct recipe string
+        self.mecha_lines = recipe_str.strip().split('\n')[1:]  # Skip version
+        self.python_lines = []
+
+    def convert(self) -> str:
+        # Loop through each line of the .mecha recipe
+        for i, line in enumerate(self.mecha_lines):
+            # Parse the command (e.g., 'model', 'dict', 'merge')
+            parts = line.split()
+            command = parts[0]
+
+            # The variable name for this line will be var_i
+            var_name = f"var_{i}"
+
+            if command == "model":
+                # e.g., model "path/to/model.safetensors" ...
+                # We need to extract the path and other kwargs
+                path_str = parts[1]
+                kwargs_str = " ".join(parts[2:])
+                python_line = f'{var_name} = sd_mecha.model({path_str}, {kwargs_str})'
+                self.python_lines.append(python_line)
+
+            elif command == "dict":
+                # e.g., dict key1=val1 key2=val2 ...
+                params_str = " ".join(parts[1:])
+                python_line = f'{var_name} = dict({params_str})'
+                self.python_lines.append(python_line)
+
+            elif command == "literal":
+                # e.g., literal &2 model_config="sdxl-sgm"
+                ref = self._remap_ref(parts[1])
+                kwargs_str = " ".join(self._remap_refs_in_parts(parts[2:]))
+                python_line = f'{var_name} = sd_mecha.literal({ref}, {kwargs_str})'
+                self.python_lines.append(python_line)
+
+            elif command == "merge":
+                # e.g., merge "fallback" &3 &6
+                method_name = parts[1].strip('"')
+
+                # Remap all arguments
+                args_and_kwargs = self._remap_refs_in_parts(parts[2:])
+
+                python_line = f'{var_name} = sd_mecha.{method_name}({", ".join(args_and_kwargs)})'
+                self.python_lines.append(python_line)
+
+        # The last line's variable holds the final recipe node
+        final_var_name = f"var_{len(self.mecha_lines) - 1}"
+        self.python_lines.append(f"\n# The final recipe is held in this variable")
+        self.python_lines.append(f"final_recipe = {final_var_name}")
+
+        return "\n".join(self.python_lines)
+
+    def _remap_ref(self, ref_str: str) -> str:
+        """Converts a &N reference to a var_N variable name."""
+        if ref_str.startswith('&'):
+            index = int(ref_str[1:])
+            return f"var_{index}"
+        return ref_str  # It's a literal value
+
+    def _remap_refs_in_parts(self, parts: List[str]) -> List[str]:
+        """Remaps all references in a list of arguments."""
+        remapped_parts = []
+        for part in parts:
+            if "=" in part:
+                key, val = part.split('=', 1)
+                remapped_parts.append(f"{key}={self._remap_ref(val)}")
+            else:
+                remapped_parts.append(self._remap_ref(part))
+        return remapped_parts
 
 #############################
 ### Generate optuna notes ###
@@ -438,254 +694,6 @@ def get_info_from_target_node(root_node: recipe_nodes.RecipeNode, target_node_re
 #         import traceback
 #         traceback.print_exc()
 
-
-
-
-### ------------- old functions that haven't been updated to new mecha yet ------------ ###
-
-# ### Recipe optimization
-# def get_target_nodes(recipe_path: Union[str, pathlib.Path], target_nodes: Union[str, List[str]]) -> Dict[
-#     str, Dict[str, Any]]:
-#     """
-#     Extract hyperparameters from specified target nodes in the recipe.
-#
-#     Args:
-#         recipe_path: Path to the recipe file
-#         target_nodes: Target node(s) specified as '&N' or ['&N', '&M', ...]
-#
-#     Returns:
-#         Dict mapping node references to their hyperparameters
-#     """
-#     if isinstance(target_nodes, str):
-#         target_nodes = [target_nodes]
-#
-#     recipe = sd_mecha.deserialize(recipe_path)
-#     node_map = _build_node_map(recipe)
-#
-#     extracted_hypers = {}
-#     for target in target_nodes:
-#         node_index = int(target.strip('&'))
-#         if node_index in node_map:
-#             node = node_map[node_index]
-#             if isinstance(node, MergeRecipeNode):
-#                 extracted_hypers[target] = {
-#                     'merge_method': node.merge_method.get_name(),
-#                     'hypers': node.hypers
-#                 }
-#
-#     return extracted_hypers
-#
-# def update_recipe(recipe: RecipeNode, target_nodes: Union[str, List[str]], assembled_params: Dict[str, Any]) -> RecipeNode:
-#     """
-#     Update recipe with new hyperparameters, inserting dict nodes as needed.
-#
-#     Args:
-#         recipe: The recipe to modify
-#         target_nodes: Target node(s) to update
-#         assembled_params: New parameter values to apply
-#
-#     Returns:
-#         Modified recipe with updated hyperparameters
-#     """
-#     if isinstance(target_nodes, str):
-#         target_nodes = [target_nodes]
-#
-#     # Convert recipe to text form for manipulation
-#     recipe_lines = sd_mecha.serialize(recipe).split('\n')
-#
-#     # Prepare new dict lines from assembled_params
-#     new_dicts = []
-#     for param_set in assembled_params.values():
-#         dict_line = _create_dict_line(param_set)
-#         new_dicts.append(dict_line)
-#
-#     # Insert new dict lines at the top
-#     recipe_lines = new_dicts + recipe_lines
-#
-#     # Determine the increment value (number of new dicts inserted)
-#     increment = len(new_dicts)
-#
-#     # Update all references in existing lines
-#     recipe_lines = _increment_node_refs(recipe_lines, increment)
-#
-#     # Create a mapping from param_key to new dict index
-#     param_key_to_new_dict_index = {key: idx for idx, key in enumerate(assembled_params.keys())}
-#
-#     # Handle each target node
-#     for target in target_nodes:
-#         node_index = int(target.strip('&')) + increment  # Adjust for new dicts
-#         if node_index >= len(recipe_lines):
-#             continue  # Skip if the node index is out of range after increment
-#
-#         target_line = recipe_lines[node_index]
-#
-#         if not target_line.startswith('merge'):
-#             continue
-#
-#         # Update parameters in the merge line to reference new dicts
-#         parts = target_line.split()
-#         for param_key in assembled_params.keys():
-#             # Find the parameter position in the merge line
-#             for i, part in enumerate(parts):
-#                 if part.startswith(f'{param_key}='):
-#                     # Replace the existing reference with the new dict reference
-#                     parts[i] = f'{param_key}=&{param_key_to_new_dict_index[param_key]}'
-#                     break
-#             else:
-#                 # If parameter doesn't exist, append it
-#                 parts.append(f'{param_key}=&{param_key_to_new_dict_index[param_key]}')
-#
-#         # Update the target line
-#         recipe_lines[node_index] = ' '.join(parts)
-#
-#     # Convert back to recipe object
-#     modified_recipe = sd_mecha.deserialize(recipe_lines)
-#     return modified_recipe
-#
-# def _build_node_map(recipe: RecipeNode) -> Dict[int, RecipeNode]:
-#     """Build a map of node indices to their corresponding RecipeNode objects."""
-#     lines = sd_mecha.serialize(recipe).split('\n')
-#     node_map = {}
-#
-#     current_recipe = []
-#     for i, line in enumerate(lines):
-#         current_recipe.append(line)
-#         node = sd_mecha.deserialize(current_recipe)
-#         node_map[i] = node
-#
-#     return node_map
-#
-# def _parse_dict_line(line: str) -> Dict[str, Any]:
-#     """Parse a dict line into a dictionary of parameter values."""
-#     parts = line.split()
-#     result = {}
-#     for part in parts[1:]:  # Skip 'dict' command
-#         if '=' in part:
-#             key, value = part.split('=', 1)
-#             # Convert string value to appropriate type
-#             try:
-#                 if value.replace('.', '').replace('e-', '').replace('e+', '').isdigit():
-#                     value = float(value)
-#             except ValueError:
-#                 pass  # Keep as string if conversion fails
-#             result[key] = value
-#     return result
-#
-# def _increment_refs_in_line(line: str, increment: int) -> str:
-#     """Increment all node references in a single line by a specified amount."""
-#     parts = line.split()
-#     for i, part in enumerate(parts):
-#         if part.startswith('&') and part[1:].isdigit():
-#             ref_num = int(part[1:])
-#             parts[i] = f'&{ref_num + increment}'
-#         elif '=' in part:
-#             key, value = part.split('=', 1)
-#             if value.startswith('&') and value[1:].isdigit():
-#                 ref_num = int(value[1:])
-#                 parts[i] = f'{key}=&{ref_num + increment}'
-#     return ' '.join(parts)
-#
-# def _create_dict_line(params: Dict[str, Any]) -> str:
-#     """Create a dict line from a dictionary of parameters."""
-#     param_strs = []
-#     for key, value in params.items():
-#         if isinstance(value, (int, float)):
-#             param_strs.append(f"{key}={value}")
-#         else:
-#             param_strs.append(f'{key}="{value}"')
-#     return 'dict ' + ' '.join(param_strs)
-#
-# def _extract_param_value(line: str, param: str) -> Optional[str]:
-#     """Extract the value of a parameter from a merge line."""
-#     parts = line.split()
-#     for part in parts:
-#         if part.startswith(f'{param}='):
-#             return part.split('=', 1)[1]
-#     return None
-#
-# def _update_dict_line(line: str, updates: Dict[str, Any]) -> str:
-#     """Update parameters in a dict line."""
-#     parts = line.split()
-#     params = {p.split('=')[0]: p.split('=')[1] for p in parts[1:]}
-#     params.update(updates)
-#     return 'dict ' + ' '.join(f'{k}={v}' for k, v in params.items())
-#
-# def _replace_param_value(line: str, param: str, new_value: str) -> str:
-#     """Replace the value of a parameter in a merge line."""
-#     parts = line.split()
-#     found = False
-#     for i, part in enumerate(parts):
-#         if part.startswith(f'{param}='):
-#             parts[i] = f'{param}={new_value}'
-#             found = True
-#             break
-#     if not found:
-#         parts.append(f'{param}={new_value}')
-#     return ' '.join(parts)
-#
-# def _increment_node_refs(lines: List[str], increment: int) -> List[str]:
-#     """Increment all node references in the recipe by a specified amount."""
-#     updated_lines = []
-#     for line in lines:
-#         parts = line.split()
-#         for i, part in enumerate(parts):
-#             if '=' in part:
-#                 key, value = part.split('=', 1)
-#                 if value.startswith('&'):
-#                     ref_num = int(value[1:])
-#                     parts[i] = f'{key}=&{ref_num + increment}'
-#             elif part.startswith('&'):
-#                 ref_num = int(part[1:])
-#                 parts[i] = f'&{ref_num + increment}'
-#         updated_lines.append(' '.join(parts))
-#     return updated_lines
-#
-# def traverse_recipe(node: RecipeNode) -> List[RecipeNode]:
-#     """Traverses the recipe tree and yields all nodes."""
-#     yield node
-#     if isinstance(node, MergeRecipeNode):
-#         for model in node.models:
-#             yield from traverse_recipe(model)
-#
-# def get_model_names_from_recipe(recipe: RecipeNode) -> List[str]:
-#     """Extracts model names from a recipe."""
-#     model_names = []
-#     for node in traverse_recipe(recipe):
-#         if isinstance(node, ModelRecipeNode):
-#             # Extract model name from path, handling potential None
-#             model_name = Path(node.path).stem if node.path else "unknown_model"
-#             model_names.append(model_name)
-#     return model_names
-#
-# def get_merge_method(recipe_path: Union[str, Path], target_node: str) -> str:
-#     """Extract the merge_method from the target node in a recipe."""
-#     target_nodes = [target_node]
-#     extracted_hypers = get_target_nodes(recipe_path, target_nodes)  # Use existing get_target_nodes
-#     return extracted_hypers[target_node]['merge_method']
-#
-#
-# ### Custom sorting function that uses component order from config ###
-# def custom_sort_key(key, component_order):
-#     parts = key.split("_")
-#
-#     # Check if the key matches the expected format for layer adjustments
-#     if parts[0] in ["detail1", "detail2", "detail3", "contrast", "brightness", "col1", "col2", "col3"]:
-#         # Assign a high priority to layer_adjustments by setting component_index to -1
-#         component_index = -1
-#         block_key = parts[0]  # The parameter name itself is the block key
-#     else:
-#         # Handle the original format for other keys
-#         if len(parts) > 2 and parts[1] in component_order:
-#             component_index = component_order.index(parts[1])
-#             block_key = "_".join(parts[2:])
-#         else:
-#             # Default sorting if component not found or key is too short
-#             component_index = len(component_order)  # Ensure these keys are sorted last
-#             block_key = key
-#
-#     return component_index, sd_mecha.hypers.natural_sort_key(block_key)
-#
-#
 # ### Cache for recipes (does it work tho?) ###
 # class CacheInjectorVisitor(RecipeVisitor):
 #     def __init__(self, cache: Optional[Dict[str, Dict[str, Tensor]]]):
@@ -720,444 +728,10 @@ def get_info_from_target_node(root_node: recipe_nodes.RecipeNode, target_node_re
 #             dtype=node.dtype,
 #         )
 #
-#
-# ### Recipe merger patch for key merging ###
-# class ModelsListVisitor(RecipeVisitor):
-#     def __init__(self):
-#         self.models = []  # Stores individual ModelRecipeNode objects
-#
-#     def visit_model(self, node: ModelRecipeNode):
-#         self.models.append(node)  # Add single model node
-#
-#     def visit_merge(self, node: MergeRecipeNode):
-#         # Recursively visit child models in merge nodes
-#         for model in node.models:
-#             model.accept(self)
-#
-#     def visit_parameter(self, node: ParameterRecipeNode):
-#         pass  # Ignore parameters
-#
-#
-# def patch_recipe_merger(merge_keys_config: Dict[str, Any], cfg: DictConfig):
-#     """Patches the RecipeMerger.merge_and_save method to enable selective merging."""
-#
-#     original_merge_and_save = RecipeMerger.merge_and_save
-#
-#     @functools.wraps(original_merge_and_save)
-#     def patched_merge_and_save(
-#         self, recipe: sd_mecha.extensions.merge_method.RecipeNodeOrPath, *,
-#         output: MutableMapping[str, torch.Tensor] | pathlib.Path | str = "merge",
-#         fallback_model: Optional[sd_mecha.Mapping[str, torch.Tensor] | sd_mecha.recipe_nodes.ModelRecipeNode | pathlib.Path | str] = None,
-#         save_device: Optional[str] = "cpu",
-#         save_dtype: Optional[torch.dtype] = torch.float16,
-#         threads: Optional[int] = None,
-#         total_buffer_size: int = 2**28,
-#         strict_weight_space: bool = True
-#     ):
-#         # Early exit if merge keys are not enabled
-#         if not merge_keys_config or not merge_keys_config.get("enabled", False):
-#             print("Merge keys not enabled, using default merge_and_save")
-#             return original_merge_and_save(self, recipe, output=output, fallback_model=fallback_model, save_device=save_device, save_dtype=save_dtype, threads=threads, total_buffer_size=total_buffer_size)
-#
-#         merge_keys = merge_keys_config.get("keys", [])
-#         default_behavior = merge_keys_config.get("default_behavior", "keep_a")
-#
-#         # Resolve the recipe path to a node
-#         recipe = sd_mecha.extensions.merge_method.path_to_node(recipe)
-#         if recipe.merge_space != sd_mecha.recipe_nodes.MergeSpace.BASE:
-#             raise ValueError(f"recipe should be in model merge space, not {str(recipe.merge_space).split('.')[-1]}")
-#
-#         # Resolve the fallback model path to a node
-#         if isinstance(fallback_model, (str, pathlib.Path)):
-#             fallback_model = sd_mecha.extensions.merge_method.path_to_node(fallback_model)
-#         elif not isinstance(fallback_model, (sd_mecha.recipe_nodes.ModelRecipeNode, Mapping, type(None))):
-#             raise ValueError(f"fallback_model should be a simple model or None, not {type(fallback_model)}")
-#
-#         # Clear model paths cache
-#         sd_mecha.extensions.merge_method.clear_model_paths_cache()
-#
-#         # Determine fallback model node
-#         fallback_model_index = merge_keys_config.get("fallback_model_index", 0)
-#         models_visitor = ModelsListVisitor()
-#         recipe.accept(models_visitor)
-#         models_in_recipe = models_visitor.models
-#
-#         # Validate fallback_model_index
-#         if fallback_model_index >= len(models_in_recipe):
-#             raise ValueError(
-#                 f"fallback_model_index {fallback_model_index} is out of range. "
-#                 f"Recipe only contains {len(models_in_recipe)} models: "
-#                 f"{[model.path for model in models_in_recipe]}"
-#             )
-#
-#         fallback_model_node = models_in_recipe[fallback_model_index] if len(models_in_recipe) > 0 else None
-#
-#         # Determine if fallback model is external
-#         fallback_is_external = fallback_model_node is not None and fallback_model_node not in recipe
-#
-#         # ==============================================
-#         # Calculate total_files_open based on the models involved
-#         # ==============================================
-#         total_files_open = (
-#             len(models_in_recipe) +
-#             int(isinstance(output, (str, pathlib.Path))) +
-#             int(fallback_is_external)
-#         )
-#
-#         buffer_size_per_file = total_buffer_size // max(total_files_open, 1)  # Prevent division by zero
-#         threads = threads or total_files_open
-#
-#         # ==============================================
-#         # Load state_dicts with calculated buffer size
-#         # ==============================================
-#         load_input_dicts_visitor = sd_mecha.recipe_merger.LoadInputDictsVisitor(
-#             self._RecipeMerger__base_dirs,
-#             buffer_size_per_file,
-#         )
-#         recipe.accept(load_input_dicts_visitor)
-#
-#         # Load fallback model's state_dict if it's external
-#         if fallback_is_external:
-#             fallback_model_node.accept(load_input_dicts_visitor)
-#             fallback_model = fallback_model_node.state_dict
-#         elif fallback_model_node:
-#             fallback_model = fallback_model_node.state_dict
-#         else:
-#             fallback_model = None
-#
-#         # ==============================================
-#         # Rest of selective merging logic
-#         # ==============================================
-#
-#         # Get model configuration
-#         model_configs = recipe.accept(sd_mecha.model_detection.DetermineConfigVisitor())
-#
-#         # Normalize output
-#         output = self._RecipeMerger__normalize_output_to_dict(
-#             output,
-#             model_configs.get_minimal_dummy_header(),
-#             model_configs.get_keys_to_merge(),
-#             serialization.serialize(recipe),
-#             buffer_size_per_file // threads,
-#             save_dtype,
-#         )
-#
-#         # ==============================================
-#         # Moved key filtering logic outside the loop
-#         # ==============================================
-#         def _should_merge_key(key: str, merge_keys: List[str]) -> bool:
-#             """Checks if a key should be merged using regex for wildcard patterns."""
-#             # Check exclusion first
-#             for pattern in merge_keys:
-#                 if pattern.startswith("!"):
-#                     exclusion_pattern = pattern[1:].strip()
-#                     # Convert wildcard to regex
-#                     regex_pattern = exclusion_pattern.replace(".", r"\.").replace("*", ".*")
-#                     if re.fullmatch(regex_pattern, key):
-#                         return False  # Skip merge
-#
-#             # Check inclusion
-#             for pattern in merge_keys:
-#                 if not pattern.startswith("!"):
-#                     # Convert wildcard to regex
-#                     regex_pattern = pattern.replace(".", r"\.").replace("*", ".*")
-#                     if re.fullmatch(regex_pattern, key):
-#                         return True  # Merge
-#
-#             return False  # Default: skip merge
-#
-#         thread_local_data = threading.local()
-#         progress = self._RecipeMerger__tqdm(total=len(model_configs.keys()), desc="Merging recipe")
-#         with sd_mecha.recipe_merger.ThreadPoolExecutor(max_workers=threads) as executor:
-#             futures = []
-#             for key in model_configs.keys():
-#                 if not _should_merge_key(key, merge_keys):
-#                     if default_behavior == "zero":
-#                         print(f"Skipping merge for key: {key}, setting to zero")
-#                         shape = model_configs.get_shape(key)
-#                         if shape is not None:
-#                             output[key] = torch.zeros(shape, dtype=save_dtype, device=save_device)
-#                         else:
-#                             logger.warning(f"Shape not found for key: {key}. Skipping.")
-#                         progress.update()
-#                         continue
-#                     elif default_behavior == "keep_a":
-#                         print(f"Skipping merge for key: {key}, keeping original value from model")
-#                         try:
-#                             if fallback_model is not None:
-#                                 output[key] = fallback_model[key].to(device=save_device, dtype=save_dtype)
-#                             else:
-#                                 output[key] = recipe.models[0].state_dict[key].to(device=save_device,
-#                                                                                   dtype=save_dtype)
-#                         except KeyError:
-#                             logging.warning(f"Key {key} not found in any model. Skipping.")
-#                         progress.update()
-#                         continue
-#
-#                 key_merger = model_configs.get_key_merger(key, recipe, fallback_model, self._RecipeMerger__default_device, self._RecipeMerger__default_dtype)
-#                 key_merger = self._RecipeMerger__track_output(key_merger, output, key, save_dtype, save_device)
-#                 key_merger = self._RecipeMerger__track_progress(key_merger, key, model_configs.get_shape(key), progress)
-#                 key_merger = self._RecipeMerger__wrap_thread_context(key_merger, thread_local_data)
-#                 futures.append(executor.submit(key_merger))
-#
-#             for future in sd_mecha.recipe_merger.as_completed(futures):
-#                 if future.exception() is not None:
-#                     for future_to_cancel in futures:
-#                         future_to_cancel.cancel()
-#                     raise future.exception()
-#                 future.result()
-#
-#         progress.close()
-#         if isinstance(output, sd_mecha.recipe_merger.OutSafetensorsDict):
-#             output.close()
-#         recipe.accept(sd_mecha.recipe_merger.CloseInputDictsVisitor())
-#
-#         gc.collect()
-#         torch.cuda.empty_cache()
-#
-#     RecipeMerger.merge_and_save = patched_merge_and_save
 
-
-### Save merge method code ###
-@dataclass
-class ImportInfo:
-    """Store information about imports."""
-    module: str
-    names: Set[str] = field(default_factory=set)  # For 'from' imports
-    alias: str = None  # For regular imports with 'as'
-    is_from_import: bool = False
-
-    def to_source(self) -> str:
-        """Convert the import back to source code."""
-        if self.is_from_import:
-            names_str = ", ".join(sorted(self.names))
-            return f"from {self.module} import {names_str}"
-        else:
-            if self.alias:
-                return f"import {self.module} as {self.alias}"
-            return f"import {self.module}"
-
-
-class CodeAnalysisVisitor(ast.NodeVisitor):
-    """AST visitor that finds method calls and imports within a function."""
-
-    def __init__(self, class_methods: List[str]):
-        self.class_methods = class_methods
-        self.called_methods = set()
-        self.imports: Dict[str, ImportInfo] = {}
-        self.used_names = set()
-
-    def visit_Call(self, node: ast.Call) -> None:
-        """Visit a function call node in the AST."""
-        # Track method calls
-        if isinstance(node.func, ast.Attribute) and isinstance(node.func.value, ast.Name):
-            if node.func.value.id in ('self', 'cls'):
-                method_name = node.func.attr
-                if method_name in self.class_methods:
-                    self.called_methods.add(method_name)
-
-        # Track all names used in function calls
-        self.generic_visit(node)
-        if isinstance(node.func, ast.Name):
-            self.used_names.add(node.func.id)
-        elif isinstance(node.func, ast.Attribute):
-            if isinstance(node.func.value, ast.Name):
-                self.used_names.add(node.func.value.id)
-
-    def visit_Name(self, node: ast.Name) -> None:
-        """Visit a name node to track used variables."""
-        if isinstance(node.ctx, ast.Load):
-            self.used_names.add(node.id)
-        self.generic_visit(node)
-
-    def visit_Import(self, node: ast.Import) -> None:
-        """Visit an import node."""
-        for alias in node.names:
-            import_info = ImportInfo(
-                module=alias.name,
-                alias=alias.asname
-            )
-            self.imports[alias.asname or alias.name] = import_info
-        self.generic_visit(node)
-
-    def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
-        """Visit a from-import node."""
-        if node.module is None:  # Handle "from . import x"
-            return
-
-        import_info = ImportInfo(
-            module=node.module,
-            is_from_import=True
-        )
-        for alias in node.names:
-            import_info.names.add(alias.asname or alias.name)
-
-        # Use the module name as key for from-imports
-        self.imports[node.module] = import_info
-        self.generic_visit(node)
-
-
-class MergeMethodCodeSaver:
-    """A class to handle saving merge method code with caching to prevent duplicate saves."""
-
-    _saved_methods: ClassVar[Set[str]] = set()
-
-    @classmethod
-    def analyze_code(cls, source: str, class_methods: List[str]) -> Tuple[Set[str], Dict[str, ImportInfo]]:
-        """Analyze source code for dependencies and imports."""
-        tree = ast.parse(source)
-        visitor = CodeAnalysisVisitor(class_methods)
-        visitor.visit(tree)
-        return visitor.called_methods, visitor.imports
-
-    @classmethod
-    def get_method_dependencies(cls, method: Any, class_obj: Any) -> Tuple[Set[str], Dict[str, ImportInfo]]:
-        """Recursively get all function dependencies and their imports from the method's source code."""
-        all_dependencies = set()
-        all_imports: Dict[str, ImportInfo] = {}
-
-        try:
-            source = inspect.getsource(method)
-            all_methods = inspect.getmembers(class_obj, predicate=inspect.isfunction)
-            method_names = [name for name, _ in all_methods]
-
-            # Get direct dependencies and imports
-            called_methods, imports = cls.analyze_code(source, method_names)
-            all_imports.update(imports)
-
-            # Recursively analyze dependencies
-            for called_method_name in called_methods:
-                if called_method_name != method.__name__:
-                    all_dependencies.add(called_method_name)
-                    called_method = getattr(class_obj, called_method_name)
-                    dep_methods, dep_imports = cls.get_method_dependencies(called_method, class_obj)
-                    all_dependencies.update(dep_methods)
-                    all_imports.update(dep_imports)
-
-            return all_dependencies, all_imports
-        except (TypeError, OSError) as e:
-            logger.warning(f"Could not analyze dependencies for {method.__name__}: {e}")
-            return set(), {}
-
-    @classmethod
-    def get_full_method_source(cls, method_name: str, class_obj: Any, visited: Set[str] = None) -> str:
-        """Get the source code of the method and all its dependencies."""
-        if visited is None:
-            visited = set()
-        if method_name in visited:
-            return ""
-
-        visited.add(method_name)
-        try:
-            method = getattr(class_obj, method_name)
-        except AttributeError as e:
-            logger.error(f"Method {method_name} not found in class: {e}")
-            return f"# Error: Method {method_name} not found in class"
-
-        try:
-            # Get the source and analyze dependencies
-            source = inspect.getsource(method)
-            dependencies, imports = cls.get_method_dependencies(method, class_obj)
-
-            # Build the complete source code starting with imports
-            full_source = []
-
-            # Add imports section
-            if imports:
-                full_source.extend([
-                    "# Required imports",
-                    *[imp_info.to_source() for imp_info in imports.values()],
-                    "\n"
-                ])
-
-            # Add main method
-            full_source.extend([
-                f"# {'-' * 20} Main merge method {'-' * 20}",
-                source
-            ])
-
-            # Add dependencies if any
-            if dependencies:
-                full_source.extend([
-                    f"\n# {'-' * 20} Dependencies {'-' * 20}"
-                ])
-                for dep_name in dependencies:
-                    if dep_name not in visited:
-                        dep_method = getattr(class_obj, dep_name)
-                        full_source.extend([
-                            f"\n# Dependency: {dep_name}",
-                            inspect.getsource(dep_method)
-                        ])
-                        visited.add(dep_name)
-
-            return "\n".join(full_source)
-        except (TypeError, OSError) as e:
-            logger.error(f"Failed to get source code for {method_name}: {e}")
-            return f"# Error getting source code for {method_name}: {str(e)}"
-
-    @classmethod
-    def save_merge_method_code(cls, merge_method: str, model_path: Path, class_obj: Any) -> None:
-        """Save the merge method code and its dependencies to a file if not already saved."""
-        if merge_method in cls._saved_methods:
-            logger.debug(f"Merge method {merge_method} already saved in this run, skipping...")
-            return
-
-        try:
-            if not hasattr(class_obj, merge_method):
-                raise AttributeError(f"Method '{merge_method}' not found in class {class_obj.__name__}")
-
-            # Determine log directory
-            log_dir = Path(os.getcwd()) if "HydraConfig" not in globals() else Path(
-                HydraConfig.get().runtime.output_dir)
-            merge_code_dir = log_dir / "merge_methods"
-            os.makedirs(merge_code_dir, exist_ok=True)
-
-            # Get the complete source code including dependencies
-            full_source = cls.get_full_method_source(merge_method, class_obj)
-            if not full_source.strip():
-                logger.warning(f"Source code for merge method '{merge_method}' is empty.")
-                return
-
-            # Dedent and clean the source code to ensure consistent formatting
-            full_source_cleaned = textwrap.dedent(full_source)
-
-            # Save the merge method code
-            iteration_file_name = model_path.stem
-            code_file_path = merge_code_dir / f"{iteration_file_name}_merge_method.py"
-
-            with open(code_file_path, "w", encoding="utf-8") as f:
-                f.write(f"# Merge method: {merge_method}\n")
-                f.write(f"# Used in merge: {iteration_file_name}\n")
-                f.write("# This file includes the main merge method and all its dependencies\n\n")
-                f.write(full_source_cleaned)
-
-            logger.info(f"Saved merge method code to {code_file_path}")
-            cls._saved_methods.add(merge_method)
-
-        except Exception as e:
-            logger.error(f"Failed to save merge method code: {e}")
-            raise
-
-
-### Add keys to models
-def add_extra_keys(
-    model_path: Path
-) -> None:
-    """Loads a model, adds 'v_pred' and 'ztsnr' keys with empty tensors to its state dictionary, and saves it.
-
-    Args:
-        model_path: Path to the merged model file.
-        cfg: The project configuration.
-    """
-    state_dict = safetensors.torch.load_file(model_path)
-    state_dict["v_pred"] = torch.tensor([])
-    state_dict["ztsnr"] = torch.tensor([])
-    logger.info("Added 'v_pred' and 'ztsnr' keys to state_dict.")
-    safetensors.torch.save_file(state_dict, model_path)
-    logger.info(f"Saved model with additional keys to: {model_path}")
-
-
-### Layer tuning
+####################
+### Layer tuning ###
+####################
 # --- Constants for Color Adjustments ---
 COLS = [[-1, 1 / 3, 2 / 3], [1, 1, 0], [0, -1, -1], [1, 0, 1]]
 COLSXL = [[0, 0, 1], [1, 0, 0], [-1, -1, 0], [-1, 1, 0]]

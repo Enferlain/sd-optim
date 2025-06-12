@@ -762,20 +762,22 @@ class Merger:
             # Re-raise the exception to signal failure to the optimizer
             raise
 
-    def _save_recipe_etc(self, final_recipe_node: recipe_nodes.RecipeNode, model_path: Path):
-        """Handles optional saving of recipe, code, and adding extra keys."""
+    # This is our conductor function, now correctly implemented.
+    def _save_recipe_etc(self, final_recipe_node: recipe_nodes.RecipeNode, model_path: Path, iteration: int):
+        """
+        Handles optional saving of artifacts by calling specialized functions.
+        """
         try:
+            # --- Step 1: ALWAYS save the mandatory .mecha recipe ---
             self._serialize_and_save_recipe(final_recipe_node, model_path)
 
-            if self.cfg.get("save_merge_method_code", False):
-                # Assuming MergeMethods is accessible and methods are decorated
-                utils.MergeMethodCodeSaver.save_merge_method_code(self.cfg.merge_method, model_path)
+            # --- Step 2: OPTIONALLY save the new runnable script ---
+            # We add a new config option for this to keep it separate.
+            if self.cfg.get("save_merge_artifacts", False):
+                utils.save_merge_artifacts(self.cfg, self, final_recipe_node, model_path, iteration)
 
-            # Add extra keys only if the option is enabled
-            # if self.cfg.get("add_extra_keys", False):
-            # utils.add_extra_keys(model_path)
         except Exception as e:
-            logger.error(f"Error during post-merge saving operations: {e}")
+            logger.error(f"Error during post-merge saving operations: {e}", exc_info=True)
 
     # V1.1 - Accepts param_info metadata
     def merge(
@@ -835,7 +837,7 @@ class Merger:
         # --- End Recipe Building ---
 
         # 9. Optional steps (save recipe, code, add keys)
-        self._save_recipe_etc(final_recipe_node, model_path)
+        self._save_recipe_etc(final_recipe_node, model_path, iteration)
 
         # 10. Execute the final recipe (includes fallback logic)
         self._execute_recipe(final_recipe_node, model_path)
@@ -918,7 +920,7 @@ class Merger:
 
         # --- Step 4: Execute and Save ---
         model_path = self.output_file
-        self._save_recipe_etc(final_recipe_node, model_path)
+        self._save_recipe_etc(final_recipe_node, model_path, iteration)
         self._execute_recipe(final_recipe_node, model_path)
 
         logger.info(f"Recipe optimization completed. Output: {model_path}")

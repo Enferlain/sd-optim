@@ -2824,34 +2824,38 @@ class MergeMethods:
         if device is None:
             device = x.device
 
-        # Get dimensions
         out_dim = x.shape[0]
 
-        # Determine butterfly factorization parameters (with safety checks)
+        # --- This is the corrected structure ---
         try:
+            # Attempt the butterfly factorization path completely within the try block.
+
             block_size, block_num = MergeMethods.butterfly_factor(out_dim, lora_dim)
             boft_m = sum(int(i) for i in f"{block_num - 1:b}") + 1
-            use_butterfly = True
-        except Exception as e:
-            print(f"Falling back to QR for dimension {out_dim}: {str(e)}")
-            use_butterfly = False
 
-        if not use_butterfly:
-            # Proper QR fallback that returns orthogonal basis
+            # If all parameters are calculated successfully, proceed.
+            oft_blocks = MergeMethods.initialize_butterfly_blocks(x, boft_m, block_num, block_size, device)
+
+            # The return for the happy path is INSIDE the try block.
+            return MergeMethods.apply_butterfly_transform(x, oft_blocks, boft_m, block_size, block_num, constraint,
+                                                          device)
+
+        except Exception as e:
+            # If ANYTHING in the try block fails, we land here.
+            print(
+                f"Butterfly factorization failed for dimension {out_dim}, falling back to QR decomposition. Error: {e}")
+
+            # The entire fallback logic is now INSIDE the except block.
+            # This guarantees it only runs on failure and doesn't use unassigned variables.
             Q, _ = torch.linalg.qr(x, mode='reduced')
-            # Apply constraint if needed
+
             if constraint > 0:
                 Q_norm = torch.norm(Q)
                 constraint_value = constraint * x.shape[0]
                 if Q_norm > constraint_value:
                     Q = Q * constraint_value / Q_norm
+
             return Q
-
-        # Initialize butterfly blocks
-        oft_blocks = MergeMethods.initialize_butterfly_blocks(x, boft_m, block_num, block_size, device)
-
-        # Apply butterfly orthogonalization
-        return MergeMethods.apply_butterfly_transform(x, oft_blocks, boft_m, block_size, block_num, constraint, device)
 
     @staticmethod
     def butterfly_factor(dimension: int, factor: int = -1) -> tuple[int, int]:

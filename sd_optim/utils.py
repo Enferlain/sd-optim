@@ -28,8 +28,6 @@ from pathlib import Path
 from typing import List, Tuple, TypeVar, Dict, Set, Union, Any, ClassVar, Optional, MutableMapping, Mapping
 from dataclasses import field, dataclass
 
-from sd_mecha import recipe_nodes
-from torch import Tensor
 
 from hydra.core.hydra_config import HydraConfig
 from omegaconf import DictConfig, ListConfig
@@ -37,6 +35,7 @@ from pynput import keyboard
 from copy import deepcopy
 
 from sd_optim.merge_methods import MergeMethods
+from sd_mecha import recipe_nodes
 from sd_mecha.extensions import model_configs, merge_methods
 from sd_mecha.extensions.merge_methods import merge_method, Parameter, Return, StateDict, T, MergeMethod
 from sd_mecha.streaming import StateDictKeyError
@@ -343,9 +342,221 @@ def get_info_from_target_node(root_node: recipe_nodes.RecipeNode, target_node_re
     }
 
 
-#####################
-### MM code saver ###
-#####################
+#######################
+### Save Artifacts  ###
+#######################
+# THIS SEQUENCE NEEDS WORK
+def save_merge_artifacts(
+        cfg: DictConfig,
+        merger: 'Merger',
+        final_recipe_node: recipe_nodes.RecipeNode,
+        model_path: Path,
+        iteration: int
+):
+    """
+    Creates a single, self-contained, and executable Python script that documents
+    and can reproduce a merge iteration, including all embedded custom components.
+    """
+    try:
+        log_dir = Path(HydraConfig.get().runtime.output_dir)
+        # Using the name we agreed on!
+        scripts_dir = log_dir / "merge_artifacts"
+        scripts_dir.mkdir(parents=True, exist_ok=True)
+        script_file_path = scripts_dir / f"{model_path.stem}_run.py"
+
+        # --- Step 1: Find all custom components using our smarter visitor ---
+        finder = ComponentFinder()
+        final_recipe_node.accept(finder)
+
+        # Now finder has `custom_configs`, `custom_converters`, and `custom_methods` populated.
+
+        # --- Step 2: Bundle all the environment artifacts we found ---
+        embedded_yamls = _bundle_yaml_configs(finder.custom_configs, cfg)
+        embedded_converters = _bundle_python_converters(finder.custom_converters | finder.custom_methods)
+
+        # --- Step 3: Get the source for the *main* custom merge method, if it exists ---
+        # This is for the human-readable section at the top of the script.
+        # We'll just grab the first one from the set for now.
+        method_source_code = "# No primary custom merge method identified."
+        if finder.custom_methods:
+            main_method_name = next(iter(finder.custom_methods))
+            method_source_code = MergeMethodCodeSaver.get_full_method_source(
+                main_method_name, MergeMethods, model_path
+            )
+        else:
+            # If no main custom method, maybe log the recipe's top-level method
+            if isinstance(final_recipe_node, recipe_nodes.MergeRecipeNode):
+                method_name = final_recipe_node.merge_method.identifier
+                method_source_code = f"# Top-level merge method was a built-in: {method_name}"
+
+        # --- Step 4: Transpile the recipe object to code ---
+        recipe_str = sd_mecha.serialize(final_recipe_node)
+        converter = MechaToPythonConverter(recipe_str)
+        transpiled_recipe_body = converter.convert()
+
+        # --- Step 5: Assemble the final script using the template ---
+        # We pass all the collected artifacts to the template.
+        final_script_content = _create_unified_script_template(
+            cfg, merger, model_path.name, iteration,
+            method_source_code, transpiled_recipe_body,
+            embedded_yamls, embedded_converters
+        )
+
+        with open(script_file_path, "w", encoding="utf-8") as f:
+            f.write(final_script_content)
+        logger.info(f"Saved complete runnable script to: {script_file_path}")
+
+    except Exception as e:
+        logger.error(f"Failed to save runnable script: {e}", exc_info=True)
+
+
+def _bundle_yaml_configs(config_names: Set[str], cfg: DictConfig) -> Dict[str, str]:
+    """Finds YAML source files and reads their content."""
+    embedded_yamls = {}
+    configs_dir = Path(cfg.configs_dir)
+    if not configs_dir.is_dir():
+        logger.warning(f"Custom configs directory not found: {configs_dir}")
+        return {}
+
+    for name in config_names:
+        config_file_path = configs_dir / f"{name}.yaml"
+        if config_file_path.exists():
+            embedded_yamls[name] = config_file_path.read_text(encoding="utf-8")
+        else:
+            logger.warning(f"Could not find source file for custom config: {name}")
+    return embedded_yamls
+
+
+def _bundle_python_converters(method_names: Set[str]) -> Dict[str, str]:
+    """Finds functions in memory and extracts their source code."""
+    embedded_code = {}
+    for name in method_names:
+        try:
+            method_obj = sd_mecha.extensions.merge_methods.resolve(name)
+            # We get the source of the original function, before decorators
+            source_code = inspect.getsource(method_obj.__wrapped__)
+
+            # Reconstruct the decorator to ensure it's correct
+            decorator = f'@merge_method(identifier="{name}"'
+            if getattr(method_obj, 'is_conversion', False):
+                decorator += ', is_conversion=True'
+            decorator += ')\n'
+
+            embedded_code[name] = decorator + textwrap.dedent(source_code)
+        except Exception as e:
+            logger.warning(f"Could not find source for custom method/converter '{name}': {e}")
+    return embedded_code
+
+
+# --- This is the corrected template function ---
+def _create_unified_script_template(
+        cfg: DictConfig,
+        merger: 'Merger', # fake warning
+        output_filename: str,
+        iteration: int,
+        method_source: str,
+        transpiled_recipe: str,
+        embedded_yamls: Dict[str, str],
+        embedded_converters: Dict[str, str]
+) -> str:
+    """The new template that correctly embeds all code and artifacts."""
+    models_dir_str = str(merger.models_dir.resolve())
+    merge_device = cfg.get("device", "cpu")
+    merge_dtype_str = f"torch.{cfg.get('merge_dtype', 'float64')}"
+    save_dtype_str = f"torch.{cfg.get('save_dtype', 'float16')}"
+
+    # Use repr() to safely escape the strings for embedding
+    embedded_yamls_str = repr(embedded_yamls)
+    embedded_converters_str = repr(embedded_converters)
+
+    # THE FIX IS HERE: We no longer wrap method_source in a """...""" docstring.
+    # We just indent it so it becomes part of the script's executable code.
+    return f'''
+# =================================================================
+#  Auto-generated by sd-optim for Full Reproducibility
+#  Iteration: {iteration} 
+#  Output Model: {output_filename}
+# =================================================================
+
+import sd_mecha
+import torch
+import yaml
+import inspect
+import textwrap
+from pathlib import Path
+from torch import Tensor
+from sd_mecha import Parameter, Return, merge_method
+
+# --- Configuration from the original run ---
+MODELS_DIR = r"{models_dir_str}"
+OUTPUT_FILENAME = "{output_filename.replace(".safetensors", "_rerun.safetensors")}"
+MERGE_DEVICE = "{merge_device}"
+MERGE_DTYPE = {merge_dtype_str}
+SAVE_DTYPE = {save_dtype_str}
+
+# -----------------------------------------------------------------
+#  Embedded Environment Artifacts
+# -----------------------------------------------------------------
+EMBEDDED_YAML_CONFIGS = {embedded_yamls_str}
+EMBEDDED_PYTHON_CONVERTERS = {embedded_converters_str}
+
+# -----------------------------------------------------------------
+#  Embedded Custom Merge Method Source
+# -----------------------------------------------------------------
+# The following code is executed to define the custom merge method in this script's scope.
+{textwrap.indent(method_source, "")}
+
+# -----------------------------------------------------------------
+#  Setup Function to Recreate the Environment
+# -----------------------------------------------------------------
+def setup_environment():
+    """Parses and registers the embedded artifacts with sd-mecha at runtime."""
+    print("--- Setting up custom environment ---")
+
+    for name, yaml_str in EMBEDDED_YAML_CONFIGS.items():
+        print(f"Registering config: {{name}}")
+        config_data = yaml.safe_load(yaml_str)
+        sd_mecha.extensions.model_configs.register_aux(
+            sd_mecha.extensions.model_configs.ModelConfigImpl(**config_data)
+        )
+
+    for name, code_str in EMBEDDED_PYTHON_CONVERTERS.items():
+        print(f"Registering converter/method: {{name}}")
+        exec(code_str, globals())
+
+    print("--- Custom environment setup complete ---")
+
+# -----------------------------------------------------------------
+#  Transpiled sd-mecha Recipe
+# -----------------------------------------------------------------
+def get_recipe() -> sd_mecha.RecipeNode:
+    """This function contains the transpiled .mecha recipe."""
+{textwrap.indent(transpiled_recipe, "    ")}
+    return final_recipe
+
+# -----------------------------------------------------------------
+#  Main Execution Block
+# -----------------------------------------------------------------
+def main():
+    setup_environment()
+    recipe_to_run = get_recipe()
+    output_path = Path(MODELS_DIR) / OUTPUT_FILENAME
+
+    print(f"Executing merge and saving to {{output_path}}...")
+    sd_mecha.merge(
+        recipe_to_run,
+        output=output_path,
+        merge_device=MERGE_DEVICE,
+        merge_dtype=MERGE_DTYPE,
+        output_dtype=SAVE_DTYPE,
+        model_dirs=[MODELS_DIR],
+    )
+    print("\\nMerge complete!")
+
+if __name__ == "__main__":
+    main()
+'''
+
 class _CodeParser(ast.NodeVisitor):
     """An AST visitor to find all names used and local methods called within a function's AST."""
 
@@ -429,169 +640,243 @@ class MergeMethodCodeSaver:
                 cls._source_cache[method_name] = f"# Could not retrieve source for {method_name}\n"
         return cls._source_cache[method_name]
 
+
     @classmethod
-    def save_merge_method_code(cls, merge_method_name: str, model_path: Path):
+    def get_full_method_source(cls, merge_method_name: str, class_obj: Any, model_path: Path) -> str:
         """
-        Saves the source code for the given merge method, including all relevant
-        local helper functions and necessary imports, to a file.
+        Analyzes a method and its dependencies, returning a single string
+        containing all necessary imports and source code.
         """
-        try:
-            class_obj = MergeMethods
-            if not hasattr(class_obj, merge_method_name):
-                logger.debug(f"Method '{merge_method_name}' not found in local MergeMethods. Assuming it's a built-in.")
-                return
+        if not hasattr(class_obj, merge_method_name):
+            return f"# Method '{merge_method_name}' not found in {class_obj.__name__}."
 
-            # Step 1: Find all dependencies (target method + helpers)
-            dependencies = cls._get_method_dependencies(merge_method_name, class_obj)
-            all_methods_to_save = {merge_method_name} | dependencies
+        # Step 1: Find all function dependencies recursively.
+        dependencies = cls._get_method_dependencies(merge_method_name, class_obj)
+        all_methods_to_save = {merge_method_name} | dependencies
 
-            # Step 2: Get the source code and analyze the AST for all needed functions
-            all_used_names = set()
-            all_source_code = {}
-            all_local_method_names = {name for name, _ in inspect.getmembers(class_obj, inspect.isfunction)}
+        # Step 2: Get the source code for all needed functions and parse their ASTs
+        # to find out what names (e.g., 'torch', 'rankdata') they use.
+        all_used_names = set()
+        all_source_code = {}
+        all_local_method_names = {name for name, _ in inspect.getmembers(class_obj, inspect.isfunction)}
 
-            for method_name in all_methods_to_save:
-                source = cls._get_source(method_name, class_obj)
-                all_source_code[method_name] = source
+        for method_name in all_methods_to_save:
+            source = cls._get_source(method_name, class_obj)
+            all_source_code[method_name] = source
+            try:
                 tree = ast.parse(source)
                 parser = _CodeParser(all_local_method_names)
                 parser.visit(tree)
                 all_used_names.update(parser.used_names)
+            except SyntaxError:
+                logger.warning(f"Could not parse AST for method '{method_name}'. Import filtering may be incomplete.")
 
-            # Step 3: Find all imports in the source file and filter them
+        # Step 3: Parse the entire source file to find all possible imports.
+        relevant_imports = []
+        try:
             source_file_path = inspect.getfile(class_obj)
             with open(source_file_path, 'r', encoding='utf-8') as f:
                 file_source = f.read()
-
             file_tree = ast.parse(file_source)
-            relevant_imports = []
-            # We iterate through the top-level body of the module, which is where imports live.
-            for node in file_tree.body:
+
+            # Walk through the AST of the whole file...
+            for node in ast.walk(file_tree):
                 if isinstance(node, (ast.Import, ast.ImportFrom)):
-                    # Check if this import statement defines any name we actually use
                     is_relevant = False
                     for alias in node.names:
-                        # Check the imported name (e.g., 'torch') or its alias (e.g., 't')
                         if (alias.asname or alias.name) in all_used_names:
                             is_relevant = True
                             break
                     if is_relevant:
-                        # ast.unparse correctly takes ast.Import or ast.ImportFrom nodes
-                        relevant_imports.append(ast.unparse(node))  # Fake complaint
-
-            # Step 4: Assemble the final script
-            output_lines = [
-                f"# Merge Method: {merge_method_name}",
-                f"# Source generated for model: {model_path.name}",
-                "# ---------------------------------------------------\n",
-                "# Relevant Imports",
-                *sorted(list(set(relevant_imports))),
-                "\n# ---------------------------------------------------\n",
-                "# Helper Functions (Dependencies)\n"
-            ]
-
-            # Add dependencies first (everything except the main method)
-            for method_name in sorted(list(dependencies)):
-                output_lines.append(all_source_code[method_name])
-                output_lines.append("\n")
-
-            # Add the main method last
-            output_lines.extend([
-                "# Main Merge Method\n",
-                all_source_code[merge_method_name]
-            ])
-
-            final_script = "\n".join(output_lines)
-
-            # Step 5: Save the file
-            log_dir = Path(HydraConfig.get().runtime.output_dir)
-            code_dir = log_dir / "merge_methods"
-            code_dir.mkdir(exist_ok=True, parents=True)
-
-            code_file_path = code_dir / f"{model_path.stem}_method.py"
-            with open(code_file_path, "w", encoding="utf-8") as f:
-                f.write(final_script)
-
-            logger.info(f"Saved self-contained merge method script to: {code_file_path}")
-
+                        # If it's relevant, add the line of code to our list.
+                        relevant_imports.append(ast.unparse(node))  # fake alert
         except Exception as e:
-            logger.error(f"Failed to save merge method code for '{merge_method_name}': {e}", exc_info=True)
+            logger.error(f"Could not automatically parse imports: {e}")
+            relevant_imports = ["# ERROR: Could not parse imports automatically. Please add them manually."]
+
+        # Step 4: Assemble the final script string with all the parts.
+        output_lines = [
+            f"# Merge Method: {merge_method_name}",
+            f"# Source generated for model: {model_path.name}",
+            "\n# --- Relevant Imports ---",
+            *sorted(list(set(relevant_imports))),  # Use set to ensure unique imports
+            "\n# --- Helper Functions (Dependencies) ---\n"
+        ]
+
+        # Add the source code for all helper functions.
+        for method_name in sorted(list(dependencies)):
+            output_lines.append(all_source_code[method_name])
+            output_lines.append("\n")
+
+        # Add the source code for the main method last.
+        output_lines.extend([
+            "# --- Main Merge Method ---\n",
+            all_source_code[merge_method_name]
+        ])
+
+        return "\n".join(output_lines)
 
 
-#############################
-### Recipe to python code ###
-#############################
 class MechaToPythonConverter:
+    """
+    Translates (trans-piles) a .mecha recipe string into a syntactically correct,
+    standalone Python script that uses the sd-mecha API.
+    """
+
     def __init__(self, recipe_str: str):
-        # We start with the full, correct recipe string
-        self.mecha_lines = recipe_str.strip().split('\n')[1:]  # Skip version
+        self.mecha_lines = recipe_str.strip().split('\n')[1:]
         self.python_lines = []
 
     def convert(self) -> str:
-        # Loop through each line of the .mecha recipe
         for i, line in enumerate(self.mecha_lines):
-            # Parse the command (e.g., 'model', 'dict', 'merge')
-            parts = line.split()
+            var_name = f"var_{i}"
+            parts = self._parse_line(line)
             command = parts[0]
 
-            # The variable name for this line will be var_i
-            var_name = f"var_{i}"
+            python_line = f"# Original: {line}"
 
-            if command == "model":
-                # e.g., model "path/to/model.safetensors" ...
-                # We need to extract the path and other kwargs
-                path_str = parts[1]
-                kwargs_str = " ".join(parts[2:])
-                python_line = f'{var_name} = sd_mecha.model({path_str}, {kwargs_str})'
-                self.python_lines.append(python_line)
+            # --- This logic is now much smarter ---
+            if command in ["model", "literal", "dict"]:
+                args, kwargs = self._extract_args_kwargs(parts[1:])
+                # Remap all references in both args and kwargs
+                remapped_args = [self._remap_ref(arg) for arg in args]
+                remapped_kwargs = {k: self._remap_ref(v) for k, v in kwargs.items()}
 
-            elif command == "dict":
-                # e.g., dict key1=val1 key2=val2 ...
-                params_str = " ".join(parts[1:])
-                python_line = f'{var_name} = dict({params_str})'
-                self.python_lines.append(python_line)
+                # Build the final call string
+                call_args = ", ".join(remapped_args)
+                if remapped_kwargs:
+                    if call_args: call_args += ", "
+                    call_args += ", ".join(f"{k}={v}" for k, v in remapped_kwargs.items())
 
-            elif command == "literal":
-                # e.g., literal &2 model_config="sdxl-sgm"
-                ref = self._remap_ref(parts[1])
-                kwargs_str = " ".join(self._remap_refs_in_parts(parts[2:]))
-                python_line = f'{var_name} = sd_mecha.literal({ref}, {kwargs_str})'
-                self.python_lines.append(python_line)
+                python_line += f'\n{var_name} = sd_mecha.{command}({call_args})'
 
             elif command == "merge":
-                # e.g., merge "fallback" &3 &6
+                # Sanitize the method name by removing quotes
                 method_name = parts[1].strip('"')
 
-                # Remap all arguments
-                args_and_kwargs = self._remap_refs_in_parts(parts[2:])
+                args, kwargs = self._extract_args_kwargs(parts[2:])
+                remapped_args = [self._remap_ref(arg) for arg in args]
+                remapped_kwargs = {k: self._remap_ref(v) for k, v in kwargs.items()}
 
-                python_line = f'{var_name} = sd_mecha.{method_name}({", ".join(args_and_kwargs)})'
-                self.python_lines.append(python_line)
+                call_args = ", ".join(remapped_args)
+                if remapped_kwargs:
+                    if call_args: call_args += ", "
+                    call_args += ", ".join(f"{k}={v}" for k, v in remapped_kwargs.items())
 
-        # The last line's variable holds the final recipe node
+                python_line += f'\n{var_name} = sd_mecha.{method_name}({call_args})'
+
+            else:
+                python_line += f'\n# SKIPPED UNKNOWN COMMAND: {line}'
+
+            self.python_lines.append(python_line)
+
         final_var_name = f"var_{len(self.mecha_lines) - 1}"
         self.python_lines.append(f"\n# The final recipe is held in this variable")
         self.python_lines.append(f"final_recipe = {final_var_name}")
 
-        return "\n".join(self.python_lines)
+        return "\n\n".join(self.python_lines)
 
-    def _remap_ref(self, ref_str: str) -> str:
-        """Converts a &N reference to a var_N variable name."""
-        if ref_str.startswith('&'):
-            index = int(ref_str[1:])
-            return f"var_{index}"
-        return ref_str  # It's a literal value
+    def _parse_line(self, line: str) -> List[str]:
+        """A simple parser that respects quotes."""
+        return re.findall(r'"[^"]*"|\S+', line)
 
-    def _remap_refs_in_parts(self, parts: List[str]) -> List[str]:
-        """Remaps all references in a list of arguments."""
-        remapped_parts = []
+    def _extract_args_kwargs(self, parts: List[str]) -> Tuple[List[str], Dict[str, str]]:
+        """Separates a list of parts into positional and keyword arguments."""
+        args = []
+        kwargs = {}
         for part in parts:
             if "=" in part:
                 key, val = part.split('=', 1)
-                remapped_parts.append(f"{key}={self._remap_ref(val)}")
+                kwargs[key] = val
             else:
-                remapped_parts.append(self._remap_ref(part))
-        return remapped_parts
+                args.append(part)
+        return args, kwargs
+
+    def _remap_ref(self, ref_str: str) -> str:
+        """Converts a '&N' reference to a 'var_N' variable name."""
+        if ref_str.startswith('&') and ref_str[1:].isdigit():
+            index = int(ref_str[1:])
+            return f"var_{index}"
+        # Return the original string (it might be a literal number or a quoted string)
+        return ref_str
+
+
+class ComponentFinder(recipe_nodes.RecipeVisitor):
+    def __init__(self):
+        self.custom_configs = set()
+        self.custom_converters = set()
+        self.custom_methods = set()  # <-- ADDED: A new set for our main methods!
+        self.visited = set()
+
+        try:
+            import sd_mecha
+            self.sd_mecha_path = Path(inspect.getfile(sd_mecha)).parent
+        except Exception:
+            self.sd_mecha_path = None
+
+        try:
+            import sd_optim
+            self.our_project_path = Path(inspect.getfile(sd_optim)).parent
+        except Exception:
+            self.our_project_path = Path.cwd()
+
+    def visit(self, node):
+        if node in self.visited: return
+        self.visited.add(node)
+        node.accept(self)
+
+    def visit_merge(self, node: recipe_nodes.MergeRecipeNode):
+        method_obj = node.merge_method
+
+        try:
+            method_file = Path(inspect.getfile(method_obj.__wrapped__)).resolve()
+
+            # Check if the method is ours
+            if self.our_project_path in method_file.parents and \
+                    (self.sd_mecha_path is None or self.sd_mecha_path not in method_file.parents):
+
+                # Now we check the flag that the @merge_method decorator sets.
+                if getattr(method_obj, 'is_conversion', False):
+                    logger.debug(f"Identified our custom converter: {method_obj.identifier}")
+                    self.custom_converters.add(method_obj.identifier)
+                else:
+                    logger.debug(f"Identified our custom merge method: {method_obj.identifier}")
+                    self.custom_methods.add(method_obj.identifier)
+
+        except (TypeError, OSError):
+            pass  # This is a built-in, ignore it.
+
+        # Continue traversal
+        for arg in node.args: arg.accept(self)
+        for kwarg in node.kwargs.values(): kwarg.accept(self)
+
+    # visit_model and visit_literal remain the same.
+    def visit_model(self, node: recipe_nodes.ModelRecipeNode):
+        # We can make this check more robust too.
+        try:
+            # We assume aux configs are ours.
+            # This requires sd-mecha's registry to be populated.
+            all_base_configs = {c.identifier for c in sd_mecha.extensions.model_configs.get_all_base()}
+            if node.model_config and node.model_config.identifier not in all_base_configs:
+                self.custom_configs.add(node.model_config.identifier)
+        except Exception:
+            # Fallback if registry isn't ready
+            if node.model_config and "sd1" not in node.model_config.identifier and "sdxl" not in node.model_config.identifier:
+                self.custom_configs.add(node.model_config.identifier)
+
+    def visit_literal(self, node: recipe_nodes.LiteralRecipeNode):
+        # same logic as visit_model
+        try:
+            all_base_configs = {c.identifier for c in sd_mecha.extensions.model_configs.get_all_base()}
+            if node.model_config and node.model_config.identifier not in all_base_configs:
+                self.custom_configs.add(node.model_config.identifier)
+        except Exception:
+            if node.model_config and "sd1" not in node.model_config.identifier and "sdxl" not in node.model_config.identifier:
+                self.custom_configs.add(node.model_config.identifier)
+        if isinstance(node.value, dict):
+            for v in node.value.values():
+                if isinstance(v, recipe_nodes.RecipeNode):
+                    v.accept(self)
 
 
 #############################

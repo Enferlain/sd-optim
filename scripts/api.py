@@ -2,12 +2,12 @@
 
 import logging
 import os
-import requests # Keep requests for Swarm
+import requests  # Keep requests for Swarm
 
 # FastAPI imports
 from fastapi import FastAPI, Body, HTTPException, Query
 # Pydantic for request body validation
-from pydantic import BaseModel, Field # Field helps with validation/defaults
+from pydantic import BaseModel, Field  # Field helps with validation/defaults
 from typing import Optional
 
 # --- Conditional WebUI Imports ---
@@ -17,21 +17,26 @@ try:
     # Forge specific imports (confirm these are correct for your version)
     from modules_forge import main_entry
     from backend import memory_management
+
     A1111_FORGE_AVAILABLE = True
-    logger = logging.getLogger(__name__) # Get logger AFTER potential module import
+    logger = logging.getLogger(__name__)  # Get logger AFTER potential module import
     logger.info("A1111/Forge environment detected. API endpoints enabled.")
 except ImportError:
     A1111_FORGE_AVAILABLE = False
     # Define logger even if outside environment for consistency
     logger = logging.getLogger(__name__)
     logger.warning("Not running in A1111/Forge context. API endpoints will be inactive.")
+
     # Define dummy objects if absolutely needed for code analysis, but better to check the flag
-    class DummyShared: device = "cpu"; state = None # Add state if needed
+    class DummyShared:
+        device = "cpu"; state = None  # Add state if needed
+
     shared = DummyShared()
-    script_callbacks = None # Explicitly None
+    script_callbacks = None  # Explicitly None
 
 # Configure logger (can be basic here, Forge might override)
 logging.basicConfig(level=logging.INFO)
+
 
 # --- Pydantic Model for Load Request Body ---
 class LoadModelPayload(BaseModel):
@@ -39,6 +44,7 @@ class LoadModelPayload(BaseModel):
     webui: str = Field(..., title="Target WebUI type (a1111, forge, swarm)")
     # target_url is only needed for Swarm, make it optional
     target_url: Optional[str] = Field(None, title="Target URL (required for Swarm)")
+
 
 # --- Main Callback Function for Registration ---
 def sd_optim_api_setup(_gui_unused, app: FastAPI):
@@ -48,7 +54,7 @@ def sd_optim_api_setup(_gui_unused, app: FastAPI):
     """
     if not A1111_FORGE_AVAILABLE:
         logger.warning("A1111/Forge modules not loaded. Skipping API route registration.")
-        return # Don't register routes if environment isn't right
+        return  # Don't register routes if environment isn't right
 
     logger.info("Registering sd-optim API endpoints...")
 
@@ -75,21 +81,21 @@ def sd_optim_api_setup(_gui_unused, app: FastAPI):
                 # Set parameters for Forge loading
                 # Ensure model_data exists and has forge_loading_parameters attribute
                 if hasattr(sd_models, 'model_data') and hasattr(sd_models.model_data, 'forge_loading_parameters'):
-                     sd_models.model_data.forge_loading_parameters = {
-                         "checkpoint_info": checkpoint_info,
-                         "additional_modules": [] # Add other modules if needed
-                     }
-                     # Trigger the actual reload mechanism in Forge
-                     sd_models.forge_model_reload()
-                     # Update UI elements if necessary (e.g., dropdowns)
-                     if hasattr(main_entry, 'checkpoint_change'):
-                          main_entry.checkpoint_change(os.path.basename(payload.model_path))
-                     else:
-                          logger.warning("main_entry.checkpoint_change not found.")
-                     logger.info(f"Forge: Loaded model '{os.path.basename(payload.model_path)}'")
+                    sd_models.model_data.forge_loading_parameters = {
+                        "checkpoint_info": checkpoint_info,
+                        "additional_modules": []  # Add other modules if needed
+                    }
+                    # Trigger the actual reload mechanism in Forge
+                    sd_models.forge_model_reload()
+                    # Update UI elements if necessary (e.g., dropdowns)
+                    if hasattr(main_entry, 'checkpoint_change'):
+                        main_entry.checkpoint_change(os.path.basename(payload.model_path))
+                    else:
+                        logger.warning("main_entry.checkpoint_change not found.")
+                    logger.info(f"Forge: Loaded model '{os.path.basename(payload.model_path)}'")
                 else:
-                     logger.error("Forge loading structures (sd_models.model_data.forge_loading_parameters) not found.")
-                     raise RuntimeError("Forge environment setup appears incorrect.")
+                    logger.error("Forge loading structures (sd_models.model_data.forge_loading_parameters) not found.")
+                    raise RuntimeError("Forge environment setup appears incorrect.")
                 # --- End Forge Logic ---
 
             elif webui_lower == "swarm":
@@ -97,8 +103,8 @@ def sd_optim_api_setup(_gui_unused, app: FastAPI):
                 if not payload.target_url:
                     raise HTTPException(status_code=400, detail="target_url is required in request body for SwarmUI.")
                 target_url = payload.target_url
-                api_url = f"{target_url.rstrip('/')}/API/SelectModel" # Ensure no double slash
-                model_name = os.path.basename(payload.model_path) # Swarm likely uses name
+                api_url = f"{target_url.rstrip('/')}/API/SelectModel"  # Ensure no double slash
+                model_name = os.path.basename(payload.model_path)  # Swarm likely uses name
                 logger.debug(f"Sending load request to Swarm: URL='{api_url}', Model='{model_name}'")
                 try:
                     # Get new session ID (synchronous requests for simplicity here)
@@ -109,16 +115,16 @@ def sd_optim_api_setup(_gui_unused, app: FastAPI):
 
                     # Send SelectModel request
                     request_payload = {"session_id": session_id, "model": model_name}
-                    response = requests.post(api_url, json=request_payload, timeout=30) # Longer timeout for load
-                    response.raise_for_status() # Check for HTTP errors
+                    response = requests.post(api_url, json=request_payload, timeout=30)  # Longer timeout for load
+                    response.raise_for_status()  # Check for HTTP errors
                     # Check response content if Swarm provides confirmation
                     logger.info(f"SwarmUI: Sent SelectModel request for '{model_name}'")
                 except requests.exceptions.RequestException as req_err:
                     logger.error(f"Failed to communicate with SwarmUI at {target_url}: {req_err}")
                     raise HTTPException(status_code=502, detail=f"Failed to contact SwarmUI: {req_err}")
                 except Exception as swarm_e:
-                     logger.error(f"Error during Swarm load request: {swarm_e}")
-                     raise HTTPException(status_code=500, detail=f"Swarm request failed: {swarm_e}")
+                    logger.error(f"Error during Swarm load request: {swarm_e}")
+                    raise HTTPException(status_code=500, detail=f"Swarm request failed: {swarm_e}")
                 # --- End Swarm Logic ---
 
             elif webui_lower == "comfy":
@@ -128,10 +134,11 @@ def sd_optim_api_setup(_gui_unused, app: FastAPI):
                 raise HTTPException(status_code=400, detail=f"Invalid WebUI type specified: {payload.webui}")
 
             # If successful up to here
-            return {"message": f"Model load request processed for {payload.webui} / {os.path.basename(payload.model_path)}"}
+            return {
+                "message": f"Model load request processed for {payload.webui} / {os.path.basename(payload.model_path)}"}
 
         except HTTPException as http_err:
-             raise http_err # Re-raise specific HTTP errors
+            raise http_err  # Re-raise specific HTTP errors
         except Exception as e:
             # Catch any other unexpected errors during load process
             logger.error(f"Error processing load model request: {e}", exc_info=True)
@@ -155,7 +162,7 @@ def sd_optim_api_setup(_gui_unused, app: FastAPI):
                     sd_models.unload_model_weights()
                     logger.info("A1111: Unloaded model weights.")
                 else:
-                     logger.warning("sd_models.unload_model_weights not found.")
+                    logger.warning("sd_models.unload_model_weights not found.")
                 # --- End A1111 Logic ---
 
             elif webui_lower == "forge":
@@ -185,15 +192,15 @@ def sd_optim_api_setup(_gui_unused, app: FastAPI):
 
                     # Send FreeBackendMemory request
                     request_payload = {"session_id": session_id, "system_ram": False, "backend": "all"}
-                    response = requests.post(api_url, json=request_payload, timeout=20) # Slightly longer timeout
+                    response = requests.post(api_url, json=request_payload, timeout=20)  # Slightly longer timeout
                     response.raise_for_status()
                     logger.info("SwarmUI: Sent FreeBackendMemory request.")
                 except requests.exceptions.RequestException as req_err:
                     logger.error(f"Failed to communicate with SwarmUI at {target_url}: {req_err}")
                     raise HTTPException(status_code=502, detail=f"Failed to contact SwarmUI: {req_err}")
                 except Exception as swarm_e:
-                     logger.error(f"Error during Swarm unload request: {swarm_e}")
-                     raise HTTPException(status_code=500, detail=f"Swarm request failed: {swarm_e}")
+                    logger.error(f"Error during Swarm unload request: {swarm_e}")
+                    raise HTTPException(status_code=500, detail=f"Swarm request failed: {swarm_e}")
                 # --- End Swarm Logic ---
 
             elif webui_lower == "comfy":
@@ -206,11 +213,12 @@ def sd_optim_api_setup(_gui_unused, app: FastAPI):
             return {"message": f"Model unload request processed for {webui}."}
 
         except HTTPException as http_err:
-             raise http_err # Re-raise specific HTTP errors
+            raise http_err  # Re-raise specific HTTP errors
         except Exception as e:
             # Catch any other unexpected errors during unload process
             logger.error(f"Error processing unload model request: {e}", exc_info=True)
             raise HTTPException(status_code=500, detail=f"Internal server error processing unload request: {e}")
+
 
 # --- Register the Callback with Script Callbacks ---
 # Ensure this runs only if script_callbacks was successfully imported

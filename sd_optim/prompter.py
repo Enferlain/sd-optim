@@ -23,8 +23,8 @@ class CardDealer:
             # Replace slashes with underscores
             wildcard_name = str(relative_path).replace("/", "_").replace(".txt", "")
             with open(file, "r", encoding="utf-8") as f:
-                 lines = f.readlines()
-                 self.wildcards[wildcard_name] = [line.strip() for line in lines]
+                lines = f.readlines()
+                self.wildcards[wildcard_name] = [line.strip() for line in lines]
 
     def sample_wildcard(self, wildcard_name: str) -> str:
         if wildcard_name in self.wildcards:
@@ -50,23 +50,23 @@ class CardDealer:
 
 def assemble_payload(defaults: Dict, payload: Dict, webui_type: str) -> Dict:
     """Assembles payloads differently based on the webui_type."""
-    if webui_type in ["a1111", "forge", "reforge"]: # Handle the structure for a1111-like UIs
+    if webui_type in ["a1111", "forge", "reforge"]:  # Handle the structure for a1111-like UIs
         for k, v in defaults.items():
             if k not in payload.keys():
                 payload[k] = v
         return payload
     elif webui_type == "comfy":
-       for k, v in defaults.items():
+        for k, v in defaults.items():
             if k not in payload.keys():
-               payload[k] = { "value": v}
-       return payload
+                payload[k] = {"value": v}
+        return payload
     elif webui_type == "swarm":
         for k, v in defaults.items():
             if k not in payload.keys():
-                payload[k] = { "value": v}
+                payload[k] = {"value": v}
             else:
                 if "id" not in payload[k]:
-                     payload[k] = { "value": payload[k], "id": k }
+                    payload[k] = {"value": payload[k], "id": k}
 
         return payload
     else:
@@ -78,7 +78,7 @@ def unpack_cargo(cargo: DictConfig, webui_type: str) -> Tuple[Dict, Dict]:
     payloads = {}
     for k, v in cargo.items():
         if k == "cargo":
-           for p_name, p in v.items():
+            for p_name, p in v.items():
                 payloads[p_name] = OmegaConf.to_container(p)
         elif isinstance(v, (DictConfig, ListConfig)):
             defaults[k] = OmegaConf.to_container(v)

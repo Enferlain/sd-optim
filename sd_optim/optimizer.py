@@ -2,13 +2,13 @@
 import gc
 import os
 import shutil
-import asyncio # <<< Import asyncio
+import asyncio  # <<< Import asyncio
 import logging
 import socket
 
 import aiohttp
 import requests
-import time # <<< Import time for logging durations
+import time  # <<< Import time for logging durations
 
 from contextlib import suppress
 from abc import abstractmethod
@@ -33,13 +33,14 @@ logger = logging.getLogger(__name__)
 
 PathT = os.PathLike
 
+
 @dataclass
 class Optimizer:
     cfg: DictConfig
     best_rolling_score: float = 0.0
     param_info: BoundsInfo = field(default_factory=dict, init=False)
     optimizer_pbounds: Dict[str, Union[Tuple[float, float], float, int, List]] = field(default_factory=dict, init=False)
-    optimization_start_time: Optional[float] = None # <<< Add start time tracker
+    optimization_start_time: Optional[float] = None  # <<< Add start time tracker
 
     def __post_init__(self) -> None:
         self.bounds_initializer = ParameterHandler(self.cfg)
@@ -51,8 +52,9 @@ class Optimizer:
         self.iteration = -1
         self.best_model_path = None
         self.cache = {}
-#        from sd_optim.artist import Artist
-#        self.artist = Artist(self)
+
+    #        from sd_optim.artist import Artist
+    #        self.artist = Artist(self)
 
     def setup_parameter_space(self):
         """Generates parameter info and extracts bounds for the optimizer."""
@@ -64,15 +66,16 @@ class Optimizer:
         for param_name, info in self.param_info.items():
             bounds_value = info.get('bounds')
             if bounds_value is None:
-                 logger.warning(f"Parameter '{param_name}' missing 'bounds' in info. Skipping for optimizer.")
-                 continue
+                logger.warning(f"Parameter '{param_name}' missing 'bounds' in info. Skipping for optimizer.")
+                continue
             self.optimizer_pbounds[param_name] = bounds_value
 
         # Optional: Check if optimizer_pbounds is empty and raise error
         if not self.optimizer_pbounds:
-             logger.error("No optimization bounds were generated for the optimizer. Check optimization_guide.yaml and merge method.")
-             # Decide if this should be fatal or just a warning depending on the optimizer
-             raise ValueError("Optimization parameter space for the optimizer is empty.")
+            logger.error(
+                "No optimization bounds were generated for the optimizer. Check optimization_guide.yaml and merge method.")
+            # Decide if this should be fatal or just a warning depending on the optimizer
+            raise ValueError("Optimization parameter space for the optimizer is empty.")
         logger.info(f"Prepared {len(self.optimizer_pbounds)} parameters for the optimizer with specific bounds.")
 
     # --- ADDED: Sequential Producer Coroutine ---
@@ -82,7 +85,7 @@ class Optimizer:
             target_paths: List[str],
             queue: asyncio.Queue,
             session: aiohttp.ClientSession,
-            interrupt_event: asyncio.Event # Shared event for interruption
+            interrupt_event: asyncio.Event  # Shared event for interruption
     ):
         """
         Requests image generation sequentially, putting results onto the queue.
@@ -95,7 +98,7 @@ class Optimizer:
             # Check for interruption BEFORE starting generation
             if interrupt_event.is_set():
                 logger.warning(f"Producer: Interrupt detected before starting generation {i}. Stopping.")
-                break # Stop producing new requests
+                break  # Stop producing new requests
 
             current_payload = payloads[i]
             current_target_base_name = target_paths[i]
@@ -125,8 +128,8 @@ class Optimizer:
 
             # Extra check after generation i completes
             if interrupt_event.is_set():
-                 logger.warning(f"Producer: Interrupt detected after finishing generation {i}. Stopping.")
-                 break
+                logger.warning(f"Producer: Interrupt detected after finishing generation {i}. Stopping.")
+                break
 
         logger.info("Sequential Producer finished.")
         # Optionally signal completion: await queue.put(None)
@@ -139,12 +142,13 @@ class Optimizer:
             "warmup" if self.iteration <= self.cfg.optimizer.init_points else "optimization"
         )
         if self.iteration in {1, self.cfg.optimizer.init_points + 1}:
-          logger.info(f"\n{'-' * 10} Starting {iteration_type} Phase {'-' * 10}>")
+            logger.info(f"\n{'-' * 10} Starting {iteration_type} Phase {'-' * 10}>")
 
         logger.info(f"\n--- {iteration_type} - Iteration: {self.iteration} ---")
         logger.info(f"Optimizer proposed parameters: {params}")
 
         # --- Unload / Merge / Load (Synchronous parts remain similar) ---
+        api_url: Optional[str] = None  # Give it a type hint too for clarity
         try:
             api_url = f"{self.cfg.url}/sd_optim/unload-model"
             # Add timeout to synchronous requests
@@ -165,7 +169,7 @@ class Optimizer:
             start_merge_time = time.time()
 
             if self.cfg.optimization_mode == "merge":
-                self.merger.output_file = self.merger._create_model_output_name(iteration=self.iteration)
+                self.merger.output_file = self.merger.create_model_output_name(iteration=self.iteration)
                 model_path = self.merger.merge(
                     params=params,
                     param_info=self.param_info,
@@ -173,7 +177,7 @@ class Optimizer:
                     iteration=self.iteration
                 )
             elif self.cfg.optimization_mode == "layer_adjust":
-                self.merger.output_file = self.merger._create_model_output_name(iteration=self.iteration)
+                self.merger.output_file = self.merger.create_model_output_name(iteration=self.iteration)
                 model_path = self.merger.layer_adjust(params, self.cfg)
 
             elif self.cfg.optimization_mode == "recipe":
@@ -220,35 +224,38 @@ class Optimizer:
         try:
             api_url = f"{self.cfg.url}/sd_optim/load-model"
             load_payload = {
-                 "model_path": str(model_path.resolve()),
-                 "webui": self.cfg.webui,
-                 "target_url": self.cfg.url if self.cfg.webui == 'swarm' else None
+                "model_path": str(model_path.resolve()),
+                "webui": self.cfg.webui,
+                "target_url": self.cfg.url if self.cfg.webui == 'swarm' else None
             }
             response = requests.post(api_url, json=load_payload)
             response.raise_for_status()
             logger.info(f"Load model request sent successfully for {model_path.name}.")
         except requests.exceptions.RequestException as e:
-            logger.error(f"Failed to send load request to {api_url} for {model_path.name}: {e}. Cannot generate images.")
+            logger.error(
+                f"Failed to send load request to {api_url} for {model_path.name}: {e}. Cannot generate images.")
             return 0.0
         except Exception as e_load:
-             logger.error(f"Unexpected error during load request: {e_load}", exc_info=True)
-             return 0.0
+            logger.error(f"Unexpected error during load request: {e_load}", exc_info=True)
+            return 0.0
 
         # --- Setup for Concurrent Generation ---
         start_gen_score_time = time.time()
         scores = []
         norm_weights = []
         payloads, target_paths = self.prompter.render_payloads(self.cfg.batch_size)
-        if not payloads: logger.error("Prompter generated no payloads."); return 0.0
+        if not payloads:
+            logger.error("Prompter generated no payloads.")
+            return 0.0
 
         # Determine queue size: number of concurrent generators + maybe 1 buffer slot
         concurrency_limit = self.cfg.get("generator_concurrency_limit", 2)
         image_queue = asyncio.Queue(maxsize=concurrency_limit)
-        interrupt_event = asyncio.Event() # Event for interrupt signal
+        interrupt_event = asyncio.Event()  # Event for interrupt signal
         total_expected_images = len(payloads)
-        final_score_for_optimizer = 0.0 # Default score
+        final_score_for_optimizer = 0.0  # Default score
         interrupt_triggered = False
-        fake_score_value = 0.0 # Value entered by user on override
+        fake_score_value = 0.0  # Value entered by user on override
 
         # Configure aiohttp session (remains the same)
         keepalive_interval = self.cfg.get("generator_keepalive_interval", 60)
@@ -258,17 +265,20 @@ class Optimizer:
             keepalive_timeout=keepalive_interval,
         )
         logger.info(f"Configured aiohttp TCPConnector: KeepAlive Enabled (Interval: {keepalive_interval}s)")
-        total_timeout_seconds = self.cfg.get("generator_total_timeout", 3600) # Timeout for queue.get
-        client_timeout_setting = None if total_timeout_seconds is None or total_timeout_seconds <= 0 else aiohttp.ClientTimeout(total=total_timeout_seconds)
-        if client_timeout_setting: logger.info(f"Configured aiohttp ClientSession: Total Timeout = {total_timeout_seconds}s")
-        else: logger.info("Configured aiohttp ClientSession: Client-side timeout DISABLED.")
+        total_timeout_seconds = self.cfg.get("generator_total_timeout", 3600)  # Timeout for queue.get
+        client_timeout_setting = None if total_timeout_seconds is None or total_timeout_seconds <= 0 else aiohttp.ClientTimeout(
+            total=total_timeout_seconds)
+        if client_timeout_setting:
+            logger.info(f"Configured aiohttp ClientSession: Total Timeout = {total_timeout_seconds}s")
+        else:
+            logger.info("Configured aiohttp ClientSession: Client-side timeout DISABLED.")
 
         producer_task = None
 
         try:
             async with aiohttp.ClientSession(
-                connector=connector,
-                timeout=client_timeout_setting
+                    connector=connector,
+                    timeout=client_timeout_setting
             ) as session:
 
                 # Launch ONE Sequential Producer Task
@@ -284,50 +294,55 @@ class Optimizer:
 
                 # --- Consumer Loop ---
                 images_processed = 0
-                logger.info(f"Consumer: Waiting to receive and score up to {total_expected_images} images sequentially...")
+                logger.info(
+                    f"Consumer: Waiting to receive and score up to {total_expected_images} images sequentially...")
 
                 for i in range(total_expected_images):
                     if interrupt_event.is_set():
-                         logger.warning(f"Consumer: Interrupt detected before waiting for image {i}. Stopping consumption.")
-                         interrupt_triggered = True
-                         break
+                        logger.warning(
+                            f"Consumer: Interrupt detected before waiting for image {i}. Stopping consumption.")
+                        interrupt_triggered = True
+                        break
 
                     logger.debug(f"Consumer: Waiting for image {i} from queue...")
                     try:
                         # Use a timeout slightly longer than typical generation if possible, or the total timeout
-                        effective_timeout = total_timeout_seconds if total_timeout_seconds else 3600 # Default 1hr
+                        effective_timeout = total_timeout_seconds if total_timeout_seconds else 3600  # Default 1hr
                         queue_item = await asyncio.wait_for(image_queue.get(), timeout=effective_timeout)
                     except asyncio.TimeoutError:
-                         logger.error(f"Consumer: Timeout waiting for image {i} from queue. Stopping.")
-                         interrupt_triggered = True
-                         interrupt_event.set()
-                         break
+                        logger.error(f"Consumer: Timeout waiting for image {i} from queue. Stopping.")
+                        interrupt_triggered = True
+                        interrupt_event.set()
+                        break
 
                     if queue_item is None:
                         logger.info("Consumer: Received end signal from producer.")
-                        break # Optional: Handle producer end signal
+                        break  # Optional: Handle producer end signal
 
                     order_index, image, current_payload, current_target_base_name = queue_item
 
                     if order_index != i:
-                         logger.error(f"Consumer: Order mismatch! Expected index {i}, got {order_index}. Stopping.")
-                         interrupt_triggered = True
-                         interrupt_event.set()
-                         image_queue.task_done()
-                         break
+                        logger.error(f"Consumer: Order mismatch! Expected index {i}, got {order_index}. Stopping.")
+                        interrupt_triggered = True
+                        interrupt_event.set()
+                        image_queue.task_done()
+                        break
 
                     if image is None:
-                        logger.warning(f"Consumer: Received failure signal for image {i} ('{current_target_base_name}'). Skipping scoring.")
+                        logger.warning(
+                            f"Consumer: Received failure signal for image {i} ('{current_target_base_name}'). Skipping scoring.")
                         image_queue.task_done()
                         continue
 
                     # --- Score the received image ---
-                    logger.info(f"Consumer: Scoring image {i+1}/{total_expected_images} ('{current_target_base_name}')...")
+                    logger.info(
+                        f"Consumer: Scoring image {i + 1}/{total_expected_images} ('{current_target_base_name}')...")
                     score_start_time = time.time()
                     individual_score = 0.0
-                    processed_item = False # Flag to track if we should call task_done
+                    processed_item = False  # Flag to track if we should call task_done
                     try:
-                        individual_score = await self.scorer.score(image, current_payload["prompt"], name=current_target_base_name)
+                        individual_score = await self.scorer.score(image, current_payload["prompt"],
+                                                                   name=current_target_base_name)
 
                         if individual_score == -1.0:
                             logger.warning(f"Consumer: OVERRIDE_SCORE detected during scoring of image {i}.")
@@ -335,7 +350,7 @@ class Optimizer:
                             fake_score_value = self.scorer.handle_override_prompt()
                             interrupt_triggered = True
                             # --- DO NOT call task_done here anymore ---
-                            break # Exit loop, finally block will be skipped for this item
+                            break  # Exit loop, finally block will be skipped for this item
 
                         # --- Normal Score Processing ---
                         score_duration = time.time() - score_start_time
@@ -344,18 +359,22 @@ class Optimizer:
                         weight = current_payload.get("score_weight", 1.0)
                         scores.append(individual_score)
                         norm_weights.append(weight)
-                        print(f"  Image {i+1}/{total_expected_images} scored: {individual_score:.4f} (Weight: {weight})")
+                        print(
+                            f"  Image {i + 1}/{total_expected_images} scored: {individual_score:.4f} (Weight: {weight})")
 
                         if self.cfg.save_imgs:
-                            self.save_img(image, current_target_base_name, individual_score, self.iteration, i, current_payload)
+                            self.save_img(image, current_target_base_name, individual_score, self.iteration, i,
+                                          current_payload)
 
                         images_processed += 1
-                        processed_item = True # Mark that we processed normally
+                        processed_item = True  # Mark that we processed normally
 
                     except Exception as e_score:
-                        logger.error(f"Consumer: Error scoring image '{current_target_base_name}' (index {i}): {e_score}", exc_info=True)
+                        logger.error(
+                            f"Consumer: Error scoring image '{current_target_base_name}' (index {i}): {e_score}",
+                            exc_info=True)
                         # Decide if task_done should be called on error? Usually yes.
-                        processed_item = True # Mark as processed even on error? Or handle differently? Let's mark done.
+                        processed_item = True  # Mark as processed even on error? Or handle differently? Let's mark done.
                     finally:
                         # --- Call task_done() ONLY if the loop didn't break early ---
                         if processed_item:
@@ -365,11 +384,13 @@ class Optimizer:
                 # End of consumer loop
 
         except asyncio.CancelledError:
-             logger.warning("Main task cancelled.")
-             if interrupt_event: interrupt_event.set() # Ensure producer stops
+            logger.warning("Main task cancelled.")
+            if interrupt_event:
+                interrupt_event.set()  # Ensure producer stops
         except Exception as e_main:
             logger.error(f"Error during concurrent generation/scoring: {e_main}", exc_info=True)
-            if interrupt_event: interrupt_event.set() # Signal producer on error
+            if interrupt_event:
+                interrupt_event.set()  # Signal producer on error
         finally:
             # --- Cleanup ---
             if producer_task and not producer_task.done():
@@ -402,37 +423,41 @@ class Optimizer:
         self.update_best_score(params, avg_score)
 
         # --- Collect Data for Artist ---
- #       self.artist.collect_data(avg_score, params)
+        #       self.artist.collect_data(avg_score, params)
 
         iteration_duration = time.time() - iteration_start_time
-        logger.info(f"Iteration {self.iteration} finished. Final Score for Optimizer: {avg_score:.4f}. Duration: {iteration_duration:.2f}s")
+        logger.info(
+            f"Iteration {self.iteration} finished. Final Score for Optimizer: {avg_score:.4f}. Duration: {iteration_duration:.2f}s")
 
         return avg_score
 
     # --- save_img, image_path, update_best_score remain the same ---
     def save_img(
-        self,
-        image: Image.Image,
-        name: str, # This is the original payload name base (e.g., 'noob6')
-        score: float,
-        it: int,
-        img_order_index: int, # <<< Use the order index here
-        payload: Dict,
+            self,
+            image: Image.Image,
+            name: str,  # This is the original payload name base (e.g., 'noob6')
+            score: float,
+            it: int,
+            img_order_index: int,  # <<< Use the order index here
+            payload: Dict,
     ) -> Optional[Path]:
         # Use batch_n as the image index within the iteration
         img_path = self.image_path(name, score, it, img_order_index)
 
         pnginfo = PngImagePlugin.PngInfo()
         for k, v in payload.items():
-            try: pnginfo.add_text(str(k), str(v))
-            except Exception as e_png: logger.warning(f"Could not add key '{k}' to PNG info: {e_png}")
+            try:
+                pnginfo.add_text(str(k), str(v))
+            except Exception as e_png:
+                logger.warning(f"Could not add key '{k}' to PNG info: {e_png}")
         try:
             img_path.parent.mkdir(parents=True, exist_ok=True)
             image.save(img_path, pnginfo=pnginfo)
-        except (OSError, IOError) as e: logger.error(f"Error saving image to {img_path}: {e}"); return None
+        except (OSError, IOError) as e:
+            logger.error(f"Error saving image to {img_path}: {e}"); return None
         return img_path
 
-    def image_path(self, name: str, score: float, it: int, img_order_index: int) -> Path: # <<< Use order index
+    def image_path(self, name: str, score: float, it: int, img_order_index: int) -> Path:  # <<< Use order index
         base_dir = Path(HydraConfig.get().runtime.output_dir)
         imgs_sub_dir = base_dir / "imgs"
         # Use img_order_index as the sequence number within the iteration
@@ -442,7 +467,7 @@ class Optimizer:
         logger.info(f"{'-' * 10}\nRun score: {avg_score}")
         # Format parameters for logging nicely
         param_str = ", ".join(f"{k}={v:.4f}" if isinstance(v, float) else f"{k}={v}" for k, v in params.items())
-        logger.info(f"Parameters: {{{param_str}}}") # Use curly braces for dict-like look
+        logger.info(f"Parameters: {{{param_str}}}")  # Use curly braces for dict-like look
 
         if avg_score > self.best_rolling_score:
             logger.info("\n NEW BEST!")
@@ -475,12 +500,12 @@ class Optimizer:
             # Move the current model to the new "best" path
             try:
                 if self.merger.output_file and self.merger.output_file.exists():
-                     shutil.move(self.merger.output_file, self.merger.best_output_file)
-                     logger.info(f"Saved new best model as: {self.merger.best_output_file}")
+                    shutil.move(self.merger.output_file, self.merger.best_output_file)
+                    logger.info(f"Saved new best model as: {self.merger.best_output_file}")
                 else:
-                     logger.warning(f"Output file {self.merger.output_file} does not exist, cannot save as best.")
+                    logger.warning(f"Output file {self.merger.output_file} does not exist, cannot save as best.")
             except OSError as e_mov:
-                 logger.error(f"Error moving {self.merger.output_file} to {self.merger.best_output_file}: {e_mov}")
+                logger.error(f"Error moving {self.merger.output_file} to {self.merger.best_output_file}: {e_mov}")
 
             # Static method call is correct
             Optimizer.save_best_log(params, self.iteration)
@@ -525,7 +550,7 @@ class Optimizer:
                 param_lines = [f"{k}: {v}" for k, v in params.items()]
                 f.write("\n".join(param_lines))
                 f.write("\n")
-        except ValueError: # Hydra not initialized
-             logger.error("Hydra context not available, cannot save best.log.")
+        except ValueError:  # Hydra not initialized
+            logger.error("Hydra context not available, cannot save best.log.")
         except Exception as e:
-             logger.error(f"Failed to save best.log: {e}")
+            logger.error(f"Failed to save best.log: {e}")

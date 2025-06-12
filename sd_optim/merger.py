@@ -51,42 +51,46 @@ class Merger:
         try:
             self.models_dir = Path(representative_model_path_str).resolve().parent
             if not self.models_dir.is_dir():
-                 raise FileNotFoundError(f"Merger: Determined models directory not found: {self.models_dir}")
+                raise FileNotFoundError(f"Merger: Determined models directory not found: {self.models_dir}")
             logger.info(f"Merger: Determined models directory: {self.models_dir}")
 
             # Use temporary node for inference check
             rep_model_node = sd_mecha.model(representative_model_path_str)
             with sd_mecha.open_input_dicts(rep_model_node, [self.models_dir]):
                 # Check isinstance AND state_dict exists before accessing keys
-                if isinstance(rep_model_node, ModelRecipeNode) and rep_model_node.state_dict: # <<< Added isinstance check here too
+                if isinstance(rep_model_node,
+                              ModelRecipeNode) and rep_model_node.state_dict:  # <<< Added isinstance check here too
                     # --- APPLY SAME FIX AS IN ParameterHandler ---
                     inferred_sets = sd_mecha.infer_model_configs(rep_model_node.state_dict.keys())
                     if inferred_sets:
-                         best_set = inferred_sets[0]
-                         if len(best_set) == 1:
-                              self.base_model_config = next(iter(best_set))
-                              logger.info(f"Merger: Inferred base ModelConfig: {self.base_model_config.identifier}")
-                         else:
-                              config_names = {c.identifier for c in best_set}
-                              logger.warning(f"Merger: Ambiguous base ModelConfig inferred for {representative_model_path_str}. Possible matches: {config_names}. Picking first one arbitrarily.")
-                              self.base_model_config = next(iter(best_set)) # Pick first
+                        best_set = inferred_sets[0]
+                        if len(best_set) == 1:
+                            self.base_model_config = next(iter(best_set))
+                            logger.info(f"Merger: Inferred base ModelConfig: {self.base_model_config.identifier}")
+                        else:
+                            config_names = {c.identifier for c in best_set}
+                            logger.warning(
+                                f"Merger: Ambiguous base ModelConfig inferred for {representative_model_path_str}. Possible matches: {config_names}. Picking first one arbitrarily.")
+                            self.base_model_config = next(iter(best_set))  # Pick first
                     # --- END FIX ---
                     else:
                         # This path is taken if infer_model_configs returns empty list
-                        raise ValueError(f"Merger: Cannot infer ModelConfig for {representative_model_path_str} (no matching configs found).")
+                        raise ValueError(
+                            f"Merger: Cannot infer ModelConfig for {representative_model_path_str} (no matching configs found).")
                 else:
-                     # This path is taken if rep_model_node isn't ModelRecipeNode or state_dict is None
-                     raise ValueError(f"Merger: Cannot load state dictionary for {representative_model_path_str} to infer config.")
+                    # This path is taken if rep_model_node isn't ModelRecipeNode or state_dict is None
+                    raise ValueError(
+                        f"Merger: Cannot load state dictionary for {representative_model_path_str} to infer config.")
 
-        except FileNotFoundError as fnf_e: # Catch specific error
+        except FileNotFoundError as fnf_e:  # Catch specific error
             logger.error(f"Merger: Model file or directory not found during init: {fnf_e}")
             raise ValueError("Merger could not initialize due to missing file/directory.") from fnf_e
-        except ValueError as val_e: # Catch ValueErrors raised above
-             logger.error(f"Merger: Error during configuration inference: {val_e}")
-             raise # Re-raise ValueErrors as they indicate critical config issues
-        except Exception as e: # Catch other unexpected errors
-             logger.error(f"Merger: Unexpected error during init: {e}", exc_info=True)
-             raise ValueError("Merger failed to initialize.") from e
+        except ValueError as val_e:  # Catch ValueErrors raised above
+            logger.error(f"Merger: Error during configuration inference: {val_e}")
+            raise  # Re-raise ValueErrors as they indicate critical config issues
+        except Exception as e:  # Catch other unexpected errors
+            logger.error(f"Merger: Unexpected error during init: {e}", exc_info=True)
+            raise ValueError("Merger failed to initialize.") from e
         # --- End Base Config Inference ---
 
         # --- Load Custom Config (depends on successful base inference if needed later) ---
@@ -107,7 +111,7 @@ class Merger:
 
         # --- Initialize other Merger attributes ---
         # Create ModelRecipeNode objects for ALL models AFTER determining models_dir
-        self.models: List[ModelRecipeNode] = self._create_model_nodes() # Hint as specific type initially
+        self.models: List[ModelRecipeNode] = self._create_model_nodes()  # Hint as specific type initially
         self.output_file: Optional[Path] = None
         self.best_output_file: Optional[Path] = None
 
@@ -116,35 +120,35 @@ class Merger:
     def validate_config(self):
         # Removed model_arch check
         if self.cfg.optimization_mode == "merge":
-            if not self.cfg.model_paths or len(self.cfg.model_paths) < 1: # Need at least 1 for merge
+            if not self.cfg.model_paths or len(self.cfg.model_paths) < 1:  # Need at least 1 for merge
                 raise ValueError(
                     "For 'merge' mode, 'model_paths' must contain at least one model path."
                 )
             if not self.cfg.merge_method:
                 raise ValueError("Configuration missing required field: 'merge_method'")
         elif self.cfg.optimization_mode == "recipe":
-                # Get the recipe config section safely
-                recipe_cfg = self.cfg.get('recipe_optimization')
+            # Get the recipe config section safely
+            recipe_cfg = self.cfg.get('recipe_optimization')
 
-                # If the mode is "recipe", the recipe_optimization block MUST exist.
-                if not recipe_cfg:
-                    raise ValueError(
-                        "`optimization_mode` is 'recipe', but the 'recipe_optimization' section is missing in the config.")
+            # If the mode is "recipe", the recipe_optimization block MUST exist.
+            if not recipe_cfg:
+                raise ValueError(
+                    "`optimization_mode` is 'recipe', but the 'recipe_optimization' section is missing in the config.")
 
-                # Check 1: The recipe file itself must exist.
-                recipe_path = recipe_cfg.get("recipe_path")
-                if not recipe_path:
-                    raise ValueError("Recipe optimization selected, but 'recipe_path' is missing in the config.")
-                if not Path(recipe_path).exists():
-                    raise FileNotFoundError(f"The specified recipe file does not exist: {recipe_path}")
+            # Check 1: The recipe file itself must exist.
+            recipe_path = recipe_cfg.get("recipe_path")
+            if not recipe_path:
+                raise ValueError("Recipe optimization selected, but 'recipe_path' is missing in the config.")
+            if not Path(recipe_path).exists():
+                raise FileNotFoundError(f"The specified recipe file does not exist: {recipe_path}")
 
-                # Check 2: We must know which node to target.
-                if not recipe_cfg.get("target_nodes"):
-                    raise ValueError("Recipe optimization requires 'target_nodes' to be specified (e.g., '&8').")
+            # Check 2: We must know which node to target.
+            if not recipe_cfg.get("target_nodes"):
+                raise ValueError("Recipe optimization requires 'target_nodes' to be specified (e.g., '&8').")
 
-                # Check 3 (NEW!): We must know which parameter inside that node to optimize.
-                if not recipe_cfg.get("target_params"):
-                    raise ValueError("Recipe optimization requires 'target_params' to be specified (e.g., 'alpha').")
+            # Check 3 (NEW!): We must know which parameter inside that node to optimize.
+            if not recipe_cfg.get("target_params"):
+                raise ValueError("Recipe optimization requires 'target_params' to be specified (e.g., 'alpha').")
         elif self.cfg.optimization_mode == "layer_adjust":
             if not self.cfg.model_paths or len(self.cfg.model_paths) < 1:
                 raise ValueError("`model_paths` must contain at least one model for 'layer_adjust' mode.")
@@ -153,9 +157,11 @@ class Merger:
 
         # Check precision settings existence
         if not hasattr(self.cfg, 'merge_dtype') or self.cfg.merge_dtype not in precision_mapping:
-            raise ValueError(f"Invalid or missing 'merge_dtype': {self.cfg.get('merge_dtype')}. Must be one of {list(precision_mapping.keys())}")
+            raise ValueError(
+                f"Invalid or missing 'merge_dtype': {self.cfg.get('merge_dtype')}. Must be one of {list(precision_mapping.keys())}")
         if not hasattr(self.cfg, 'save_dtype') or self.cfg.save_dtype not in precision_mapping:
-            raise ValueError(f"Invalid or missing 'save_dtype': {self.cfg.get('save_dtype')}. Must be one of {list(precision_mapping.keys())}")
+            raise ValueError(
+                f"Invalid or missing 'save_dtype': {self.cfg.get('save_dtype')}. Must be one of {list(precision_mapping.keys())}")
 
     def _create_model_nodes(self) -> List[ModelRecipeNode]:
         """
@@ -234,7 +240,7 @@ class Merger:
         logger.info(f"Finished creating nodes. Total successful: {len(model_nodes)}.")
         return model_nodes
 
-    def _create_model_output_name(
+    def create_model_output_name(
             self,
             iteration: int,
             best: bool = False,
@@ -318,7 +324,8 @@ class Merger:
             return None
 
         if not isinstance(base_model_index, int) or not (0 <= base_model_index < len(self.models)):
-            raise ValueError(f"Invalid base_model_index: {base_model_index}. Must be an integer within range [0, {len(self.models) - 1}).")
+            raise ValueError(
+                f"Invalid base_model_index: {base_model_index}. Must be an integer within range [0, {len(self.models) - 1}).")
 
         base_model_node = self.models[base_model_index]
 
@@ -330,31 +337,32 @@ class Merger:
                 raise FileNotFoundError("Merger's models_dir attribute is not set.")
 
             with sd_mecha.open_input_dicts(base_model_node, [self.models_dir]):
-                 # The LoRA check logic itself is fine.
-                 if "lora" in base_model_node.model_config.identifier or \
-                    "lycoris" in base_model_node.model_config.identifier:
-                     raise ValueError(
-                         f"The selected base model ('{base_model_node.path}') appears to be a LoRA/LyCORIS. These cannot be used as base models."
-                     )
+                # The LoRA check logic itself is fine.
+                if "lora" in base_model_node.model_config.identifier or \
+                        "lycoris" in base_model_node.model_config.identifier:
+                    raise ValueError(
+                        f"The selected base model ('{base_model_node.path}') appears to be a LoRA/LyCORIS. These cannot be used as base models."
+                    )
         except (ValueError, FileNotFoundError) as e:
             # Re-raise configuration and setup errors as they are critical.
             logger.error(f"Error during base model validation: {e}")
             raise
         except Exception as e:
-             # Log other unexpected errors during the check
-             logger.error(f"Unexpected error during base model config inference for LoRA check: {e}", exc_info=True)
-             # We can decide to proceed cautiously or halt, halting is safer.
-             raise ValueError(f"Could not verify base model '{base_model_node.path}'. Halting.") from e
+            # Log other unexpected errors during the check
+            logger.error(f"Unexpected error during base model config inference for LoRA check: {e}", exc_info=True)
+            # We can decide to proceed cautiously or halt, halting is safer.
+            raise ValueError(f"Could not verify base model '{base_model_node.path}'. Halting.") from e
 
         return base_model_node
 
-    def _slice_models(self, prepared_model_nodes: List[RecipeNodeOrValue], merge_method: MergeMethod) -> List[RecipeNodeOrValue]:
+    def _slice_models(self, prepared_model_nodes: List[RecipeNodeOrValue], merge_method: MergeMethod) -> List[
+        RecipeNodeOrValue]:
         """Slices the model list to match the expected number for non-varargs methods."""
         param_info = merge_method.get_param_names()
         if param_info.has_varargs():
-            return prepared_model_nodes # Method accepts variable args, no slicing needed
+            return prepared_model_nodes  # Method accepts variable args, no slicing needed
 
-        expected_num_models = len(param_info.args) # Number of positional args is the expected count
+        expected_num_models = len(param_info.args)  # Number of positional args is the expected count
         num_provided = len(prepared_model_nodes)
 
         if num_provided > expected_num_models:
@@ -364,8 +372,8 @@ class Merger:
             )
             return prepared_model_nodes[:expected_num_models]
         elif num_provided < expected_num_models:
-             # This case should ideally be caught earlier or handled by defaults
-             logger.warning(
+            # This case should ideally be caught earlier or handled by defaults
+            logger.warning(
                 f"Merge method '{merge_method.identifier}' expects {expected_num_models} model arguments, "
                 f"but only {num_provided} were prepared. This might lead to errors."
             )
@@ -407,7 +415,7 @@ class Merger:
         """Serializes and saves the merged model recipe to a file."""
         try:
             log_dir = Path(HydraConfig.get().runtime.output_dir)
-        except ValueError: # Handle case where Hydra is not initialized (e.g., direct script run)
+        except ValueError:  # Handle case where Hydra is not initialized (e.g., direct script run)
             log_dir = Path(os.getcwd()) / "logs" / "unknown_run"
             logger.warning("Hydra config not found, saving recipe to default log directory.")
 
@@ -709,88 +717,93 @@ class Merger:
         if fallback_index is None or fallback_index == -1:
             logger.info("No fallback model specified (index is None or -1).")
         elif not isinstance(fallback_index, int):
-             logger.error(f"Invalid fallback_model_index type: {type(fallback_index)}. Must be an integer or null. No fallback will be used.")
+            logger.error(
+                f"Invalid fallback_model_index type: {type(fallback_index)}. Must be an integer or null. No fallback will be used.")
         elif not self.models:
-             logger.error(f"fallback_model_index {fallback_index} specified, but no models were loaded (self.models is empty). No fallback will be used.")
+            logger.error(
+                f"fallback_model_index {fallback_index} specified, but no models were loaded (self.models is empty). No fallback will be used.")
         elif not (0 <= fallback_index < len(self.models)):
-             logger.error(f"Invalid fallback_model_index: {fallback_index}. Must be between 0 and {len(self.models) - 1}. No fallback will be used.")
+            logger.error(
+                f"Invalid fallback_model_index: {fallback_index}. Must be between 0 and {len(self.models) - 1}. No fallback will be used.")
         else:
             # Valid index provided
             fallback_node = self.models[fallback_index]
-            logger.info(f"Using model at index {fallback_index} ('{fallback_node.path}') as fallback source for missing keys.")
+            logger.info(
+                f"Using model at index {fallback_index} ('{fallback_node.path}') as fallback source for missing keys.")
 
         # --- Execute Merge ---
         try:
             # Make sure self.models_dir is correctly set in __post_init__
             if not self.models_dir or not self.models_dir.is_dir():
-                 logger.warning(f"Merger.models_dir ('{self.models_dir}') is not set or invalid. Relative paths in sd_mecha might fail.")
-                 effective_model_dirs = [] # Pass empty list if models_dir is bad
+                logger.warning(
+                    f"Merger.models_dir ('{self.models_dir}') is not set or invalid. Relative paths in sd_mecha might fail.")
+                effective_model_dirs = []  # Pass empty list if models_dir is bad
             else:
-                 effective_model_dirs = [self.models_dir]
+                effective_model_dirs = [self.models_dir]
 
             logger.info(f"Calling sd_mecha.merge with fallback_model: {fallback_node}")
             sd_mecha.merge(
                 recipe=final_recipe_node,
                 output=model_path,
-                fallback_model=fallback_node, # Pass the selected node (or None)
-                merge_device=self.cfg.get("device", "cpu"), # Default merge device if not set
-                merge_dtype=precision_mapping.get(self.cfg.merge_dtype), # Get dtype object
-                output_device="cpu", # Keep saving to CPU
-                output_dtype=precision_mapping.get(self.cfg.save_dtype), # Get dtype object
+                fallback_model=fallback_node,  # Pass the selected node (or None)
+                merge_device=self.cfg.get("device", "cpu"),  # Default merge device if not set
+                merge_dtype=precision_mapping.get(self.cfg.merge_dtype),  # Get dtype object
+                output_device="cpu",  # Keep saving to CPU
+                output_dtype=precision_mapping.get(self.cfg.save_dtype),  # Get dtype object
                 threads=self.cfg.get("threads"),
-                model_dirs=effective_model_dirs, # Use the directory containing models
+                model_dirs=effective_model_dirs,  # Use the directory containing models
                 check_mandatory_keys=False,
                 # Add other relevant sd_mecha.merge options as needed:
                 # strict_weight_space=True, check_finite=True, etc.
             )
             logging.info(f"Successfully merged and saved model to {model_path}")
         except Exception as e:
-             logger.error(f"sd-mecha merge execution failed: {e}", exc_info=True)
-             # Re-raise the exception to signal failure to the optimizer
-             raise
+            logger.error(f"sd-mecha merge execution failed: {e}", exc_info=True)
+            # Re-raise the exception to signal failure to the optimizer
+            raise
 
     def _save_recipe_etc(self, final_recipe_node: recipe_nodes.RecipeNode, model_path: Path):
-         """Handles optional saving of recipe, code, and adding extra keys."""
-         try:
-             self._serialize_and_save_recipe(final_recipe_node, model_path)
+        """Handles optional saving of recipe, code, and adding extra keys."""
+        try:
+            self._serialize_and_save_recipe(final_recipe_node, model_path)
 
-             if self.cfg.get("save_merge_method_code", False):
-                 # Assuming MergeMethods is accessible and methods are decorated
-                 utils.MergeMethodCodeSaver.save_merge_method_code(self.cfg.merge_method, model_path)
+            if self.cfg.get("save_merge_method_code", False):
+                # Assuming MergeMethods is accessible and methods are decorated
+                utils.MergeMethodCodeSaver.save_merge_method_code(self.cfg.merge_method, model_path)
 
-             # Add extra keys only if the option is enabled
-             # if self.cfg.get("add_extra_keys", False):
-                 # utils.add_extra_keys(model_path)
-         except Exception as e:
-              logger.error(f"Error during post-merge saving operations: {e}")
+            # Add extra keys only if the option is enabled
+            # if self.cfg.get("add_extra_keys", False):
+            # utils.add_extra_keys(model_path)
+        except Exception as e:
+            logger.error(f"Error during post-merge saving operations: {e}")
 
     # V1.1 - Accepts param_info metadata
     def merge(
             self,
             params: Dict[str, Any],  # Flat params from optimizer
-            param_info: BoundsInfo, # <<< ADDED: Full metadata from ParameterHandler
+            param_info: BoundsInfo,  # <<< ADDED: Full metadata from ParameterHandler
             cache: Optional[Dict],
-            iteration: int = 0 # <<< ADD iteration parameter
+            iteration: int = 0  # <<< ADD iteration parameter
     ) -> Path:
         """Builds and executes sd-mecha recipe, using param_info for expansion."""
         cfg = self.cfg
         cache = cache if cache is not None else {}
-        logger.info(f"Starting merge process for iteration {iteration}") # <<< USE iteration
+        logger.info(f"Starting merge process for iteration {iteration}")  # <<< USE iteration
 
         # 1. Determine output path (using instance property self.output_file)
         model_path = self.output_file
-        if not model_path: # Safety check
-             logger.error("Output file path not set in Merger before merge call.")
-             # Define a default path or raise error
-             model_path = self.models_dir / f"merge_output_default_{cfg.merge_method}.safetensors"
-             logger.warning(f"Using default output path: {model_path}")
-             self.output_file = model_path # Attempt to set it
+        if not model_path:  # Safety check
+            logger.error("Output file path not set in Merger before merge call.")
+            # Define a default path or raise error
+            model_path = self.models_dir / f"merge_output_default_{cfg.merge_method}.safetensors"
+            logger.warning(f"Using default output path: {model_path}")
+            self.output_file = model_path  # Attempt to set it
 
         # --- Recipe Building ---
         logger.debug(f"Building merge recipe for method: {cfg.merge_method}")
 
         # 2. Resolve merge method
-        merge_func = utils.resolve_merge_method(cfg.merge_method) # Assumes utils exists
+        merge_func = utils.resolve_merge_method(cfg.merge_method)  # Assumes utils exists
 
         # 3. Select base model (for delta subtraction, conversion context)
         base_model_node = self._select_base_model()
@@ -807,11 +820,12 @@ class Merger:
 
         # 6. Prepare parameter nodes using param_info for expansion
         param_nodes = self._prepare_param_recipe_args(
-             params, param_info, merge_func # Pass metadata here
+            params, param_info, merge_func  # Pass metadata here
         )
 
         # 7. Build the core merge recipe node, applying cache
-        logger.info(f"Calling '{merge_func.identifier}' with {len(sliced_model_nodes)} model args, {len(param_nodes)} param nodes.")
+        logger.info(
+            f"Calling '{merge_func.identifier}' with {len(sliced_model_nodes)} model args, {len(param_nodes)} param nodes.")
         core_recipe_node = merge_func(*sliced_model_nodes, **param_nodes).set_cache(cache)
 
         # 8. Handle potential delta output (wrap with add_difference)
@@ -854,7 +868,7 @@ class Merger:
         root_node = all_nodes_map[max(all_nodes_map.keys())]
 
         # --- Step 2: Set the output name (this is fine here) ---
-        self.output_file = self._create_model_output_name(
+        self.output_file = self.create_model_output_name(
             iteration=iteration,
             recipe_node=root_node
         )
@@ -909,7 +923,6 @@ class Merger:
 
         logger.info(f"Recipe optimization completed. Output: {model_path}")
         return model_path
-
 
     def layer_adjust(self, params: Dict, cfg: DictConfig) -> Path:  # Takes params
         """Loads a model, applies layer adjustments, and saves the modified model."""

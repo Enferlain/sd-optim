@@ -40,11 +40,13 @@ from sd_optim.merge_methods import MergeMethods
 from sd_mecha.extensions import model_configs, merge_methods
 from sd_mecha.extensions.merge_methods import merge_method, Parameter, Return, StateDict, T, MergeMethod
 from sd_mecha.streaming import StateDictKeyError
-from sd_mecha.extensions.model_configs import ModelConfigImpl, KeyMetadata # Need these for creation
+from sd_mecha.extensions.model_configs import ModelConfigImpl, KeyMetadata  # Need these for creation
 from sd_mecha.recipe_nodes import RecipeNode, MergeRecipeNode, RecipeVisitor, LiteralRecipeNode, ModelRecipeNode
-from omegaconf import DictConfig, OmegaConf # If reading from Hydra config
+from omegaconf import DictConfig, OmegaConf  # If reading from Hydra config
 
 logger = logging.getLogger(__name__)
+
+
 # Define T if not already imported from merge_methods
 
 
@@ -71,8 +73,8 @@ def load_and_register_custom_configs(config_dir: Path):
             with open(filepath, 'r', encoding='utf-8') as f:
                 yaml_data = yaml.load(f, Loader=Loader)
                 if not isinstance(yaml_data, dict) or "identifier" not in yaml_data:
-                     logger.warning(f"    Skipping {filepath.name}: Invalid format or missing 'identifier'.")
-                     continue
+                    logger.warning(f"    Skipping {filepath.name}: Invalid format or missing 'identifier'.")
+                    continue
 
                 # Use ModelConfigImpl to parse the structure
                 config_obj = ModelConfigImpl(**yaml_data)
@@ -85,11 +87,13 @@ def load_and_register_custom_configs(config_dir: Path):
         except yaml.YAMLError as e_yaml:
             logger.error(f"  Error parsing YAML file {filepath.name}: {e_yaml}", exc_info=True)
         except TypeError as e_type:
-             logger.error(f"  Error constructing ModelConfig from {filepath.name} (likely structure mismatch): {e_type}", exc_info=True)
+            logger.error(f"  Error constructing ModelConfig from {filepath.name} (likely structure mismatch): {e_type}",
+                         exc_info=True)
         except ValueError as e_val:
-             logger.error(f"  Error registering ModelConfig from {filepath.name} (likely duplicate ID): {e_val}", exc_info=True)
+            logger.error(f"  Error registering ModelConfig from {filepath.name} (likely duplicate ID): {e_val}",
+                         exc_info=True)
         except Exception as e_other:
-             logger.error(f"  Unexpected error processing {filepath.name}: {e_other}", exc_info=True)
+            logger.error(f"  Unexpected error processing {filepath.name}: {e_other}", exc_info=True)
 
     logger.info(f"Finished custom config scan. Registered {registered_count} config(s).")
 
@@ -107,13 +111,13 @@ def load_and_register_custom_conversion(conversion_dir: Path):
         return
 
     # Add the conversion directory to the Python path temporarily to allow direct imports
-    sys.path.insert(0, str(conversion_dir.parent.resolve())) # Add parent directory
+    sys.path.insert(0, str(conversion_dir.parent.resolve()))  # Add parent directory
 
     try:
         for module_info in pkgutil.iter_modules([str(conversion_dir)]):
             module_name = module_info.name
-            if module_name.startswith('_'): # Skip private/utility modules
-                 continue
+            if module_name.startswith('_'):  # Skip private/utility modules
+                continue
             try:
                 logger.debug(f"  Importing conversion module: {module_name}")
                 # Perform the import - this triggers the @merge_method decorators inside
@@ -122,15 +126,16 @@ def load_and_register_custom_conversion(conversion_dir: Path):
                 import_path = f"{conversion_dir.parent.name}.{conversion_dir.name}.{module_name}"
                 importlib.import_module(import_path)
                 logger.info(f"  Successfully imported and potentially registered methods from: {module_name}.py")
-                registered_count += 1 # Count modules imported, not methods registered
+                registered_count += 1  # Count modules imported, not methods registered
             except ImportError as e_imp:
-                 logger.error(f"  Error importing module {module_name}.py: {e_imp}", exc_info=True)
+                logger.error(f"  Error importing module {module_name}.py: {e_imp}", exc_info=True)
             except Exception as e_other:
-                 logger.error(f"  Unexpected error importing/registering from {module_name}.py: {e_other}", exc_info=True)
+                logger.error(f"  Unexpected error importing/registering from {module_name}.py: {e_other}",
+                             exc_info=True)
     finally:
         # Clean up sys.path
         if str(conversion_dir.parent.resolve()) in sys.path:
-             sys.path.pop(0)
+            sys.path.pop(0)
 
     logger.info(f"Finished custom conversion scan. Imported {registered_count} module(s).")
 
@@ -258,6 +263,7 @@ class RecipePatcher(recipe_nodes.RecipeVisitor):
         self.memo[node] = rebuilt_node
         return rebuilt_node
 
+
 class ModelVisitor(recipe_nodes.RecipeVisitor):
     """A simple visitor to find all ModelRecipeNodes in a graph."""
 
@@ -293,6 +299,7 @@ class ModelVisitor(recipe_nodes.RecipeVisitor):
         if node in self.visited:
             return
         self.visited.add(node)
+
 
 def get_info_from_target_node(root_node: recipe_nodes.RecipeNode, target_node_ref: str) -> Dict[str, Any]:
     """
@@ -373,6 +380,7 @@ class _CodeParser(ast.NodeVisitor):
             if func.value.id in ('self', 'cls') and func.attr in self.local_method_names:
                 self.called_local_methods.add(func.attr)
         self.generic_visit(node)
+
 
 class MergeMethodCodeSaver:
     """
@@ -469,7 +477,7 @@ class MergeMethodCodeSaver:
                             break
                     if is_relevant:
                         # ast.unparse correctly takes ast.Import or ast.ImportFrom nodes
-                        relevant_imports.append(ast.unparse(node)) # Fake complaint
+                        relevant_imports.append(ast.unparse(node))  # Fake complaint
 
             # Step 4: Assemble the final script
             output_lines = [
@@ -584,6 +592,7 @@ class MechaToPythonConverter:
             else:
                 remapped_parts.append(self._remap_ref(part))
         return remapped_parts
+
 
 #############################
 ### Generate optuna notes ###
@@ -746,11 +755,13 @@ LAYER_MAPPING = {
     5: "model.diffusion_model.out.2.bias",
 }
 
+
 # --- Helper Functions ---
 def colorcalc(cols, isxl):
     colors = COLSXL if isxl else COLS
     outs = [[y * cols[i] * 0.02 for y in x] for i, x in enumerate(colors)]
     return [sum(x) for x in zip(*outs)]
+
 
 def fineman(fine, isxl):
     if isinstance(fine, str) and fine.find(",") != -1:
@@ -777,6 +788,7 @@ def fineman(fine, isxl):
     ]
     return fine
 
+
 def weighttoxl(weights):
     """
     Possibly converts weights to SDXL format by removing elements 9 to 11 and adding a zero at the end.
@@ -784,6 +796,7 @@ def weighttoxl(weights):
     if len(weights) >= 22:
         weights = weights[:9] + weights[12:22] + [0]
     return weights
+
 
 def modify_state_dict(state_dict: Dict, adjustments: Dict, is_xl_model: bool) -> Dict:
     """Modifies the state_dict based on the given adjustments."""
@@ -815,6 +828,8 @@ def modify_state_dict(state_dict: Dict, adjustments: Dict, is_xl_model: bool) ->
 # Hotkey behavior
 HOTKEY_SWITCH_MANUAL = keyboard.Key.ctrl, 'm'  # Ctrl+M for manual scoring
 HOTKEY_SWITCH_AUTO = keyboard.Key.ctrl, 'a'  # Ctrl+A for automatic scoring
+
+
 # ... other hotkeys ...
 
 
@@ -844,13 +859,8 @@ class HotkeyListener:
             pass
 
 
-
-
 ### Other Utility Functions (e.g., for early stopping, etc.)
 # ...
-
-
-
 
 
 def get_summary_images(log_file: Path, imgs_dir: Path, top_iterations: int) -> List[Tuple[str, float, Path]]:
@@ -898,14 +908,11 @@ def update_log_scores(log_file: Path, summary_images, new_scores):
         with open(log_file, 'r+') as f:  # Open for both reading and writing
             log_data = [json.loads(line) for line in f]  # Load existing log data
 
-
-
             # Update scores for the corresponding iterations
             # TODO: Handle offset based on what iteration it starts on?
             for i in range(len(summary_images)):  # Loop through summary_images to get indices
                 # Update score based on the index
                 log_data[i]['target'] = new_scores[i]  # Update directly with a single value, not a list
-
 
             f.seek(0)  # Go to the beginning of the file
             json.dump(log_data, f, indent=4)  # Write the updated data

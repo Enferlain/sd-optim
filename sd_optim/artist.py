@@ -18,10 +18,11 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+
 @dataclass
 class Artist:
     """Handles plotting and visualization of optimization results."""
-    optimizer: 'Optimizer' # Reference to the main optimizer instance
+    optimizer: 'Optimizer'  # Reference to the main optimizer instance
     # Data storage (kept for now, mainly for BayesOpt path)
     iterations: List[int] = field(default_factory=list)
     scores: List[float] = field(default_factory=list)
@@ -38,7 +39,7 @@ class Artist:
     def collect_data(self, score: float, params: Dict):
         """Collects data from a completed optimization iteration."""
         try:
-            iteration_num = self.optimizer.iteration # Get current iteration
+            iteration_num = self.optimizer.iteration  # Get current iteration
             self.iterations.append(iteration_num)
             self.scores.append(score)
             # Ensure best_rolling_score exists, default to score if not
@@ -78,7 +79,7 @@ class Artist:
 
             # Plot the best score found so far
             if self.best_scores:
-                 fig.add_trace(go.Scatter(
+                fig.add_trace(go.Scatter(
                     x=self.iterations,
                     y=self.best_scores,
                     mode='lines',
@@ -94,9 +95,9 @@ class Artist:
                 yaxis_title='Score',
                 # yaxis_range=[min_y, max_y], # Optional: Set dynamic range if needed
                 legend_title_text='Legend',
-                template="plotly_white" # Use a clean template
+                template="plotly_white"  # Use a clean template
             )
-            fig.update_yaxes(rangemode='tozero') # Ensure y-axis starts at 0 or below min score
+            fig.update_yaxes(rangemode='tozero')  # Ensure y-axis starts at 0 or below min score
 
             # Save the plot
             plot_path = self.vis_dir / f"convergence_{getattr(self.optimizer.cfg, 'run_name', 'Unknown Run')}.png"
@@ -105,11 +106,12 @@ class Artist:
                 logger.info(f"Artist: Convergence plot saved to {plot_path}")
             except ValueError as ve:
                 if "kaleido" in str(ve).lower():
-                     logger.error("Artist: Failed to save Plotly plot: Kaleido engine not found or not functional. Install with 'pip install -U kaleido'. Skipping save.")
+                    logger.error(
+                        "Artist: Failed to save Plotly plot: Kaleido engine not found or not functional. Install with 'pip install -U kaleido'. Skipping save.")
                 else:
-                     logger.error(f"Artist: ValueError saving Plotly plot: {ve}. Skipping save.")
+                    logger.error(f"Artist: ValueError saving Plotly plot: {ve}. Skipping save.")
             except Exception as e_write:
-                 logger.error(f"Artist: Unexpected error saving Plotly plot: {e_write}. Skipping save.")
+                logger.error(f"Artist: Unexpected error saving Plotly plot: {e_write}. Skipping save.")
 
         except Exception as e:
             logger.error(f"Artist: Failed to generate convergence plot: {e}", exc_info=True)

@@ -4,21 +4,21 @@ from pathlib import Path
 import sd_mecha
 import fnmatch
 import torch
-import inspect # Needed to inspect parameter types
+import inspect  # Needed to inspect parameter types
 
 from typing import Dict, List, Tuple, Union, Optional, Any
 from omegaconf import DictConfig, ListConfig, OmegaConf
-from sd_mecha.extensions import model_configs, merge_methods, merge_spaces # Added imports
-from sd_mecha.extensions.merge_methods import StateDict, ParameterData # For type checking
+from sd_mecha.extensions import model_configs, merge_methods, merge_spaces  # Added imports
+from sd_mecha.extensions.merge_methods import StateDict, ParameterData  # For type checking
 from sd_mecha.recipe_nodes import RecipeNode, ModelRecipeNode
 
 from sd_optim import utils
 
 logger = logging.getLogger(__name__)
 
-
 # Define a type alias for clarity (optional)
 BoundsInfo = Dict[str, Dict[str, Any]]
+
 
 class ParameterHandler:
     def __init__(self, cfg: DictConfig):
@@ -40,24 +40,27 @@ class ParameterHandler:
                     # infer_model_configs now returns List[Set[ModelConfig]]
                     inferred_sets = sd_mecha.infer_model_configs(rep_model_node.state_dict.keys())
                     if inferred_sets:
-                         # Get the set with the highest affinity (first element)
-                         best_set = inferred_sets[0]
-                         # If there's only one config in the best set, use it
-                         if len(best_set) == 1:
-                              self.base_model_config = next(iter(best_set))
-                              logger.info(f"Merger: Inferred base ModelConfig: {self.base_model_config.identifier}")
-                         else:
-                              # Handle ambiguity if multiple configs match equally well
-                              config_names = {c.identifier for c in best_set}
-                              logger.warning(f"Merger: Ambiguous base ModelConfig inferred for {representative_model_path_str}. Possible matches: {config_names}. Picking first one arbitrarily.")
-                              # You might want more sophisticated logic here, e.g., check against a preferred list
-                              self.base_model_config = next(iter(best_set)) # Pick first for now
+                        # Get the set with the highest affinity (first element)
+                        best_set = inferred_sets[0]
+                        # If there's only one config in the best set, use it
+                        if len(best_set) == 1:
+                            self.base_model_config = next(iter(best_set))
+                            logger.info(f"Merger: Inferred base ModelConfig: {self.base_model_config.identifier}")
+                        else:
+                            # Handle ambiguity if multiple configs match equally well
+                            config_names = {c.identifier for c in best_set}
+                            logger.warning(
+                                f"Merger: Ambiguous base ModelConfig inferred for {representative_model_path_str}. Possible matches: {config_names}. Picking first one arbitrarily.")
+                            # You might want more sophisticated logic here, e.g., check against a preferred list
+                            self.base_model_config = next(iter(best_set))  # Pick first for now
                     # --- MODIFICATION END ---
-                    else: raise ValueError(f"Merger: Cannot infer ModelConfig for {representative_model_path_str}")
-                else: raise ValueError(f"Merger: Cannot load dictionary for {representative_model_path_str}")
+                    else:
+                        raise ValueError(f"Merger: Cannot infer ModelConfig for {representative_model_path_str}")
+                else:
+                    raise ValueError(f"Merger: Cannot load dictionary for {representative_model_path_str}")
         except Exception as e:
-             logger.error(f"Merger: Error inferring base config or models_dir: {e}", exc_info=True)
-             raise ValueError("Merger could not determine base ModelConfig or models directory.") from e
+            logger.error(f"Merger: Error inferring base config or models_dir: {e}", exc_info=True)
+            raise ValueError("Merger could not determine base ModelConfig or models directory.") from e
 
         # Load Custom Config remains the same...
         self.custom_block_config_id = self.cfg.optimization_guide.get("custom_block_config_id")
@@ -478,8 +481,8 @@ class ParameterHandler:
 
     # V1.6: Apply custom bounds by specific name OR base name
     def get_bounds(
-        self,
-        custom_bounds_config: Optional[Dict[str, Union[List[float], List[int], int, float]]] = None
+            self,
+            custom_bounds_config: Optional[Dict[str, Union[List[float], List[int], int, float]]] = None
     ) -> Tuple[BoundsInfo, Dict[str, Union[Tuple[float, float], float, int, List]]]:
         # Step 1: Generate base param_info from strategies (as before)
         params_info: BoundsInfo = self.create_parameter_bounds_metadata()
@@ -501,8 +504,9 @@ class ParameterHandler:
             # --- PRIORITY 1: Check for EXACT optimizer parameter name match ---
             if custom_key in params_info:
                 original_bounds = params_info[custom_key].get('bounds')
-                params_info[custom_key]['bounds'] = custom_value # Override specific param
-                logger.info(f"  Overrode bounds for specific param '{custom_key}' from {original_bounds} to {custom_value} via custom_bounds.")
+                params_info[custom_key]['bounds'] = custom_value  # Override specific param
+                logger.info(
+                    f"  Overrode bounds for specific param '{custom_key}' from {original_bounds} to {custom_value} via custom_bounds.")
                 updated_params_count += 1
                 found_match = True
             # --- PRIORITY 2: Check for BASE parameter name match ---
@@ -511,14 +515,16 @@ class ParameterHandler:
                 for param_name in base_param_map[custom_key]:
                     # Check if this specific param wasn't already overridden by exact name match
                     if param_name not in validated_custom_bounds:
-                         original_bounds = params_info[param_name].get('bounds')
-                         params_info[param_name]['bounds'] = custom_value # Update bounds
-                         logger.debug(f"  Updated bounds for '{param_name}' (base: {custom_key}) from {original_bounds} to {custom_value} via custom_bounds base match.")
-                         updated_params_count += 1 # Count updates even if value is same
-                found_match = True # Mark base param as handled
+                        original_bounds = params_info[param_name].get('bounds')
+                        params_info[param_name]['bounds'] = custom_value  # Update bounds
+                        logger.debug(
+                            f"  Updated bounds for '{param_name}' (base: {custom_key}) from {original_bounds} to {custom_value} via custom_bounds base match.")
+                        updated_params_count += 1  # Count updates even if value is same
+                found_match = True  # Mark base param as handled
 
             if not found_match:
-                 logger.debug(f"Custom bound key '{custom_key}' did not match any generated parameter name or base_param. It may be used as a fixed keyword argument if applicable.")
+                logger.debug(
+                    f"Custom bound key '{custom_key}' did not match any generated parameter name or base_param. It may be used as a fixed keyword argument if applicable.")
 
         # Step 3: Extract bounds for the optimizer (remains the same)
         optimizer_pbounds = {
@@ -527,17 +533,17 @@ class ParameterHandler:
             if 'bounds' in info
         }
 
-        logger.info(f"--- Final {len(params_info)} Optimization Parameter Details (Bounds Updated: {updated_params_count}) ---")
+        logger.info(
+            f"--- Final {len(params_info)} Optimization Parameter Details (Bounds Updated: {updated_params_count}) ---")
         items_to_log = list(params_info.items())
         log_limit = 100
         if len(items_to_log) > log_limit * 2:
-             for name, info in items_to_log[:log_limit]: logger.info(f"{name}: {info}")
-             logger.info("...")
-             for name, info in items_to_log[-log_limit:]: logger.info(f"{name}: {info}")
+            for name, info in items_to_log[:log_limit]: logger.info(f"{name}: {info}")
+            logger.info("...")
+            for name, info in items_to_log[-log_limit:]: logger.info(f"{name}: {info}")
         else:
-             for name, info in items_to_log: logger.info(f"{name}: {info}")
+            for name, info in items_to_log: logger.info(f"{name}: {info}")
         logger.info("----------------------------------------------------")
-
 
         # Return the full metadata (with updated bounds) AND the specific bounds for the optimizer
         return params_info, optimizer_pbounds
@@ -545,7 +551,7 @@ class ParameterHandler:
     # V1.1 - Updated validation logic from bounds.py
     @staticmethod
     def validate_custom_bounds(
-        custom_bounds: Optional[Dict[str, Union[List[float], List[int], int, float]]]
+            custom_bounds: Optional[Dict[str, Union[List[float], List[int], int, float]]]
     ) -> Dict[str, Union[Tuple[float, float], float, int, List]]:
         """Validates the custom_bounds dictionary and returns typed bounds."""
         if custom_bounds is None:
@@ -553,21 +559,26 @@ class ParameterHandler:
         validated_bounds: Dict[str, Union[Tuple[float, float], float, int, List]] = {}
         for param_name, bound in custom_bounds.items():
             try:
-                if isinstance(bound, (list, ListConfig)): # Check omegaconf list too
-                    bound_list = list(bound) # Convert if ListConfig
+                if isinstance(bound, (list, ListConfig)):  # Check omegaconf list too
+                    bound_list = list(bound)  # Convert if ListConfig
                     if len(bound_list) == 2 and all(isinstance(v, (int, float)) for v in bound_list):
                         val1, val2 = float(bound_list[0]), float(bound_list[1])
                         if val1 > val2: raise ValueError("Lower bound > Upper bound")
-                        validated_bounds[param_name] = (val1, val2) # Range
+                        validated_bounds[param_name] = (val1, val2)  # Range
                     elif all(isinstance(v, (int, float)) for v in bound_list):
                         # Categorical: Keep as list, ensure numeric
-                        validated_bounds[param_name] = [float(v) if isinstance(v, float) else int(v) for v in bound_list]
-                    else: raise ValueError("List must be [min, max] or categorical [v1, v2,...] of numbers.")
+                        validated_bounds[param_name] = [float(v) if isinstance(v, float) else int(v) for v in
+                                                        bound_list]
+                    else:
+                        raise ValueError("List must be [min, max] or categorical [v1, v2,...] of numbers.")
                 elif isinstance(bound, (int, float)):
-                    validated_bounds[param_name] = float(bound) if isinstance(bound, float) else int(bound) # Fixed
-                else: raise ValueError("Bound type must be list, int, or float.")
+                    validated_bounds[param_name] = float(bound) if isinstance(bound, float) else int(bound)  # Fixed
+                else:
+                    raise ValueError("Bound type must be list, int, or float.")
             except ValueError as e:
-                logger.error(f"Invalid custom bound configuration for '{param_name}': {bound}. Error: {e}. Skipping this bound.")
+                logger.error(
+                    f"Invalid custom bound configuration for '{param_name}': {bound}. Error: {e}. Skipping this bound.")
             except Exception as e_gen:
-                 logger.error(f"Unexpected error validating custom bound for '{param_name}': {bound}. Error: {e_gen}. Skipping.")
+                logger.error(
+                    f"Unexpected error validating custom bound for '{param_name}': {bound}. Error: {e_gen}. Skipping.")
         return validated_bounds

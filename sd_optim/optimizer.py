@@ -1,14 +1,14 @@
-# optimizer.py - Version 1.1 (Concurrent Gen/Score)
+# optimizer.py - Version 1.2 (Concurrent Gen/Score + Control/Status)
 import gc
 import os
 import shutil
-import asyncio  # <<< Import asyncio
+import asyncio
 import logging
 import socket
 
 import aiohttp
 import requests
-import time  # <<< Import time for logging durations
+import time
 
 from contextlib import suppress
 from abc import abstractmethod
@@ -37,10 +37,15 @@ PathT = os.PathLike
 @dataclass
 class Optimizer:
     cfg: DictConfig
+    # --- ADDED: Control Events and Shared Status Dictionary ---
+    stop_event: asyncio.Event = field(compare=False) # Event to signal stopping
+    pause_event: asyncio.Event = field(compare=False) # Event to signal pausing
+    status_dict: Dict[str, Any] = field(compare=False) # Shared dictionary for status updates
+    # ---------------------------------------------------------
     best_rolling_score: float = 0.0
     param_info: BoundsInfo = field(default_factory=dict, init=False)
     optimizer_pbounds: Dict[str, Union[Tuple[float, float], float, int, List]] = field(default_factory=dict, init=False)
-    optimization_start_time: Optional[float] = None  # <<< Add start time tracker
+    optimization_start_time: Optional[float] = None
 
     def __post_init__(self) -> None:
         self.bounds_initializer = ParameterHandler(self.cfg)
@@ -52,16 +57,15 @@ class Optimizer:
         self.iteration = -1
         self.best_model_path = None
         self.cache = {}
-
-    #        from sd_optim.artist import Artist
-    #        self.artist = Artist(self)
+        # Set initial status dict values
+        self.status_dict["total_iterations"] = self.cfg.optimizer.init_points + self.cfg.optimizer.n_iters
 
     def setup_parameter_space(self):
-        """Generates parameter info and extracts bounds for the optimizer."""
         logger.info("Setting up optimization parameter space...")
         self.param_info, self.optimizer_pbounds = self.bounds_initializer.get_bounds(
             self.cfg.optimization_guide.get("custom_bounds")
         )
+        # Rebuild optimizer_pbounds from param_info, just in case (should be equivalent)
         self.optimizer_pbounds = {}
         for param_name, info in self.param_info.items():
             bounds_value = info.get('bounds')
@@ -70,41 +74,35 @@ class Optimizer:
                 continue
             self.optimizer_pbounds[param_name] = bounds_value
 
-        # Optional: Check if optimizer_pbounds is empty and raise error
         if not self.optimizer_pbounds:
-            logger.error(
-                "No optimization bounds were generated for the optimizer. Check optimization_guide.yaml and merge method.")
-            # Decide if this should be fatal or just a warning depending on the optimizer
+            logger.error("No optimization bounds were generated for the optimizer. Check optimization_guide.yaml and merge method.")
             raise ValueError("Optimization parameter space for the optimizer is empty.")
         logger.info(f"Prepared {len(self.optimizer_pbounds)} parameters for the optimizer with specific bounds.")
 
-    # --- ADDED: Sequential Producer Coroutine ---
     async def _sequential_producer(
             self,
             payloads: List[Dict],
             target_paths: List[str],
             queue: asyncio.Queue,
             session: aiohttp.ClientSession,
-            interrupt_event: asyncio.Event  # Shared event for interruption
+            # Use self.stop_event instead of separate interrupt_event if passing is handled
+            # interrupt_event: asyncio.Event
     ):
-        """
-        Requests image generation sequentially, putting results onto the queue.
-        Starts generation N+1 immediately after receiving image N.
-        Checks interrupt_event before starting each new generation.
-        """
         logger.info("Sequential Producer started.")
         total_payloads = len(payloads)
         for i in range(total_payloads):
-            # Check for interruption BEFORE starting generation
-            if interrupt_event.is_set():
-                logger.warning(f"Producer: Interrupt detected before starting generation {i}. Stopping.")
-                break  # Stop producing new requests
+            # --- ADDED: Check for interruption signal from main task ---
+            if self.stop_event.is_set():
+                logger.warning(f"Producer: Stop signal detected before starting generation {i}. Stopping.")
+                break
+            # --- ADDED: Wait for pause event --- (Producer doesn't pause mid-generation, but before starting new one)
+            await self.pause_event.wait() # Wait if pause event is cleared
+            # -------------------------------------------------------------
 
             current_payload = payloads[i]
             current_target_base_name = target_paths[i]
             generated_image = None
 
-            # --- REMOVED: async with semaphore: block ---
             logger.info(f"Producer: Requesting generation {i + 1}/{total_payloads} ('{current_target_base_name}')...")
             try:
                 img_gen = self.generator.generate(current_payload, self.cfg, session)
@@ -124,18 +122,23 @@ class Optimizer:
                 logger.error(f"Producer: Error during generation task {i} ('{current_target_base_name}'): {e_gen_task}",
                              exc_info=True)
                 await queue.put((i, None, current_payload, current_target_base_name))
-            # --- End removal of semaphore block ---
 
             # Extra check after generation i completes
-            if interrupt_event.is_set():
-                logger.warning(f"Producer: Interrupt detected after finishing generation {i}. Stopping.")
+            if self.stop_event.is_set():
+                logger.warning(f"Producer: Stop signal detected after finishing generation {i}. Stopping.")
                 break
 
         logger.info("Sequential Producer finished.")
-        # Optionally signal completion: await queue.put(None)
 
-    # --- MODIFIED: sd_target_function to use sequential producer ---
     async def sd_target_function(self, params: Dict[str, Any]) -> Optional[float]:
+        # --- ADDED: Check for stop signal at the start of each trial ---
+        if self.stop_event.is_set():
+            logger.info("sd_target_function: Stop signal received. Cancelling current trial.")
+            raise asyncio.CancelledError("Optimization stopped by user.")
+        # --- ADDED: Wait for pause event ---
+        await self.pause_event.wait() # Blocks if pause_event is cleared
+        # ------------------------------------------------------------------
+
         self.iteration += 1
         iteration_start_time = time.time()
         iteration_type = (
@@ -147,11 +150,16 @@ class Optimizer:
         logger.info(f"\n--- {iteration_type} - Iteration: {self.iteration} ---")
         logger.info(f"Optimizer proposed parameters: {params}")
 
+        # --- UPDATE STATUS: Current Iteration ---
+        self.status_dict["current_iteration"] = self.iteration
+        self.status_dict["state"] = f"running - {iteration_type} iteration {self.iteration}"
+        self.status_dict["progress_percentage"] = (self.iteration / self.status_dict["total_iterations"]) * 100
+        # ----------------------------------------
+
         # --- Unload / Merge / Load (Synchronous parts remain similar) ---
-        api_url: Optional[str] = None  # Give it a type hint too for clarity
+        api_url: Optional[str] = None
         try:
             api_url = f"{self.cfg.url}/sd_optim/unload-model"
-            # Add timeout to synchronous requests
             response = requests.post(api_url, params={"webui": self.cfg.webui,
                                                       "target_url": self.cfg.url if self.cfg.webui == 'swarm' else None},
                                      timeout=30)
@@ -195,32 +203,23 @@ class Optimizer:
             logger.info(f"Model processing took {merge_duration:.2f} seconds.")
 
         except (ValueError, TypeError, FileNotFoundError) as config_error:
-            # These errors indicate a fundamental problem with the user's setup or config.
-            # The program should not continue.
             logger.error(f"FATAL CONFIGURATION ERROR: {config_error}", exc_info=True)
             logger.error("Halting optimization due to unrecoverable setup error.")
-            # Re-raising the exception will crash the program and stop Optuna.
             raise config_error
         except Exception as e_merge:
-            # This will now only catch other, more general runtime errors.
             logger.error(f"A non-fatal error occurred during model processing: {e_merge}", exc_info=True)
-            return 0.0  # Return low score for this specific trial on non-config errors
+            return 0.0
 
         if not model_path or not model_path.exists():
             logger.error(f"Model processing failed to produce a valid file at {model_path}")
             return 0.0
 
-        # This is the most critical point to free up VRAM.
         logger.info("Performing immediate post-merge memory cleanup before image generation...")
-        # We can create a simple helper for this or just put it inline.
-        # For clarity, let's keep it here.
         gc.collect()
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
             logger.info("PyTorch CUDA cache cleared.")
-        # --- END OF FIX ---
 
-        # --- Load new model (keep as is, assumes synchronous is okay) ---
         try:
             api_url = f"{self.cfg.url}/sd_optim/load-model"
             load_payload = {
@@ -239,7 +238,6 @@ class Optimizer:
             logger.error(f"Unexpected error during load request: {e_load}", exc_info=True)
             return 0.0
 
-        # --- Setup for Concurrent Generation ---
         start_gen_score_time = time.time()
         scores = []
         norm_weights = []
@@ -248,16 +246,15 @@ class Optimizer:
             logger.error("Prompter generated no payloads.")
             return 0.0
 
-        # Determine queue size: number of concurrent generators + maybe 1 buffer slot
         concurrency_limit = self.cfg.get("generator_concurrency_limit", 2)
         image_queue = asyncio.Queue(maxsize=concurrency_limit)
-        interrupt_event = asyncio.Event()  # Event for interrupt signal
+        # Pass self.stop_event to producer instead of a new interrupt_event
+        # interrupt_event = asyncio.Event() # REMOVED
         total_expected_images = len(payloads)
-        final_score_for_optimizer = 0.0  # Default score
+        final_score_for_optimizer = 0.0
         interrupt_triggered = False
-        fake_score_value = 0.0  # Value entered by user on override
+        fake_score_value = 0.0
 
-        # Configure aiohttp session (remains the same)
         keepalive_interval = self.cfg.get("generator_keepalive_interval", 60)
         connector = aiohttp.TCPConnector(
             limit=concurrency_limit,
@@ -265,7 +262,7 @@ class Optimizer:
             keepalive_timeout=keepalive_interval,
         )
         logger.info(f"Configured aiohttp TCPConnector: KeepAlive Enabled (Interval: {keepalive_interval}s)")
-        total_timeout_seconds = self.cfg.get("generator_total_timeout", 3600)  # Timeout for queue.get
+        total_timeout_seconds = self.cfg.get("generator_total_timeout", 3600)
         client_timeout_setting = None if total_timeout_seconds is None or total_timeout_seconds <= 0 else aiohttp.ClientTimeout(
             total=total_timeout_seconds)
         if client_timeout_setting:
@@ -281,50 +278,51 @@ class Optimizer:
                     timeout=client_timeout_setting
             ) as session:
 
-                # Launch ONE Sequential Producer Task
                 producer_task = asyncio.create_task(
                     self._sequential_producer(
                         payloads,
                         target_paths,
                         image_queue,
                         session,
-                        interrupt_event
+                        # No separate interrupt_event, use self.stop_event for producer
+                        # self.stop_event # Pass the global stop event
                     )
                 )
 
-                # --- Consumer Loop ---
                 images_processed = 0
                 logger.info(
                     f"Consumer: Waiting to receive and score up to {total_expected_images} images sequentially...")
 
                 for i in range(total_expected_images):
-                    if interrupt_event.is_set():
-                        logger.warning(
-                            f"Consumer: Interrupt detected before waiting for image {i}. Stopping consumption.")
+                    # --- ADDED: Check for stop signal in consumer loop ---
+                    if self.stop_event.is_set():
+                        logger.warning(f"Consumer: Stop signal detected before waiting for image {i}. Stopping consumption.")
                         interrupt_triggered = True
                         break
+                    # --- ADDED: Wait for pause event ---
+                    await self.pause_event.wait()
+                    # ---------------------------------------------------
 
                     logger.debug(f"Consumer: Waiting for image {i} from queue...")
                     try:
-                        # Use a timeout slightly longer than typical generation if possible, or the total timeout
-                        effective_timeout = total_timeout_seconds if total_timeout_seconds else 3600  # Default 1hr
+                        effective_timeout = total_timeout_seconds if total_timeout_seconds else 3600
                         queue_item = await asyncio.wait_for(image_queue.get(), timeout=effective_timeout)
                     except asyncio.TimeoutError:
                         logger.error(f"Consumer: Timeout waiting for image {i} from queue. Stopping.")
                         interrupt_triggered = True
-                        interrupt_event.set()
+                        self.stop_event.set() # Set stop event if consumer times out waiting
                         break
 
                     if queue_item is None:
                         logger.info("Consumer: Received end signal from producer.")
-                        break  # Optional: Handle producer end signal
+                        break
 
                     order_index, image, current_payload, current_target_base_name = queue_item
 
                     if order_index != i:
                         logger.error(f"Consumer: Order mismatch! Expected index {i}, got {order_index}. Stopping.")
                         interrupt_triggered = True
-                        interrupt_event.set()
+                        self.stop_event.set()
                         image_queue.task_done()
                         break
 
@@ -334,25 +332,22 @@ class Optimizer:
                         image_queue.task_done()
                         continue
 
-                    # --- Score the received image ---
                     logger.info(
                         f"Consumer: Scoring image {i + 1}/{total_expected_images} ('{current_target_base_name}')...")
                     score_start_time = time.time()
                     individual_score = 0.0
-                    processed_item = False  # Flag to track if we should call task_done
+                    processed_item = False
                     try:
                         individual_score = await self.scorer.score(image, current_payload["prompt"],
                                                                    name=current_target_base_name)
 
                         if individual_score == -1.0:
                             logger.warning(f"Consumer: OVERRIDE_SCORE detected during scoring of image {i}.")
-                            interrupt_event.set()
+                            self.stop_event.set() # Signal stop on override
                             fake_score_value = self.scorer.handle_override_prompt()
                             interrupt_triggered = True
-                            # --- DO NOT call task_done here anymore ---
-                            break  # Exit loop, finally block will be skipped for this item
+                            break
 
-                        # --- Normal Score Processing ---
                         score_duration = time.time() - score_start_time
                         logger.debug(f"Scoring index {i} took {score_duration:.2f}s.")
 
@@ -367,30 +362,25 @@ class Optimizer:
                                           current_payload)
 
                         images_processed += 1
-                        processed_item = True  # Mark that we processed normally
+                        processed_item = True
 
                     except Exception as e_score:
                         logger.error(
                             f"Consumer: Error scoring image '{current_target_base_name}' (index {i}): {e_score}",
                             exc_info=True)
-                        # Decide if task_done should be called on error? Usually yes.
-                        processed_item = True  # Mark as processed even on error? Or handle differently? Let's mark done.
+                        processed_item = True
                     finally:
-                        # --- Call task_done() ONLY if the loop didn't break early ---
                         if processed_item:
                             image_queue.task_done()
-                        # If 'break' happened, processed_item is False, so task_done is skipped here.
 
                 # End of consumer loop
 
         except asyncio.CancelledError:
-            logger.warning("Main task cancelled.")
-            if interrupt_event:
-                interrupt_event.set()  # Ensure producer stops
+            logger.warning("Main generation/scoring task cancelled.")
+            self.stop_event.set() # Ensure stop event is set if outer task cancelled
         except Exception as e_main:
             logger.error(f"Error during concurrent generation/scoring: {e_main}", exc_info=True)
-            if interrupt_event:
-                interrupt_event.set()  # Signal producer on error
+            self.stop_event.set() # Signal producer on error
         finally:
             # --- Cleanup ---
             if producer_task and not producer_task.done():
@@ -399,12 +389,10 @@ class Optimizer:
                 with suppress(asyncio.CancelledError):
                     await producer_task
                 logger.info("Producer task cancelled.")
-            # Session closes automatically with 'async with'
 
         gen_score_duration = time.time() - start_gen_score_time
         logger.info(f"Generation & scoring phase took {gen_score_duration:.2f} seconds.")
 
-        # --- Calculate Final Score ---
         if interrupt_triggered:
             logger.info(f"Iteration interrupted by override. Using final score: {fake_score_value:.4f}")
             avg_score = fake_score_value
@@ -419,11 +407,7 @@ class Optimizer:
                 logger.error(f"Error calculating average score: {e_avg}", exc_info=True)
                 avg_score = 0.0
 
-        # --- Update Best Score & Logging ---
         self.update_best_score(params, avg_score)
-
-        # --- Collect Data for Artist ---
-        #       self.artist.collect_data(avg_score, params)
 
         iteration_duration = time.time() - iteration_start_time
         logger.info(
@@ -431,19 +415,16 @@ class Optimizer:
 
         return avg_score
 
-    # --- save_img, image_path, update_best_score remain the same ---
     def save_img(
             self,
             image: Image.Image,
-            name: str,  # This is the original payload name base (e.g., 'noob6')
+            name: str,
             score: float,
             it: int,
-            img_order_index: int,  # <<< Use the order index here
+            img_order_index: int,
             payload: Dict,
     ) -> Optional[Path]:
-        # Use batch_n as the image index within the iteration
         img_path = self.image_path(name, score, it, img_order_index)
-
         pnginfo = PngImagePlugin.PngInfo()
         for k, v in payload.items():
             try:
@@ -457,27 +438,28 @@ class Optimizer:
             logger.error(f"Error saving image to {img_path}: {e}"); return None
         return img_path
 
-    def image_path(self, name: str, score: float, it: int, img_order_index: int) -> Path:  # <<< Use order index
+    def image_path(self, name: str, score: float, it: int, img_order_index: int) -> Path:
         base_dir = Path(HydraConfig.get().runtime.output_dir)
         imgs_sub_dir = base_dir / "imgs"
-        # Use img_order_index as the sequence number within the iteration
         return imgs_sub_dir / f"{it:03}-{img_order_index:02}-{name}-{score:4.3f}.png"
 
     def update_best_score(self, params: Dict, avg_score: float):
-        logger.info(f"{'-' * 10}\nRun score: {avg_score}")
-        # Format parameters for logging nicely
+        logger.info(f"{'-' * 10}
+Run score: {avg_score}")
         param_str = ", ".join(f"{k}={v:.4f}" if isinstance(v, float) else f"{k}={v}" for k, v in params.items())
-        logger.info(f"Parameters: {{{param_str}}}")  # Use curly braces for dict-like look
+        logger.info(f"Parameters: {{{param_str}}}")
 
         if avg_score > self.best_rolling_score:
-            logger.info("\n NEW BEST!")
+            logger.info("
+ NEW BEST!")
             self.best_rolling_score = avg_score
 
-            # The current model's path is already set in self.merger.output_file
-            current_model_path = self.merger.output_file
+            # --- UPDATE STATUS: Best Score and Parameters ---
+            self.status_dict["best_score"] = avg_score
+            self.status_dict["best_parameters"] = params
+            # ------------------------------------------------
 
-            # Instead of calling a naming function, we just derive the "best" name
-            # from the current file's name. It's simple and has no dependencies!
+            current_model_path = self.merger.output_file
             if current_model_path:
                 new_best_path = current_model_path.with_name(
                     current_model_path.stem + "_best" + current_model_path.suffix
@@ -486,7 +468,6 @@ class Optimizer:
                 logger.error("Cannot determine new best path because output_file is not set.")
                 return
 
-            # Check if a different previous best model exists and delete it
             if self.merger.best_output_file and self.merger.best_output_file.exists() and self.merger.best_output_file != new_best_path:
                 try:
                     os.remove(self.merger.best_output_file)
@@ -494,10 +475,8 @@ class Optimizer:
                 except OSError as e_del:
                     logger.error(f"Error deleting previous best model: {e_del}")
 
-            # Update the best model path in the merger
             self.merger.best_output_file = new_best_path
 
-            # Move the current model to the new "best" path
             try:
                 if self.merger.output_file and self.merger.output_file.exists():
                     shutil.move(self.merger.output_file, self.merger.best_output_file)
@@ -507,10 +486,8 @@ class Optimizer:
             except OSError as e_mov:
                 logger.error(f"Error moving {self.merger.output_file} to {self.merger.best_output_file}: {e_mov}")
 
-            # Static method call is correct
             Optimizer.save_best_log(params, self.iteration)
         else:
-            # Delete the current iteration's model file if it's not the best and exists
             if self.merger.output_file and self.merger.output_file.exists():
                 try:
                     os.remove(self.merger.output_file)
@@ -518,7 +495,6 @@ class Optimizer:
                 except OSError as e_del_non:
                     logger.error(f"Error deleting non-best model {self.merger.output_file}: {e_del_non}")
 
-    # --- optimize, postprocess, validate_optimizer_config etc. remain abstract ---
     @abstractmethod
     async def optimize(self) -> None:
         raise NotImplementedError("Not implemented")
@@ -545,12 +521,11 @@ class Optimizer:
         try:
             log_path = Path(HydraConfig.get().runtime.output_dir) / "best.log"
             with open(log_path, "w", encoding="utf-8") as f:
-                f.write(f"Best Iteration: {iteration}.\n\n")
-                # Nicer formatting for parameters
+                f.write(f"Best Iteration: {iteration}.\n")
                 param_lines = [f"{k}: {v}" for k, v in params.items()]
                 f.write("\n".join(param_lines))
                 f.write("\n")
-        except ValueError:  # Hydra not initialized
+        except ValueError: # Hydra not initialized
             logger.error("Hydra context not available, cannot save best.log.")
         except Exception as e:
             logger.error(f"Failed to save best.log: {e}")

@@ -1,6 +1,7 @@
 # optuna_optimizer.py - Version 1.5 - directory correction
 
 import os
+import asyncio
 import subprocess
 import time
 import json
@@ -28,8 +29,13 @@ logger = logging.getLogger(__name__)
 
 
 class OptunaOptimizer(Optimizer):
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
+    def __init__(self, cfg, stop_event: asyncio.Event, pause_event: asyncio.Event, status_dict: Dict):
+        super().__init__(
+            cfg=cfg,
+            stop_event=stop_event,
+            pause_event=pause_event,
+            status_dict=status_dict
+        )
         self.study = None
         self._param_bounds = None
         #        self.log_name = self.cfg.get("log_name", "default")
@@ -435,6 +441,9 @@ class OptunaOptimizer(Optimizer):
         # Run optimization if there are trials remaining
         if remaining_trials > 0:
             try:
+                # Update status dict with total iterations planned
+                self.status_dict["total_iterations"] = total_trials_planned
+
                 import asyncio
                 await asyncio.to_thread(
                     self.study.optimize,
@@ -445,12 +454,18 @@ class OptunaOptimizer(Optimizer):
                     # --- VVV REMOVED _checkpoint_callback VVV ---
                     callbacks=[self._trial_callback]  # Only log trial info
                 )
-
+            except asyncio.CancelledError:
+                logger.info("Optimization task cancelled by stop event.")
+                # asyncio.CancelledError is a normal way to stop the async task,
+                # it doesn't necessarily need special handling here beyond logging.
+                # The main loop managing the stop_event handles cleanup.
             except KeyboardInterrupt:
                 logger.info("Optimization interrupted by user.")
                 # --- VVV REMOVED self.save_checkpoint() VVV ---
             except Exception as e:
                 logger.error(f"Optimization failed: {e}", exc_info=True)  # Log full traceback
+                self.status_dict["status"] = "Error"
+                self.status_dict["error_message"] = str(e)
                 # --- VVV REMOVED self.save_checkpoint() VVV ---
                 raise  # Re-raise the exception
         else:
@@ -593,6 +608,18 @@ class OptunaOptimizer(Optimizer):
         # We can also store additional performance metrics here
         if hasattr(self, 'iteration'):
             trial.set_user_attr("iteration", self.iteration)
+
+        # --- Update status_dict ---
+        self.status_dict["current_iteration"] = trial.number + 1 # Optuna trial number is 0-indexed
+        total_iterations = self.status_dict.get("total_iterations", self.cfg.optimizer.init_points + self.cfg.optimizer.n_iters) # Fallback if not set
+        self.status_dict["progress_percentage"] = min(100.0, ((trial.number + 1) / total_iterations) * 100.0)
+
+        # Update best score and parameters
+        if study.best_value is not None:
+             self.status_dict["best_score"] = study.best_value
+        if study.best_params is not None:
+             self.status_dict["best_parameters"] = study.best_params
+        # --- End status_dict update ---
 
         # Still keep our custom logging for backward compatibility
         log_data = {

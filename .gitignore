@@ -4,6 +4,9 @@ __pycache__/
 *$py.class
 *.so
 
+# --- Frontend npm stuff ---
+frontend/node_modules/
+
 # --- Distribution / Packaging ---
 .Python
 build/

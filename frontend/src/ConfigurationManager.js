@@ -25,16 +25,19 @@ function ConfigurationManager() {
   };
 
   return (
-    <div className={styles.container}>
-      <select onChange={(e) => setActiveTab(e.target.value)} value={activeTab}>
-        <option value="Main Config">Main Config</option>
-        <option value="Optimization Guide">Optimization Guide</option>
-        <option value="Cargo">Cargo</option>
-      </select>
+    <div className={styles.layoutContainer}>
+      <div className={styles.dropdownContainer}>
+        <select onChange={(e) => setActiveTab(e.target.value)} value={activeTab}>
+          <option value="Main Config">Main Config</option>
+          <option value="Optimization Guide">Optimization Guide</option>
+          <option value="Cargo">Cargo</option>
+        </select>
+      </div>
 
-
-      <div style={{ marginTop: '20px' }}>
-        {renderTabContent()}
+      <div className={styles.container}>
+        <div className={styles.contentContainer}>
+          {renderTabContent()}
+        </div>
       </div>
     </div>
   );

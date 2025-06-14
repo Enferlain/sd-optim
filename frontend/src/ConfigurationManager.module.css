@@ -1,23 +1,45 @@
 /* sd-optim/frontend/src/ConfigurationManager.module.css */
 
+.layoutContainer {
+    display: flex;
+    justify-content: center; /* Center horizontally */
+    align-items: center; /* Center vertically */
+    height: 100vh; /* Take full viewport height */
+}
+
 .container {
-    position: absolute;
-    top: 50%;
-    left: 50%;
-    transform: translate(-50%, -50%);
     background-color: rgba(255, 255, 255, 0.2); /* Semi-transparent white */
     backdrop-filter: blur(10px); /* Frosted glass effect */
     border-radius: 10px;
     padding: 20px;
     box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
     width: 90%;
-    max-width: 800px; /* Adjust as needed */
+    max-width: 900px; /* Adjust as needed */
+    height: 800px;
     color: #333; /* Default text color */
+    flex-grow: 1; /* Allow container to grow */
+    margin-left: 20px; /* Space between dropdown isle and content panel */
 }
 
-.container select {
+.dropdownContainer {
+    width: 200px; /* Adjust width as needed */
+    background-color: rgba(255, 255, 255, 0.2); /* Semi-transparent white */
+    backdrop-filter: blur(10px); /* Frosted glass effect */
+    border-radius: 10px;
+    padding: 20px;
+    box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+}
+
+.dropdownContainer select {
     padding: 8px 12px;
     border-radius: 5px;
+ width: 100%; /* Make select take full width of its container */
+    box-sizing: border-box; /* Include padding and border in element's total width */
+ border: 1px solid rgba(255, 255, 255, 0.3);
+ background-color: rgba(255, 255, 255, 0.1);
+    color: #333;
+    font-size: 1rem;
+    margin-bottom: 20px; /* Space below the dropdown */
     border: 1px solid rgba(255, 255, 255, 0.3);
     background-color: rgba(255, 255, 255, 0.1);
     color: #333;
@@ -26,8 +48,13 @@
     cursor: pointer;
 }
 
-.container select:focus {
+.dropdownContainer select:focus {
     outline: none;
     border-color: rgba(255, 255, 255, 0.5);
     box-shadow: 0 0 0 0.2rem rgba(255, 255, 255, 0.25);
+}
+
+.contentContainer {
+ flex-grow: 1; /* Make content container take up remaining space */
+    padding-left: 20px; /* Optional: add some padding to the left of content */
 }

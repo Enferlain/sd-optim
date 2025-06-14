@@ -31,7 +31,7 @@ from dataclasses import field, dataclass
 
 from hydra.core.hydra_config import HydraConfig
 from omegaconf import DictConfig, ListConfig
-from pynput import keyboard
+# from pynput import keyboard
 from copy import deepcopy
 
 from sd_optim.merge_methods import MergeMethods
@@ -1175,8 +1175,8 @@ def modify_state_dict(state_dict: Dict, adjustments: Dict, is_xl_model: bool) ->
 
 
 # Hotkey behavior
-HOTKEY_SWITCH_MANUAL = keyboard.Key.ctrl, 'm'  # Ctrl+M for manual scoring
-HOTKEY_SWITCH_AUTO = keyboard.Key.ctrl, 'a'  # Ctrl+A for automatic scoring
+# HOTKEY_SWITCH_MANUAL = keyboard.Key.ctrl, 'm'  # Ctrl+M for manual scoring
+# HOTKEY_SWITCH_AUTO = keyboard.Key.ctrl, 'a'  # Ctrl+A for automatic scoring
 
 
 # ... other hotkeys ...

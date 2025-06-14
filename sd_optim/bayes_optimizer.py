@@ -10,7 +10,7 @@ import pickle  # Import pickle
 
 from typing import Dict, List, Any, Optional  # Import Any
 from pathlib import Path
-from bayes_opt import BayesianOptimization, Events, UtilityFunction
+from bayes_opt import BayesianOptimization, Events # UtilityFunction
 from bayes_opt.logger import JSONLogger
 from bayes_opt.domain_reduction import SequentialDomainReductionTransformer
 from hydra.core.hydra_config import HydraConfig

@@ -19,19 +19,6 @@ from typing import Dict, List, Optional, Tuple, Any
 from hydra.core.hydra_config import HydraConfig
 from omegaconf import DictConfig, open_dict, ListConfig
 from PIL import Image, PngImagePlugin
-from sd_optim.models.Laion import Laion as AES
-from sd_optim.models.ImageReward import ImageReward as IMGR
-from sd_optim.models.CLIPScore import CLIPScore as CLP
-from sd_optim.models.BLIPScore import BLIPScore as BLP
-from sd_optim.models.HPSv21 import HPSv21Scorer as HPS
-from sd_optim.models.PickScore import PickScore as PICK
-from sd_optim.models.WDAes import WDAes as WDA
-from sd_optim.models.ShadowScore import ShadowScore as SS
-from sd_optim.models.CafeScore import CafeScore as CAFE
-from sd_optim.models.NoAIScore import NoAIScore as NOAI
-from sd_optim.models.CityAesthetics import CityAestheticsScorer as CITY
-from sd_optim.models.AestheticV25 import AestheticV25 as AES25
-from sd_optim.models.LumiAnatomy import HybridAnatomyScorer as LUMI
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO)
@@ -371,27 +358,27 @@ class AestheticScorer:
 
         # --- Scorer Factory Configuration ---
         scorer_factory = {
-            "laion": {"class": AES, "files": {"model_path": "file_name"},
+            "laion": {"class_path": "sd_optim.models.Laion.Laion", "files": {"model_path": "file_name"},
                       "extra_args": {"clip_model_path": str(clip_l_path)}},
-            "chad": {"class": AES, "files": {"model_path": "file_name"},
+            "chad": {"class_path": "sd_optim.models.Laion.Laion", "files": {"model_path": "file_name"},
                      "extra_args": {"clip_model_path": str(clip_l_path)}},
-            "wdaes": {"class": WDA, "files": {"model_path": "file_name"},
+            "wdaes": {"class_path": "sd_optim.models.WDAes.WDAes", "files": {"model_path": "file_name"},
                       "extra_args": {"clip_path": str(clip_b_path)}},
-            "clip": {"class": CLP, "files": {"model_path": "file_name"}},
-            "blip": {"class": BLP, "files": {"model_path": "file_name"}, "extra_args": {"med_config": med_config_path}},
-            "imagereward": {"class": IMGR, "files": {"model_path": "file_name"},
+            "clip": {"class_path": "sd_optim.models.CLIPScore.CLIPScore", "files": {"model_path": "file_name"}},
+            "blip": {"class_path": "sd_optim.models.BLIPScore.BLIPScore", "files": {"model_path": "file_name"}, "extra_args": {"med_config": med_config_path}},
+            "imagereward": {"class_path": "sd_optim.models.ImageReward.ImageReward", "files": {"model_path": "file_name"},
                             "extra_args": {"med_config": med_config_path}},
-            "hpsv21": {"class": HPS, "files": {"pathname": "file_name"}},
-            "pick": {"class": PICK, "files": {"model_path": "file_name"}},
-            "shadowv2": {"class": SS, "files": {"model_path": "file_name"}},
-            "cafe": {"class": CAFE, "files": {"model_path": "file_name"}},
-            "noai": {"class": NOAI,
+            "hpsv21": {"class_path": "sd_optim.models.HPSv21.HPSv21Scorer", "files": {"pathname": "file_name"}},
+            "pick": {"class_path": "sd_optim.models.PickScore.PickScore", "files": {"model_path": "file_name"}},
+            "shadowv2": {"class_path": "sd_optim.models.ShadowScore.ShadowScore", "files": {"model_path": "file_name"}},
+            "cafe": {"class_path": "sd_optim.models.CafeScore.CafeScore", "files": {"model_path": "file_name"}},
+            "noai": {"class_path": "sd_optim.models.NoAIScore.NoAIScore",
                      "files": {"model_path_class": "class", "model_path_real": "real", "model_path_anime": "anime"}},
-            "cityaes": {"class": CITY, "files": {"pathname": "file_name"}},
-            "aestheticv25": {"class": AES25, "files": {"model_path": "file_name"}},
-            "luminaflex": {"class": LUMI, "files": {"model_path": "file_name", "config_path": "config_name"}},
-            "lumidinov2l": {"class": LUMI, "files": {"model_path": "file_name", "config_path": "config_name"}},
-            "lumidinov2g": {"class": LUMI, "files": {"model_path": "file_name", "config_path": "config_name"}},
+            "cityaes": {"class_path": "sd_optim.models.CityAesthetics.CityAestheticsScorer", "files": {"pathname": "file_name"}},
+            "aestheticv25": {"class_path": "sd_optim.models.AestheticV25.AestheticV25", "files": {"model_path": "file_name"}},
+            "luminaflex": {"class_path": "sd_optim.models.LumiAnatomy.HybridAnatomyScorer", "files": {"model_path": "file_name", "config_path": "config_name"}},
+            "lumidinov2l": {"class_path": "sd_optim.models.LumiAnatomy.HybridAnatomyScorer", "files": {"model_path": "file_name", "config_path": "config_name"}},
+            "lumidinov2g": {"class_path": "sd_optim.models.LumiAnatomy.HybridAnatomyScorer", "files": {"model_path": "file_name", "config_path": "config_name"}},
             # --- Add other custom scorers like LumiStyle here ---
             # "lumistyle": {
             #     "class": AnatomyScorer if LUMI_ANATOMY_AVAILABLE else None, # Or a different StyleScorer class
@@ -417,7 +404,15 @@ class AestheticScorer:
                 continue
 
             config = scorer_factory[evaluator_lower]
-            ScorerClass = config.get("class")
+            ScorerClass = None
+            class_path = config.get("class_path")
+
+            if class_path:
+                try:
+                    module_name, class_name = class_path.rsplit('.', 1)
+                    ScorerClass = getattr(__import__(module_name, fromlist=[class_name]), class_name)
+                except ImportError as e:
+                    logger.error(f"Failed to import scorer class for '{evaluator}': {e}")
 
             if ScorerClass is None:
                 logger.error(f"Scorer class for '{evaluator}' not available (possibly failed import). Skipping.")

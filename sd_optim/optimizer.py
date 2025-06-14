@@ -444,14 +444,12 @@ class Optimizer:
         return imgs_sub_dir / f"{it:03}-{img_order_index:02}-{name}-{score:4.3f}.png"
 
     def update_best_score(self, params: Dict, avg_score: float):
-        logger.info(f"{'-' * 10}
-Run score: {avg_score}")
+        logger.info(f"{'-' * 10}\nRun score: {avg_score}")
         param_str = ", ".join(f"{k}={v:.4f}" if isinstance(v, float) else f"{k}={v}" for k, v in params.items())
         logger.info(f"Parameters: {{{param_str}}}")
 
         if avg_score > self.best_rolling_score:
-            logger.info("
- NEW BEST!")
+            logger.info("\n NEW BEST!")
             self.best_rolling_score = avg_score
 
             # --- UPDATE STATUS: Best Score and Parameters ---
@@ -521,11 +519,12 @@ Run score: {avg_score}")
         try:
             log_path = Path(HydraConfig.get().runtime.output_dir) / "best.log"
             with open(log_path, "w", encoding="utf-8") as f:
-                f.write(f"Best Iteration: {iteration}.\n")
+                f.write(f"Best Iteration: {iteration}.\n\n")
+                # Nicer formatting for parameters
                 param_lines = [f"{k}: {v}" for k, v in params.items()]
                 f.write("\n".join(param_lines))
                 f.write("\n")
-        except ValueError: # Hydra not initialized
+        except ValueError:  # Hydra not initialized
             logger.error("Hydra context not available, cannot save best.log.")
         except Exception as e:
             logger.error(f"Failed to save best.log: {e}")

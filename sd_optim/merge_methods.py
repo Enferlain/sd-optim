@@ -1,7 +1,7 @@
 import re
 import sys
 
-import pywt
+# import pywt
 import sd_mecha
 import functools
 import pathlib
@@ -14,7 +14,7 @@ import safetensors.torch
 import torch.nn.functional as F
 import numpy as np
 import fnmatch
-import geoopt
+# import geoopt
 
 from collections import defaultdict
 from dataclasses import dataclass
@@ -24,10 +24,10 @@ from scipy.stats import binom, rankdata
 from torch import Tensor, polar
 from torch.utils import checkpoint
 from typing import Optional, Callable, Dict, Tuple, TypeVar, Generic, get_type_hints, get_origin, Union, get_args, List, Set, Iterable
-from pytorch_wavelets import DWTForward, DWTInverse
+# from pytorch_wavelets import DWTForward, DWTInverse
 from sd_mecha import Parameter, Return, merge_method  # Import Parameter and Return
 
-from sd_optim.svd import torch_svd_lowrank # you need to make your own or use the one from mecha
+# from sd_optim.svd import torch_svd_lowrank # you need to make your own or use the one from mecha
 from torch import Tensor # Import Tensor
 
 EPSILON = 1e-10

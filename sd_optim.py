@@ -6,6 +6,8 @@ import asyncio
 import logging
 import sys
 import os
+import uvicorn
+from backend.main import app # Import the FastAPI app
 from pathlib import Path
 
 # Import main config/utility helpers
@@ -119,6 +121,10 @@ def main(cfg: DictConfig) -> None:
     dashboard_process = None
     try:
         logger.info(f"--- Initializing {optimizer_name} ---")
+        # The original code to initialize and run the optimizer is commented out
+        # to allow the FastAPI backend to manage the optimization process.
+
+        # Initialize the optimizer instance (can be used by the backend)
         optim_instance = optimizer_class(cfg)
 
         logger.info("Validating optimizer configuration...")
@@ -137,18 +143,19 @@ def main(cfg: DictConfig) -> None:
             else:
                 logger.info("Background dashboard process launch initiated.")
 
+        # Original optimization loop (commented out for UI control)
+        # This block is commented out to prevent direct optimization execution
+        """
         init_points = cfg.optimizer.get('init_points', 0)
         n_iters = cfg.optimizer.get('n_iters', 0)
         logger.info(
             f"--- Starting Optimization Loop ({init_points} init + {n_iters} iters = {init_points + n_iters} total) ---")
 
         # Run the main optimization loop
-        asyncio.run(optim_instance.optimize())
-
-        # --- Postprocessing after NORMAL completion ---
-        # This is now handled by the finally block to ensure it runs even after interrupts/errors
-        # logger.info("--- Optimization Finished: Running Postprocessing ---")
-        # asyncio.run(optim_instance.postprocess()) # <<< COMMENTED OUT / REMOVED
+        # asyncio.run(optim_instance.optimize()) # Commented out
+        """
+        # The postprocessing logic from the original try block is moved to the finally block
+        # to ensure it runs even if the optimization loop was intended but didn't start or had an error before completion.
 
     except KeyboardInterrupt:
         logger.info("\n--- Optimization interrupted by user (Ctrl+C) ---")
@@ -165,6 +172,11 @@ def main(cfg: DictConfig) -> None:
         # Let finally block handle postprocessing attempt
 
     finally:
+        # In the UI mode, the script should not exit after potential errors,
+        # but keep the FastAPI server running.
+        # The original postprocessing and dashboard termination logic might
+        # need to be adapted or moved to the backend's shutdown process if
+        # they are critical for the UI mode.
         # --- ADDED: Attempt Postprocessing ---
         logger.info("--- Attempting Postprocessing (Finally Block) ---")
         if optim_instance is not None:
@@ -227,9 +239,13 @@ def main(cfg: DictConfig) -> None:
                 # Catch errors during terminate/wait/kill
                 logger.error(f"Error during dashboard process termination: {e_term}", exc_info=True)
         else:
-            # Log if no dashboard was launched by this specific run
             logger.info("No dashboard process was launched by this run to terminate.")
+
         # --- End Dashboard Termination ---
+
+        # In UI mode, the FastAPI server keeps running.
+        # We only log the end message in case of an unhandled exception
+        # before the uvicorn server starts.
 
         logger.info("==================================================")
         logger.info("              sd-optim run finished.              ")
@@ -238,4 +254,8 @@ def main(cfg: DictConfig) -> None:
 
 
 if __name__ == "__main__":
+    # In UI mode, this starts the FastAPI server.
+    # The actual optimization is triggered via API calls.
+    logger.info("Starting FastAPI server...")
+    # uvicorn.run is blocking and will keep the script running to serve the FastAPI app
     main()

@@ -1,9 +1,17 @@
-import React from 'react';
+import React, { useState } from 'react';
+import LandingPage from '/home/user/sdoptimui/sd-optim/frontend/src/LandingPage.js';
+import ConfigurationManager from '/home/user/sdoptimui/sd-optim/frontend/src/ConfigurationManager.js'; // Import the new component
 
 function App() {
+  const [isBackendLaunched, setIsBackendLaunched] = useState(false);
+
+  const handleBackendLaunch = () => {
+    setIsBackendLaunched(true);
+  };
+
   return (
     <div>
-      <h1>Hello, SD-Optim UI!</h1>
+      {isBackendLaunched ? <ConfigurationManager /> : <LandingPage onBackendLaunch={handleBackendLaunch} />}
     </div>
   );
 }

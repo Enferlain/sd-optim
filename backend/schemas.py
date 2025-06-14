@@ -190,17 +190,18 @@ class Strategy(BaseModel):
 
 class GroupStrategyModel(Strategy):
     groups: List[GroupStrategy]
+    keys: Optional[List[str]] = Field(default_factory=list)
 
     @validator('groups')
     def check_groups_for_group_strategy(cls, v, values):
         if values.get('type') == 'group' and not v:
-            raise ValueError(''group' strategy must have a 'groups' list')
+            raise ValueError("'group' strategy must have a 'groups' list")
         return v
 
     @validator('keys', always=True)
     def check_keys_for_select_or_single_strategy(cls, v, values):
         if values.get('type') in ['select', 'single'] and not v:
-             raise ValueError(''select' or 'single' strategy must have a 'keys' list')
+            raise ValueError("'select' or 'single' strategy must have a 'keys' list")
         return v
 
 class Component(BaseModel):

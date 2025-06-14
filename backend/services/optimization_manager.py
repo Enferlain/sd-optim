@@ -40,7 +40,7 @@ class OptimizationManager:
             self._pause_event = asyncio.Event() # For pausing the optimization
             self._pause_event.set() # Start in a 'resumed' state (not paused)
             self._is_initialized = True
- self.active_connections: list[WebSocket] = []
+            self.active_connections: list[WebSocket] = []
 
     async def _run_optimization_task(self, cfg_data: ConfigUpdate):
         """
@@ -140,7 +140,7 @@ class OptimizationManager:
     async def pause_optimization(self) -> Dict[str, Any]:
         if self._optimization_task and self.status["state"] == "running":
             self._pause_event.clear() # Set event to block the loop
- self.status["state"] = "paused" # State becomes 'paused' once event is cleared
+            self.status["state"] = "paused" # State becomes 'paused' once event is cleared
             self.status["log_messages"].append("Attempting to pause optimization...")
             await self.send_status_update()
             logger.info("OptimizationManager: Pause requested.")
@@ -151,7 +151,7 @@ class OptimizationManager:
         if self._optimization_task and self.status["state"] == "paused":
             self._pause_event.set() # Clear event to unblock the loop
             self.status["state"] = "running"
- await self.send_status_update()
+            await self.send_status_update()
             self.status["log_messages"].append("Resuming optimization...")
             logger.info("OptimizationManager: Resume requested.")
             return {"message": "Optimization resumed.", "status": self.status}

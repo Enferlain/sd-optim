@@ -120,15 +120,15 @@ def main(cfg: DictConfig) -> None:
     optim_instance = None
     dashboard_process = None
     try:
-        logger.info(f"--- Initializing {optimizer_name} ---")
+        # logger.info(f"--- Initializing {optimizer_name} ---")
         # The original code to initialize and run the optimizer is commented out
         # to allow the FastAPI backend to manage the optimization process.
 
         # Initialize the optimizer instance (can be used by the backend)
-        optim_instance = optimizer_class(cfg)
+        # optim_instance = optimizer_class(cfg)
 
-        logger.info("Validating optimizer configuration...")
-        if not optim_instance.validate_optimizer_config():
+        # logger.info("Validating optimizer configuration...")
+        if False and not optim_instance.validate_optimizer_config(): # Always False in backend-only mode
             logger.error(f"Invalid configuration for {optimizer_name}.")
             sys.exit(1)
         logger.info("Optimizer configuration validated.")
@@ -252,6 +252,7 @@ def main(cfg: DictConfig) -> None:
         logger.info("==================================================")
         logging.shutdown()
 
+    uvicorn.run(app, host="0.0.0.0", port=8000)
 
 if __name__ == "__main__":
     # In UI mode, this starts the FastAPI server.

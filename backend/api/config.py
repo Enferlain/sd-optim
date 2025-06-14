@@ -24,9 +24,10 @@ router = APIRouter(
 )
 
 # Define payloads_dir here as it's used by multiple endpoints
-payloads_dir = Path("./sd-optim/conf/payloads").resolve()
-config_tmpl_path = Path("./sd-optim/conf/config.tmpl.yaml").resolve()
-guide_tmpl_path = Path("./sd-optim/conf/optimization_guide/guide.tmpl.yaml").resolve()
+base_dir = Path(__file__).resolve().parent.parent.parent
+payloads_dir = (base_dir / "conf" / "payloads").resolve()
+config_tmpl_path = (base_dir / "conf" / "config.yaml").resolve()
+guide_tmpl_path = (base_dir / "conf" / "optimization_guide" / "guide.yaml").resolve()
 
 
 @router.get("/")

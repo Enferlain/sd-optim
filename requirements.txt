@@ -1,5 +1,5 @@
 # --- Core Dependencies ---
-torch>=2.1.0             # Base deep learning library (check sd-mecha requirement)
+# torch>=2.1.0             # Base deep learning library (check sd-mecha requirement)
 safetensors>=0.4.2       # For efficient model loading/saving (check sd-mecha requirement)
 numpy>=1.26.0            # Numerical operations (check sd-mecha requirement)
 PyYAML>=6.0.1            # For reading YAML configs (check sd-mecha requirement)
@@ -20,20 +20,20 @@ optuna-fast-fanova       # Recommended Optuna dependency
 
 # --- Image/Scoring/CLIP Related ---
 Pillow                   # Image processing
-clip                     # Original OpenAI CLIP (might be pulled by others)
-open_clip_torch          # Alternative CLIP implementation (often preferred)
+# clip                     # Original OpenAI CLIP (might be pulled by others)
+# open_clip_torch          # Alternative CLIP implementation (often preferred)
 transformers             # Hugging Face library (used by many scorers like BLIP, CLIP) !new version needed!
 tqdm>=4.66.2             # mecha compat
 # openai-clip            # Usually redundant if 'clip' or 'open_clip_torch' is present
 # aesthetic-predictor-v2-5 # Pulled via pip install aesthetic-predictor-v2-5 directly
-hpsv2                    # Pulled via pip install hpsv2 directly
+# hpsv2                    # Pulled via pip install hpsv2 directly
 # Other potential scorer dependencies might be pulled automatically by the scorer libraries themselves
 
 # --- Plotting & Visualization ---
 # matplotlib             # Commented Out: Not directly used in Artist/OptunaOptimizer plots anymore. May still be needed as an indirect dependency of Optuna/other libs. Keep commented unless issues arise.
 # seaborn                # Commented Out: Seems unused in the provided code.
 plotly                   # Interactive plots (used by Optuna visualizations & Artist)
-kaleido                  # Needed to save Plotly figures as static images
+# kaleido                  # Needed to save Plotly figures as static images
 
 # --- sd-mecha Specific Dependencies (from its requirements.txt) ---
 click>=8.1.7             # Used by sd-mecha scripts (good to have for compatibility)
@@ -46,8 +46,8 @@ python-Levenshtein       # Speeds up fuzzywuzzy (optional but recommended)
 lightgbm                 # Seems unrelated unless used by a specific scorer? Review if needed.
 scikit-learn             # Used by some ML tasks, possibly by a scorer? Review if needed.
 tensordict               # Appears related to PyTorch/distributed? Review if needed by models/scorers.
-timm                     # Image models library, possibly used by a scorer? Review if needed.
-fairscale                # Distributed training/sharding library. Unlikely needed unless doing specific advanced things.
+# timm                     # Image models library, possibly used by a scorer? Review if needed.
+# fairscale                # Distributed training/sharding library. Unlikely needed unless doing specific advanced things.
 # pynput                 # REMOVED: Was for old hotkey system, we'll use asyncio/other methods
 
 # --- Testing ---

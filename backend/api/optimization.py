@@ -42,18 +42,19 @@ async def get_optimization_status() -> Dict[str, Any]:
 
 @router.websocket("/ws")
 async def websocket_status_endpoint(websocket: WebSocket):
- """WebSocket endpoint for real-time optimization status updates."""
+    """WebSocket endpoint for real-time optimization status updates."""
     await websocket.accept()
     optimization_manager.add_websocket(websocket)
     try:
- # Send initial status on connection
+        # Send initial status on connection
         initial_status = optimization_manager.get_status()
         await websocket.send_json(initial_status)
         # Keep the connection open
- while True:
- await websocket.receive_text() # Just receive to keep connection open, manager pushes updates
+        while True:
+            await websocket.receive_text()  # Just receive to keep connection open, manager pushes updates
     except WebSocketDisconnect:
         optimization_manager.remove_websocket(websocket)
+
 # Future: Endpoints for getting detailed history, best parameters etc.
 # These would likely call methods on the optimization_manager that retrieve data
 # from the optimizer_instance or its study (for Optuna).

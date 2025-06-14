@@ -1,5 +1,10 @@
 /* sd-optim/frontend/src/ConfigurationManager.module.css */
 
+body, html {
+    margin: 0;
+    padding: 0;
+}
+
 .layoutContainer {
     display: flex;
     justify-content: center; /* Center horizontally */
@@ -19,6 +24,8 @@
     color: #333; /* Default text color */
     flex-grow: 1; /* Allow container to grow */
     margin-left: 20px; /* Space between dropdown isle and content panel */
+    max-height: 800px; /* Set a max height for scrolling */
+    overflow-y: auto; /* Enable vertical scrolling */
 }
 
 .dropdownContainer {

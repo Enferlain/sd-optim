@@ -1,19 +1,27 @@
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 
 from backend.api import config, optimization
 
 app = FastAPI()
 
-@app.get("/")
+# Add CORS middleware
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+@app.get("/api")  # Change this to avoid conflict
 async def read_root():
     return {"message": "SD-Optim Standalone Backend"}
 
-# Include the configuration router
+# Include API routers FIRST
 app.include_router(config.router)
-
-# Include the optimization router
 app.include_router(optimization.router)
 
-if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+# Mount static files LAST (catches remaining requests)
+app.mount("/", StaticFiles(directory="/home/user/sdoptimui/sd-optim/frontend/build", html=True), name="static")

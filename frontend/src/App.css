@@ -1,0 +1,18 @@
+body, #root {
+    margin: 0;
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Oxygen',
+      'Ubuntu', 'Cantarell', 'Fira Sans', 'Droid Sans', 'Helvetica Neue',
+      sans-serif;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  
+    /* --- This is our new background! --- */
+    /* You can replace this URL with any image you want! */
+    background-image: url('https://github.com/Enferlain/Enferlain/blob/main/images/00063-1387548145bb.png?raw=true');
+    background-size: cover;
+    background-position: center;
+    background-attachment: fixed; /* This makes it so the background doesn't scroll with the content */
+    height: 100vh;
+    width: 100vw;
+    overflow: hidden; /* Prevents scrollbars on the main body */
+  }

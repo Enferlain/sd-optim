@@ -1,525 +1,247 @@
 import React, { useState, useEffect } from 'react';
-import { useForm } from 'react-hook-form';
-// Remove the useState hook for the config state
-const MainConfigTab = () => {
-  const { register, handleSubmit, formState: { errors }, reset, watch, getValues } = useForm();
-  const [isLoading, setIsLoading] = useState(true);
-  const [error, setError] = useState(null);
+import { useForm, useFieldArray, Controller } from 'react-hook-form';
+import styles from './MainConfigTab.module.css';
 
-  useEffect(() => {
-    // For Google Cloud Workstations, each port gets its own subdomain
-    const currentHost = window.location.hostname;
-    
-    const getBackendHost = () => {
-      if (currentHost.includes('-')) {
-        return currentHost.replace(/^\d+-/, '8000-');
-      }
-      return 'localhost:8000'; // Fallback for local development
-    };
-    const apiUrl = `https://${getBackendHost()}/config/`;
-    console.log('Fetching config from:', apiUrl); // Debug log
-    fetch(apiUrl)
-      .then(response => {
-        if (!response.ok) {
-          throw new Error(`HTTP error! status: ${response.status}`);
-        }
-        return response.json();
-      })
-      .then(data => {
-        reset(data); // Use reset to populate the form with fetched data
-        setIsLoading(false);
-      })
-      .catch(error => {
-        setError(error);
-        setIsLoading(false);
-      });
-  }, []);
-
-  const onSubmit = (data) => {
-    console.log("Form data submitted:", data);
-  };
-
-  // Adjust the conditional rendering
-  return (
-    <div>
-      <h2>Main Configuration</h2>
-      {isLoading && <p>Loading configuration...</p>}
-      {error && <p>Error loading configuration: {error.message}</p>} {/* config removed here */}
-      {!isLoading && !error && ( // Render the form if not loading and no error
-        <form onSubmit={handleSubmit(onSubmit)}>
-          <div>
-            <label htmlFor="run_name">Run Name:</label>
-            <input
-              type="text"
-              id="run_name"
-              {...register('run_name')}
-            />
-            {/* We'll add error handling later */}
-            {/* {errors.run_name && <span>This field is required</span>} */}
-          </div>
-          <div>
-            <label htmlFor="hydra.run.dir">Hydra Run Directory:</label>
-            <input
-              type="text"
-              id="hydra.run.dir"
-              name="hydra.run.dir"
-              {...register('hydra.run.dir')}
-            />
-          </div>
-          <div>
-            <label htmlFor="webui">WebUI:</label>
-            <select
-              id="webui"
-              name="webui"
-              {...register('webui')}
-            >
-              {/* Replace with dynamic options later */}
-              <option value="a1111">A1111</option>
-              <option value="forge">Forge</option>
-              <option value="reforge">Reforge</option>
-              <option value="comfy">Comfy</option>
-              <option value="swarm">Swarm</option>
-            </select>
-          </div>
-
-          {/* File Paths Section */}
-          <div>
-            <h3>File Paths</h3>
-            <div>
-              <label htmlFor="configs_dir">Configs Directory:</label>
-              <input
-                type="text"
-                id="configs_dir"
-                name="configs_dir"
-              {...register('configs_dir')}
-              />
-            </div>
-            <div>
-              <label htmlFor="conversion_dir">Conversion Directory:</label>
-              <input
-                type="text"
-                id="conversion_dir"
-                name="conversion_dir"
-                {...register('conversion_dir')}
-              />
-            </div>
-            <div>
-              <label htmlFor="wildcards_dir">Wildcards Directory:</label>
-              <input
-                type="text"
-                id="wildcards_dir"
-                name="wildcards_dir"
-                {...register('wildcards_dir')}
-              />
-            </div>
-            <div>
-              <label htmlFor="scorer_model_dir">Scorer Model Directory:</label>
-              <input
-                type="text"
-                id="scorer_model_dir"
-                name="scorer_model_dir"
-                {...register('scorer_model_dir')}
-              />
-            </div>
-          </div>
-
-          {/* Model Inputs Section */}
-          <div>
-            <h3>Model Inputs</h3>
-            {/* You'll need to refactor this section to work with React Hook Form for dynamic fields */}
-              <div key={index} style={{ display: 'flex', alignItems: 'center', marginBottom: '10px' }}>
-                <input
-                  type="text"
-                  // React Hook Form registration for dynamic arrays is a bit more complex
-                  // We'll address this specific case later if needed
-                  // For now, we'll leave it as it was or simplify
-                  style={{ flexGrow: 1, marginRight: '10px' }}
-                />
-                <button
-                  type="button"
-                  // onClick={() => handleSetBaseModel(index)} // Adjust handler for React Hook Form
-                  style={{ marginRight: '5px', backgroundColor: /* config.base_model_index === index ? 'lightblue' : '' */ '', cursor: 'pointer' }} // Adjust style based on form state
-                >
-                  Base
-                </button>
-                <button
-                  type="button"
-                  // onClick={() => handleSetFallbackModel(index)} // Adjust handler for React Hook Form
-                  style={{ marginRight: '10px', backgroundColor: /* config.fallback_model_index === index ? 'lightblue' : '' */ '', cursor: 'pointer' }} // Adjust style based on form state
-                >
-                  Fallback
-                </button>
-                <button type="button" onClick={() => handleRemoveModelPath(index)}>Remove</button>
-              </div>
-            ))}
-            <button type="button" onClick={handleAddModelPath}>Add Model Path</button>
-          </div>
-          {/* Merge Settings Section */}
-          <div>
-            <h3>Merge Settings</h3>
-            <div>
-              <label htmlFor="merge_method">Merge Method:</label>
-              <select
-                id="merge_method"
-                name="merge_method"
-                {...register('merge_method')}
-              >
-                <option value="">Select a merge method</option>
-              </select>
-            </div>
-            <div>
-              <label htmlFor="device">Device:</label>
-              <select
-                id="device"
-                name="device"
-                {...register('device')}
-              >
-                <option value="cuda">cuda</option>
-                <option value="cpu">cpu</option>
-              </select>
-            </div>
-            <div>
-              <label htmlFor="threads">Threads:</label>
-              <input
-                type="number"
-                id="threads"
-                name="threads"
-                {...register('threads', { valueAsNumber: true })} // Register as number
-              />
-            </div>
-            <div>
-              <label htmlFor="merge_dtype">Merge Data Type:</label>
-              <select
-                id="merge_dtype"
-                name="merge_dtype"
-                {...register('merge_dtype')}
-              >
-                <option value="fp16">fp16</option>
-                <option value="bf16">bf16</option>
-                <option value="fp32">fp32</option>
-                <option value="fp64">fp64</option>
-              </select>
-            </div>
-            <div>
-              <label htmlFor="save_dtype">Save Data Type:</label>
-              <select
-                id="save_dtype"
-                name="save_dtype"
-                {...register('save_dtype')}
-              >
-                <option value="fp16">fp16</option>
-                <option value="bf16">bf16</option>
-                <option value="fp32">fp32</option>
-                <option value="fp64">fp64</option>
-              </select>
-            </div>
-          </div>
-
-          {/* Optimization Mode Section */}
-          <div>
-            <h3>Optimization Mode</h3>
-            <div>
-              <label htmlFor="optimization_mode">Mode:</label>
-              <select
-                id="optimization_mode"
-                name="optimization_mode"
-                {...register('optimization_mode')}
-              >
-                <option value="merge">merge</option>
-                <option value="recipe">recipe</option>
-                <option value="layer_adjust">layer_adjust</option>
-              </select>
-            </div>
- */}
-            {watch('optimization_mode') === 'recipe' && ( // Use watch to conditionally render based on form value
-              <div style={{ marginLeft: '20px' }}> {/* Indent recipe settings */}
-                <div>
-                  <label htmlFor="recipe_optimization.recipe_path">Recipe Path:</label>
-                  <input
-                    type="text"
-                    id="recipe_optimization.recipe_path"
-                    {...register('recipe_optimization.recipe_path')}
-                  />
-                </div>
-                <div>
-                  <label htmlFor="recipe_optimization.target_nodes">Target Nodes:</label>
-                  {/* TODO: Implement a more user-friendly selector with backend integration */}
-                  <input
-                    type="text"
-                    id="recipe_optimization.target_nodes"
-                    {...register('recipe_optimization.target_nodes')} // Need to handle array conversion later
-                  />
-                </div>
-                <div>
-                  <label htmlFor="recipe_optimization.target_params">Target Params:</label>
-                  {/* TODO: Implement a more user-friendly selector with backend integration */}
-                  <input
-                    type="text"
-                    id="recipe_optimization.target_params"
-                    {...register('recipe_optimization.target_params')} // Need to handle array conversion later
-                  />
-                </div>
-              </div>
-            )}
-          </div>
-
-          {/* General Workflow Section */}
-          <div>
-            <h3>General Workflow</h3>
-            <div>
-              <label htmlFor="save_merge_artifacts">Save Merge Artifacts:</label>
-              <input
-                type="checkbox"
-                id="save_merge_artifacts"
-                {...register('save_merge_artifacts')}
-              />
-            </div>
-            <div>
-              <label htmlFor="save_best">Save Best:</label>
-              <input
-                type="checkbox"
-                id="save_best"
-                {...register('save_best')} />
-            </div>
-          </div>
-
-          {/* Optimizer Configuration Section */}
-          <div>
-            <h3>Optimizer Configuration</h3>
-            {/* Optimizer Selection (Dropdown) */}
-            <div>
-              <label>Select Optimizer:</label>
-              <select
-                {...register('optimizer.type')} // Register a new field to hold the selected optimizer type
-              >
-                <option value="">Select an optimizer</option>
-                <option value="bayes">Bayes</option>
-                <option value="optuna">Optuna</option>
-              </select>
-            </div>
-
-            {/* Conditional rendering based on the selected optimizer type */}
-            {watch('optimizer.type') === 'bayes' && ( // Use watch to conditionally render Bayes settings
-              <div>
-                <h4>Bayes Optimizer Settings</h4>
-                <div>
-                  <label htmlFor="bayes_config.load_log_file">Load Log File:</label>
-                  <input
-                    type="text"
-                    {...register('optimizer.bayes_config.load_log_file')}
-                  />
-                </div>
-                <div>
-                  <label htmlFor="bayes_config.reset_log_file">Reset Log File:</label>
-                  <input
-                    type="checkbox"
-                    {...register('optimizer.bayes_config.reset_log_file')}
-                  />
-                </div>
-                <div>
-                  <label htmlFor="bayes_config.sampler">Sampler:</label>
-                  <input
-                    type="text"
-                    id="bayes_config.sampler"
-                    {...register('optimizer.bayes_config.sampler')}
-                  />
-                </div>
-
-                {/* Acquisition Function Settings */}
-                <div>
-                  <h5>Acquisition Function</h5>
-                  <div>
-                    <label htmlFor="bayes_config.acquisition_function.kind">Kind:</label>
-                    <input
-                      type="text"
-                      id="bayes_config.acquisition_function.kind"
-                      {...register('optimizer.bayes_config.acquisition_function.kind')}
-                    />
-                  </div>
-                  <div>
-                    <label htmlFor="bayes_config.acquisition_function.kappa">Kappa:</label>
-                    <input
-                      type="number"
-                      id="bayes_config.acquisition_function.kappa"
-                      {...register('optimizer.bayes_config.acquisition_function.kappa', { valueAsNumber: true })}
-                    />
-                  </div>
-                  <div>
-                    <label htmlFor="bayes_config.acquisition_function.xi">Xi:</label>
-                    <input
-                      type="number"
-                      id="bayes_config.acquisition_function.xi"
-                      {...register('optimizer.bayes_config.acquisition_function.xi', { valueAsNumber: true })}
-                    />
-                  </div>
-                  <div>
-                    <label htmlFor="bayes_config.acquisition_function.kappa_decay">Kappa Decay:</label>
-                    <input
-                      type="number"
-                      id="bayes_config.acquisition_function.kappa_decay"
-                      {...register('optimizer.bayes_config.acquisition_function.kappa_decay', { valueAsNumber: true })}
-                    />
-                  </div>
-                  <div>
-                    <label htmlFor="bayes_config.acquisition_function.kappa_decay_delay">Kappa Decay Delay:</label>
-                    <input
-                      type="text" // Can be int or string
-                      id="bayes_config.acquisition_function.kappa_decay_delay"
-                      {...register('optimizer.bayes_config.acquisition_function.kappa_decay_delay')}
-                    />
-                  </div>
-                </div>
-
-                {/* Bounds Transformer Settings */}
-                <div>
-                  <h5>Bounds Transformer</h5>
-                  <div>
-                    <label htmlFor="bayes_config.bounds_transformer.enabled">Enabled:</label>
-                    <input
- type="checkbox"
-                      {...register('optimizer.bayes_config.bounds_transformer.enabled')}
-                    />
-                  </div>
-                  <div>
-                    <label htmlFor="bayes_config.bounds_transformer.gamma_osc">Gamma OSC:</label>
-                    <input
-                      type="number"
-                      {...register('optimizer.bayes_config.bounds_transformer.gamma_osc', { valueAsNumber: true })}
-                    />
-                  </div>
-                  <div>
-                    <label htmlFor="bayes_config.bounds_transformer.gamma_pan">Gamma PAN:</label>
-                    <input
-                      type="number"
-                      {...register('optimizer.bayes_config.bounds_transformer.gamma_pan', { valueAsNumber: true })}
-                    />
-                  </div>
-                  <div>
-                    <label htmlFor="bayes_config.bounds_transformer.eta">Eta:</label>
-                    <input
-                      type="number"
-                      {...register('optimizer.bayes_config.bounds_transformer.eta', { valueAsNumber: true })}
-                    />
-                  </div>
-                  <div>
-                    <label htmlFor="bayes_config.bounds_transformer.minimum_window">Minimum Window:</label>
-                    <input
-                      type="number"
-                      {...register('optimizer.bayes_config.bounds_transformer.minimum_window', { valueAsNumber: true })}
-                    />
-                  </div>
-                </div>
-              </div>
-            )}
-
-            {watch('optimizer.type') === 'optuna' && ( // Use watch to conditionally render Optuna settings
-              <div>
-                <h4>Optuna Optimizer Settings</h4>
-                <div>
-                  <label htmlFor="optuna_config.storage_dir">Storage Directory:</label>
-                  <input
-                    type="text"
-                    {...register('optimizer.optuna_config.storage_dir')}
-                  />
-                </div>
-                <div>
-                  <label htmlFor="optuna_config.resume_study_name">Resume Study Name:</label>
-                  <input
-                    type="text"
-                    {...register('optimizer.optuna_config.resume_study_name')}
-                  />
-                </div>
-                <div>
-                  <label htmlFor="optuna_config.use_pruning">Use Pruning:</label>
-                  <input
-                    type="checkbox"
-                    {...register('optimizer.optuna_config.use_pruning')}
-                  />
-                </div>
-                <div>
-                  <label htmlFor="optuna_config.pruner_type">Pruner Type:</label>
-                  <input
-                    type="text"
-                    {...register('optimizer.optuna_config.pruner_type')}
-                  />
-                </div>
-                <div>
-                  <label htmlFor="optuna_config.early_stopping">Early Stopping:</label>
-                  <input
-                    type="checkbox"
-                    {...register('optimizer.optuna_config.early_stopping')}
-                  />
-                </div>
-                <div>
-                  <label htmlFor="optuna_config.patience">Patience:</label>
-                  <input
-                    type="number"
-                    {...register('optimizer.optuna_config.patience', { valueAsNumber: true })}
-                  />
-                </div>
-                <div>
-                  <label htmlFor="optuna_config.min_improvement">Minimum Improvement:</label>
-                  <input
-                    type="number"
-                    {...register('optimizer.optuna_config.min_improvement', { valueAsNumber: true })}
-                  />
-                </div>
-                <div>
-                  <label htmlFor="optuna_config.n_jobs">N Jobs:</label>
-                  <input
-                    type="number"
-                    {...register('optimizer.optuna_config.n_jobs', { valueAsNumber: true })}
-                  />
-                </div>
-                <div>
-                  <label htmlFor="optuna_config.launch_dashboard">Launch Dashboard:</label>
-                  <input
-                    type="checkbox"
-                    {...register('optimizer.optuna_config.launch_dashboard')}
-                  />
-                </div>
-                <div>
-                  <label htmlFor="optuna_config.dashboard_port">Dashboard Port:</label>
-                  <input
-                    type="number"
- id="optuna_config.dashboard_port"
-                    {...register('optimizer.optuna_config.dashboard_port', { valueAsNumber: true })}
-                  />
-                </div>
-
-                {/* Optuna Sampler Settings */}
-                <div>
-                  <h5>Optuna Sampler</h5>
-                  <div>
-                    <label htmlFor="optuna_config.sampler.type">Type:</label>
-                    <input
-                      type="text"
-                      {...register('optimizer.optuna_config.sampler.type')}
-                    />
-                  </div>
-                  <div>
-                    <label htmlFor="optuna_config.sampler.multivariate">Multivariate:</label>
-                    <input
-                      type="checkbox"
-                      {...register('optimizer.optuna_config.sampler.multivariate')}
-                    />
-                  </div>
-
-                  <div>
-                    <label htmlFor="optuna_config.sampler.group">Group:</label>
-                    <input
-                      type="checkbox"
-                      {...register('optimizer.optuna_config.sampler.group')}
-                    />
-                  </div>
-                </div>
-              </div>
-            )}
-          </div>
-          {/* Add more form fields here later */} {/* Closing form tag moved */}
-        </form>
-      )}
+// Helper component
+const FormRow = ({ label, children, stacked = false }) => (
+    <div className={styles.formRow} style={{ alignItems: stacked ? 'flex-start' : 'center' }}>
+        <label className={styles.label} style={{ paddingTop: stacked ? '6px' : '0' }}>{label}</label>
+        <div className={styles.controlWrapper}>{children}</div>
     </div>
+);
+
+const MainConfigTab = () => {
+    // --- CORRECTED DATA STRUCTURE FOR useForm ---
+    const { register, handleSubmit, reset, watch, control, setValue } = useForm({
+        defaultValues: {
+            defaults: [{ payloads: 'cargo_forge.yaml' }],
+            run_name: '',
+            webui: 'forge',
+            configs_dir: '',
+            conversion_dir: '',
+            wildcards_dir: '',
+            scorer_model_dir: '',
+            model_paths: [],
+            base_model_index: 0,
+            fallback_model_index: -1,
+            merge_method: '',
+            device: 'cuda',
+            threads: 4,
+            merge_dtype: 'fp32',
+            save_dtype: 'bf16',
+            save_merge_artifacts: true,
+            save_best: true,
+            optimization_mode: 'merge',
+            recipe_optimization: { recipe_path: '', target_nodes: '', target_params: '' },
+            // --- THIS IS THE CORRECTED NESTED STRUCTURE ---
+            optimizer: { 
+                type: 'optuna', 
+                bayes: false, 
+                optuna: true, 
+                random_state: -1, 
+                init_points: 10, 
+                n_iters: 20,
+                bayes_config: { 
+                    load_log_file: null, 
+                    reset_log_file: false, 
+                    sampler: 'sobol', 
+                    acquisition_function: { kind: 'ucb', kappa: 3.0, xi: 0.05, kappa_decay: 0.98, kappa_decay_delay: '${optimizer.init_points}' }, 
+                    bounds_transformer: { enabled: false, gamma_osc: 0.7, gamma_pan: 1.0, eta: 0.9, minimum_window: 0.0 } 
+                },
+                optuna_config: { 
+                    storage_dir: 'optuna_db', 
+                    resume_study_name: null, 
+                    use_pruning: false, 
+                    pruner_type: 'median', 
+                    early_stopping: false, 
+                    patience: 10, 
+                    min_improvement: 0.001, 
+                    n_jobs: 1, 
+                    sampler: { type: 'tpe', multivariate: true, group: true }, 
+                    launch_dashboard: true, 
+                    dashboard_port: 8080 
+                }
+            },
+            batch_size: 1,
+            save_imgs: true,
+            img_average_type: 'arithmetic',
+            background_check: { enabled: false, payloads: [] },
+            generator_concurrency_limit: 10,
+            generator_keepalive_interval: 60,
+            generator_total_timeout: 0,
+            scorer_method: [],
+            scorer_average_type: 'arithmetic',
+            scorer_weight: {},
+            scorer_default_device: 'cpu',
+            scorer_device: {},
+            scorer_print_individual: true,
+        }
+    });
+
+    const { fields, append, remove } = useFieldArray({ control, name: "model_paths" });
+    const [isLoading, setIsLoading] = useState(true);
+    const [error, setError] = useState(null);
+    const [cargoFiles, setCargoFiles] = useState([]);
+    const [allScorers, setAllScorers] = useState(['laion', 'hpsv21', 'pick', 'imagereward', 'cityaes', 'manual']);
+
+    const getBackendHost = () => {
+        const currentHost = window.location.hostname;
+        if (currentHost.includes('google.com')) { return currentHost.replace(/^(https?:\/\/)?(\d+)-/, 'https://8000-'); }
+        return 'http://localhost:8000';
+    };
+
+    useEffect(() => {
+        const fetchData = async () => {
+            try {
+                const backendHost = getBackendHost();
+                const [configRes, cargoRes] = await Promise.all([
+                    fetch(`${backendHost}/config/`),
+                    fetch(`${backendHost}/config/cargo`)
+                ]);
+                if (!configRes.ok) throw new Error(`Config fetch failed: ${configRes.statusText}`);
+                if (!cargoRes.ok) throw new Error(`Cargo fetch failed: ${cargoRes.statusText}`);
+                const configData = await configRes.json();
+                const cargoData = await cargoRes.json();
+                setCargoFiles(cargoData);
+                let optimizerType = 'optuna';
+                if (configData.optimizer?.bayes) optimizerType = 'bayes';
+                const modelPathsAsObjects = (configData.model_paths || []).map(path => ({ value: path }));
+                const initialCargo = `cargo_${configData.webui}.yaml`;
+                configData.defaults = [{ payloads: initialCargo }];
+                reset({ ...configData, optimizer: { ...configData.optimizer, type: optimizerType }, model_paths: modelPathsAsObjects });
+            } catch (err) { setError(err); } finally { setIsLoading(false); }
+        };
+        fetchData();
+    }, [reset]);
+
+    const onSubmit = (data) => {
+        const submissionData = { ...data };
+        const optimizerType = submissionData.optimizer.type;
+        submissionData.optimizer.bayes = optimizerType === 'bayes';
+        submissionData.optimizer.optuna = optimizerType === 'optuna';
+        delete submissionData.optimizer.type;
+        submissionData.model_paths = (submissionData.model_paths || []).map(field => field.value);
+        console.log("Submitting this data to the backend:", JSON.stringify(submissionData, null, 2));
+    };
+
+    const watchedOptimizationMode = watch('optimization_mode');
+    const watchedOptimizerType = watch('optimizer.type');
+    const watchedWebUI = watch('webui');
+    const watchedScorers = watch('scorer_method', []);
+    const watchedSamplerType = watch('optimizer.optuna_config.sampler.type'); // <-- WATCHING THE SAMPLER!
+    useEffect(() => { if (watchedWebUI) { setValue('defaults.0.payloads', `cargo_${watchedWebUI}.yaml`); } }, [watchedWebUI, setValue]);
+    if (isLoading) return <p>Loading configuration...</p>;
+    if (error) return <p>Error loading configuration: {error.message}</p>;
+
+    return (
+      <form onSubmit={handleSubmit(onSubmit)} className={styles.formContainer}>
+          {/* USE an <h2> tag for the main title! */}
+          <h2 style={{ paddingBottom: 'var(--space-12)' }}>Main Configuration</h2>
+          
+          <div className={styles.formSection}>
+              {/* USE an <h3> tag for the section legend! */}
+              <h3 className={styles.legend}>Payloads</h3>
+              <FormRow label="Cargo File">
+                  <select {...register('defaults.0.payloads')} className={styles.select}>
+                      {cargoFiles.map(file => <option key={file} value={file}>{file}</option>)}
+                  </select>
+              </FormRow>
+              <FormRow label="WebUI">
+                  <select {...register('webui')} className={styles.select}>
+                      <option value="forge">Forge</option>
+                      {/* ... other options ... */}
+                  </select>
+              </FormRow>
+          </div>
+
+          {/* --- Model Inputs Section --- */}
+          <div className={styles.formSection}>
+              <h3 className={styles.legend}>Model Inputs</h3>
+              {fields.map((field, index) => (
+                  <div key={field.id} style={{ display: 'flex', alignItems: 'center', marginBottom: '8px', gap: '8px' }}>
+                      <input
+                          {...register(`model_paths.${index}.value`)}
+                          placeholder={`Model Path ${index + 1}`}
+                          className={styles.input}
+                      />
+                      <button type="button" onClick={() => setValue('base_model_index', index)} className={`${styles.buttonSecondarySm} ${watch('base_model_index') === index ? styles.buttonPrimary : ''}`}>Base</button>
+                      <button type="button" onClick={() => setValue('fallback_model_index', index)} className={`${styles.buttonSecondarySm} ${watch('fallback_model_index') === index ? styles.buttonPrimary : ''}`}>Fallback</button>
+                      <button type="button" onClick={() => remove(index)} className={styles.buttonOutlineSm}>Remove</button>
+                  </div>
+              ))}
+              <div style={{ paddingLeft: '192px', marginTop: '12px' }}>
+                  <button type="button" onClick={() => append({ value: '' })} className={styles.buttonSecondary}>Add Model Path</button>
+                  <button type="button" onClick={() => setValue('fallback_model_index', -1)} className={styles.buttonSecondary} style={{ marginLeft: '10px' }}>Clear Fallback</button>
+              </div>
+          </div>
+
+          {/* --- Merge Settings Section --- */}
+          <div className={styles.formSection}>
+              <h3 className={styles.legend}>Merge Settings</h3>
+              <FormRow label="Merge Method"><input type="text" {...register('merge_method')} className={styles.input} /></FormRow>
+              <FormRow label="Device"><select {...register('device')} className={styles.select}><option value="cuda">cuda</option><option value="cpu">cpu</option></select></FormRow>
+              <FormRow label="Threads"><input type="number" {...register('threads', { valueAsNumber: true })} className={styles.input} /></FormRow>
+              <FormRow label="Merge Precision"><select {...register('merge_dtype')} className={styles.select}><option value="fp16">fp16</option><option value="bf16">bf16</option><option value="fp32">fp32</option><option value="fp64">fp64</option></select></FormRow>
+              <FormRow label="Save Precision"><select {...register('save_dtype')} className={styles.select}><option value="fp16">fp16</option><option value="bf16">bf16</option><option value="fp32">fp32</option><option value="fp64">fp64</option></select></FormRow>
+          </div>
+
+          {/* --- General Workflow Section --- */}
+          <div className={styles.formSection}>
+              <h3 className={styles.legend}>General Workflow</h3>
+              <FormRow label="Save Merge Artifacts"><input type="checkbox" {...register('save_merge_artifacts')} className={styles.checkbox} /></FormRow>
+              <FormRow label="Save Best Model"><input type="checkbox" {...register('save_best')} className={styles.checkbox} /></FormRow>
+          </div>
+          
+          {/* --- Optimization Mode Section --- */}
+          <div className={styles.formSection}>
+               <h3 className={styles.legend}>Optimization Mode</h3>
+              <FormRow label="Mode"><select {...register('optimization_mode')} className={styles.select}><option value="merge">Merge</option><option value="recipe">Recipe</option><option value="layer_adjust">Layer Adjust</option></select></FormRow>
+              {watchedOptimizationMode === 'recipe' && (
+                  <div className={styles.subFieldset}>
+                      <h4 style={{marginBottom: 'var(--space-12)'}}>Recipe Settings</h4>
+                      <FormRow label="Recipe Path"><input type="text" {...register('recipe_optimization.recipe_path')} className={styles.input} /></FormRow>
+                      <FormRow label="Target Nodes"><input type="text" {...register('recipe_optimization.target_nodes')} className={styles.input} /></FormRow>
+                      <FormRow label="Target Params"><input type="text" {...register('recipe_optimization.target_params')} className={styles.input} /></FormRow>
+                  </div>
+              )}
+          </div>
+
+          {/* --- Optimizer Configuration Section --- */}
+          <div className={styles.formSection}>
+              <h3 className={styles.legend}>Optimizer Configuration</h3>
+              <FormRow label="Random State"><input type="number" {...register('optimizer.random_state', { valueAsNumber: true })} className={styles.input} /></FormRow>
+              <FormRow label="Init Points"><input type="number" {...register('optimizer.init_points', { valueAsNumber: true })} className={styles.input} /></FormRow>
+              <FormRow label="Iterations"><input type="number" {...register('optimizer.n_iters', { valueAsNumber: true })} className={styles.input} /></FormRow>
+              <hr style={{margin: '20px 0', border: 'none', borderTop: '1px solid var(--color-border)'}} />
+              <FormRow label="Select Optimizer">
+                  <select {...register('optimizer.type')} className={styles.select}>
+                      <option value="optuna">Optuna</option>
+                      <option value="bayes">Bayes</option>
+                  </select>
+              </FormRow>
+              
+              {watchedOptimizerType === 'optuna' && (
+                  <div className={styles.subFieldset}>
+                      <h4 style={{marginBottom: 'var(--space-12)'}}>Optuna Settings</h4>
+                      <FormRow label="Storage Dir"><input type="text" {...register('optimizer.optuna_config.storage_dir')} className={styles.input}/></FormRow>
+                      <FormRow label="Resume Study"><input type="text" {...register('optimizer.optuna_config.resume_study_name')} className={styles.input} /></FormRow>
+                      <FormRow label="Launch Dashboard"><input type="checkbox" {...register('optimizer.optuna_config.launch_dashboard')} className={styles.checkbox} /></FormRow>
+                      <FormRow label="Dashboard Port"><input type="number" {...register('optimizer.optuna_config.dashboard_port', { valueAsNumber: true })} className={styles.input} /></FormRow>
+                      
+                      <h5 style={{marginTop: 'var(--space-16)', marginBottom: 'var(--space-12)'}}>Sampler</h5>
+                      <FormRow label="Type"><select {...register('optimizer.optuna_config.sampler.type')} className={styles.select}><option value="tpe">TPE</option><option value="cmaes">CMA-ES</option><option value="random">Random</option><option value="grid">Grid</option><option value="qmc">QMC</option></select></FormRow>
+                      {watchedSamplerType === 'tpe' && (<> <FormRow label="Multivariate"><input type="checkbox" {...register('optimizer.optuna_config.sampler.multivariate')} className={styles.checkbox} /></FormRow> <FormRow label="Group"><input type="checkbox" {...register('optimizer.optuna_config.sampler.group')} className={styles.checkbox} /></FormRow> </>)}
+                      {watchedSamplerType === 'cmaes' && (<FormRow label="Restart Strategy"><select {...register('optimizer.optuna_config.sampler.restart_strategy')} className={styles.select}><option value="">None</option><option value="ipop">ipop</option><option value="bipop">bipop</option></select></FormRow>)}
+                      {watchedSamplerType === 'qmc' && (<> <FormRow label="QMC Type"><select {...register('optimizer.optuna_config.sampler.qmc_type')} className={styles.select}><option value="sobol">Sobol</option><option value="halton">Halton</option><option value="lhs">LHS</option></select></FormRow> <FormRow label="Scramble"><input type="checkbox" {...register('optimizer.optuna_config.sampler.scramble')} className={styles.checkbox} /></FormRow> </>)}
+                      {watchedSamplerType === 'grid' && (<FormRow label="Search Space" stacked><textarea {...register('optimizer.optuna_config.sampler.search_space')} className={styles.textarea} rows={4} placeholder={'alpha: [0.1, 0.5]\nbeta: [10, 20]'}></textarea></FormRow>)}
+                   </div>
+              )}
+          </div>
+          
+          {/* --- Image Generation & Scoring Sections ... --- */}
+          
+          <button type="submit" className={styles.submitButton}>Save Configuration</button>
+      </form>
   );
 };
 

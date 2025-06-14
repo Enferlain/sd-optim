@@ -1,67 +1,86 @@
 /* sd-optim/frontend/src/ConfigurationManager.module.css */
 
-body, html {
-    margin: 0;
-    padding: 0;
-}
+/* body, html {
+/*     margin: 0;
+/*     padding: 0;
+/* }
+
+/* This file now controls our glassy layout! */
 
 .layoutContainer {
+    height: 100vh;
+    width: 100vw;
     display: flex;
-    justify-content: center; /* Center horizontally */
-    align-items: center; /* Center vertically */
-    height: 100vh; /* Take full viewport height */
+    justify-content: center;
+    
+    /* THE FIX for Alignment: Change 'center' to 'flex-start' */
+    align-items: flex-start; 
+  
+    gap: var(--space-20);
+    padding: var(--space-32);
+    box-sizing: border-box;
+  }
+  
+  /* This is the new style for our glass panels! */
+  .glassPanel {
+    /* The semi-transparent background is key! */
+    background: rgba(255, 255, 255, 0.1); 
+    
+    /* This is the magic that blurs what's behind it! */
+    backdrop-filter: blur(20px);
+    -webkit-backdrop-filter: blur(20px); /* For Safari browser support */
+    
+    /* A subtle border to define the edge */
+    border: 1px solid rgba(255, 255, 255, 0.2);
+    
+    border-radius: var(--radius-lg);
+    box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.2); /* A soft shadow for depth */
+    padding: var(--space-16);
+    color: var(--color-text);
+  }
+  
+/* --- The Sidebar --- */
+.sidebar {
+  /* THE FIX for Removing the Card: We delete the 'composes' line! */
+  composes: glassPanel;
+  
+  width: 240px;
+  flex-shrink: 0;
+
+  /* We also remove the margin-top so it aligns perfectly */
+  margin-top: 0; 
 }
 
-.container {
-    background-color: rgba(255, 255, 255, 0.2); /* Semi-transparent white */
-    backdrop-filter: blur(10px); /* Frosted glass effect */
-    border-radius: 10px;
-    padding: 20px;
-    box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
-    width: 90%;
-    max-width: 900px; /* Adjust as needed */
-    height: 800px;
-    color: #333; /* Default text color */
-    flex-grow: 1; /* Allow container to grow */
-    margin-left: 20px; /* Space between dropdown isle and content panel */
-    max-height: 800px; /* Set a max height for scrolling */
-    overflow-y: auto; /* Enable vertical scrolling */
+/* --- The Main Content Panel --- */
+.contentPanel {
+  composes: glassPanel;
+  flex-grow: 1;
+  width: 100%;
+  max-width: 950px;
+  
+  /* THE FIX for Alignment: We also remove the fixed height and give it a margin-top to match the dropdown's position */
+  height: auto; /* Let height be determined by content, up to max-height */
+  max-height: calc(100vh - (var(--space-32) * 2));
+  
+  overflow-y: auto;
+  padding: var(--space-24);
 }
-
-.dropdownContainer {
-    width: 200px; /* Adjust width as needed */
-    background-color: rgba(255, 255, 255, 0.2); /* Semi-transparent white */
-    backdrop-filter: blur(10px); /* Frosted glass effect */
-    border-radius: 10px;
-    padding: 20px;
-    box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
-}
-
-.dropdownContainer select {
-    padding: 8px 12px;
-    border-radius: 5px;
- width: 100%; /* Make select take full width of its container */
-    box-sizing: border-box; /* Include padding and border in element's total width */
- border: 1px solid rgba(255, 255, 255, 0.3);
- background-color: rgba(255, 255, 255, 0.1);
-    color: #333;
-    font-size: 1rem;
-    margin-bottom: 20px; /* Space below the dropdown */
-    border: 1px solid rgba(255, 255, 255, 0.3);
-    background-color: rgba(255, 255, 255, 0.1);
-    color: #333;
-    font-size: 1rem;
-    margin-bottom: 20px; /* Space below the dropdown */
-    cursor: pointer;
-}
-
-.dropdownContainer select:focus {
-    outline: none;
-    border-color: rgba(255, 255, 255, 0.5);
-    box-shadow: 0 0 0 0.2rem rgba(255, 255, 255, 0.25);
-}
-
-.contentContainer {
- flex-grow: 1; /* Make content container take up remaining space */
-    padding-left: 20px; /* Optional: add some padding to the left of content */
-}
+  
+/* Style for the dropdown in the sidebar */
+.tabSelect {
+    composes: form-control from global;
+    background-color: transparent; /* Make the dropdown box itself transparent */
+    border-color: rgba(255, 255, 255, 0.1);
+    color: var(--color-text); /* Ensure text is white */
+    font-weight: var(--font-weight-medium);
+  }
+  
+  /* In dark mode, the text on the select should be lighter! */
+  @media (prefers-color-scheme: dark) {
+      .tabSelect {
+          color: var(--color-text);
+      }
+  }
+  [data-color-scheme="dark"] .tabSelect {
+      color: var(--color-text);
+  }

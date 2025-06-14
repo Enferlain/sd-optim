@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import LandingPage from '/home/user/sdoptimui/sd-optim/frontend/src/LandingPage.js';
 import ConfigurationManager from '/home/user/sdoptimui/sd-optim/frontend/src/ConfigurationManager.js'; // Import the new component
+import './App.css'; // <-- ADD THIS IMPORT!
 
 function App() {
   const [isBackendLaunched, setIsBackendLaunched] = useState(false);

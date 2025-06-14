@@ -1,17 +1,13 @@
 import React, { useState } from 'react';
-import MainConfigTab from '/home/user/sdoptimui/sd-optim/frontend/src/MainConfigTab.js';
-import OptimizationGuideTab from '/home/user/sdoptimui/sd-optim/frontend/src/OptimizationGuideTab.js';
-import CargoTab from '/home/user/sdoptimui/sd-optim/frontend/src/CargoTab.js';
-import styles from '/home/user/sdoptimui/sd-optim/frontend/src/ConfigurationManager.module.css';
+import MainConfigTab from './MainConfigTab.js';
+import OptimizationGuideTab from './OptimizationGuideTab.js';
+import CargoTab from './CargoTab.js';
+import styles from './ConfigurationManager.module.css';
 
 function ConfigurationManager() {
-  const [activeTab, setActiveTab] = useState('Main Config'); // State to track active tab
+  const [activeTab, setActiveTab] = useState('Main Config');
 
   const renderTabContent = () => {
-    // Remove any previous state setting before rendering new tab
-    // (Optional, depending on desired behavior)
-    // setActiveTab(activeTab); 
-
     switch (activeTab) {
       case 'Main Config':
         return <MainConfigTab />;
@@ -25,19 +21,21 @@ function ConfigurationManager() {
   };
 
   return (
+    // --- THIS IS THE NEW LAYOUT STRUCTURE ---
     <div className={styles.layoutContainer}>
-      <div className={styles.dropdownContainer}>
-        <select onChange={(e) => setActiveTab(e.target.value)} value={activeTab}>
-          <option value="Main Config">Main Config</option>
-          <option value="Optimization Guide">Optimization Guide</option>
-          <option value="Cargo">Cargo</option>
+      {/* The sidebar is now its own separate element */}
+      <div className={styles.sidebar}>
+        <select onChange={(e) => setActiveTab(e.target.value)} value={activeTab} className={styles.tabSelect}>
+          <option>Main Config</option>
+          <option>Optimization Guide</option>
+          <option>Cargo</option>
         </select>
+        {/* We can add other things to the sidebar later! */}
       </div>
 
-      <div className={styles.container}>
-        <div className={styles.contentContainer}>
-          {renderTabContent()}
-        </div>
+      {/* The main content panel is also its own element */}
+      <div className={styles.contentPanel}>
+        {renderTabContent()}
       </div>
     </div>
   );

@@ -1,0 +1,76 @@
+/* This file is now so much smaller and smarter! */
+
+.formContainer {
+    font-family: var(--font-family-base);
+    color: var(--color-text);
+}
+
+.formSection {
+    margin-bottom: var(--space-24);
+    padding: var(--space-16) 0;
+    border-bottom: 1px solid var(--color-border);
+}
+.formSection:last-of-type { border-bottom: none; }
+
+.legend {
+    /* Use the font sizes and weights from our new global variables! */
+    font-size: var(--font-size-lg);
+    font-weight: var(--font-weight-semibold);
+    color: var(--color-text);
+    padding-bottom: var(--space-12);
+    margin-bottom: var(--space-8); /* Add a little space after the legend */
+    border-bottom: 1px solid var(--color-border); /* A nice separator line */
+}
+
+
+.formRow { display: flex; align-items: center; gap: var(--space-12); margin-bottom: var(--space-12); }
+.label {
+    width: 180px;
+    text-align: right;
+    flex-shrink: 0;
+    
+    /* BEFORE: This color becomes too dim in dark mode on our background! */
+    /* color: var(--color-text-secondary); */
+
+    /* THE FIX: Use the main text color for better contrast! */
+    color: var(--color-text);
+    opacity: 0.8; /* We can add a little opacity to keep it slightly less bright than the headers */
+    
+    font-size: var(--font-size-sm);
+    font-weight: var(--font-weight-medium);
+}
+.controlWrapper { flex-grow: 1; display: flex; align-items: center; gap: var(--space-8); }
+
+.subFieldset {
+    background: var(--color-secondary);
+    border-radius: var(--radius-base);
+    padding: var(--space-16);
+    margin-top: var(--space-16);
+}
+
+.sliderValue { font-size: var(--font-size-sm); color: var(--color-text-secondary); min-width: 40px; }
+
+/* --- Here we tell our local classes to use the global styles --- */
+.input { composes: form-control from global; }
+.select { composes: form-control from global; }
+.textarea { composes: form-control from global; }
+
+/* FIX: The checkbox rule is no longer empty! */
+.checkbox { 
+    accent-color: var(--color-primary);
+    width: 16px;
+    height: 16px;
+}
+
+.button { composes: btn from global; }
+.buttonSm { composes: btn btn--sm from global; }
+
+.buttonPrimary { composes: btn btn--primary from global; }
+.buttonSecondary { composes: btn btn--secondary from global; }
+.buttonOutline { composes: btn btn--outline from global; }
+
+.buttonPrimarySm { composes: btn btn--sm btn--primary from global; }
+.buttonSecondarySm { composes: btn btn--sm btn--secondary from global; }
+.buttonOutlineSm { composes: btn btn--sm btn--outline from global; }
+
+.submitButton { composes: btn btn--primary btn--lg from global; }

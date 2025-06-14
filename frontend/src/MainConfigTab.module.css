@@ -23,19 +23,20 @@
 }
 
 
-.formRow { display: flex; align-items: center; gap: var(--space-12); margin-bottom: var(--space-12); }
+/* --- THE NEW, LEFT-ALIGNED TWO-COLUMN VERSION! --- */
+.formRow { 
+    display: flex; 
+    flex-direction: row; /* Go back to horizontal rows */
+    align-items: center; /* Vertically align the label and input */
+    gap: var(--space-12);
+    margin-bottom: var(--space-12);
+}
 .label {
-    width: 180px;
-    text-align: right;
-    flex-shrink: 0;
-    
-    /* BEFORE: This color becomes too dim in dark mode on our background! */
-    /* color: var(--color-text-secondary); */
-
-    /* THE FIX: Use the main text color for better contrast! */
+    width: 180px; /* Give the labels a fixed width again */
+    flex-shrink: 0; /* Prevent the label from shrinking if the input is wide */
+    text-align: left; /* THIS IS THE KEY! Align the text to the left. */
     color: var(--color-text);
-    opacity: 0.8; /* We can add a little opacity to keep it slightly less bright than the headers */
-    
+    opacity: 0.8; 
     font-size: var(--font-size-sm);
     font-weight: var(--font-weight-medium);
 }

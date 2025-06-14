@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { useForm, useFieldArray, Controller } from 'react-hook-form';
 import styles from './MainConfigTab.module.css';
+import CustomSelect from './CustomSelect.js'; // <-- Import our custom component!
 
 // Helper component
 const FormRow = ({ label, children, stacked = false }) => (
@@ -135,54 +136,91 @@ const MainConfigTab = () => {
 
     return (
       <form onSubmit={handleSubmit(onSubmit)} className={styles.formContainer}>
-          {/* USE an <h2> tag for the main title! */}
           <h2 style={{ paddingBottom: 'var(--space-12)' }}>Main Configuration</h2>
           
+          {/* --- Payloads & WebUI Section (Reordered!) --- */}
           <div className={styles.formSection}>
-              {/* USE an <h3> tag for the section legend! */}
               <h3 className={styles.legend}>Payloads</h3>
-              <FormRow label="Cargo File">
-                  <select {...register('defaults.0.payloads')} className={styles.select}>
-                      {cargoFiles.map(file => <option key={file} value={file}>{file}</option>)}
-                  </select>
-              </FormRow>
               <FormRow label="WebUI">
-                  <select {...register('webui')} className={styles.select}>
-                      <option value="forge">Forge</option>
-                      {/* ... other options ... */}
-                  </select>
+                  <Controller
+                      name="webui"
+                      control={control}
+                      render={({ field }) => (
+                          <CustomSelect
+                              options={['forge', 'a1111', 'reforge', 'comfy', 'swarm']}
+                              value={field.value}
+                              onChange={field.onChange}
+                          />
+                      )}
+                  />
+              </FormRow>
+              <FormRow label="Cargo File">
+                  <Controller
+                      name="defaults.0.payloads"
+                      control={control}
+                      render={({ field }) => (
+                          <CustomSelect
+                              options={cargoFiles}
+                              value={field.value}
+                              onChange={field.onChange}
+                          />
+                      )}
+                  />
               </FormRow>
           </div>
 
           {/* --- Model Inputs Section --- */}
           <div className={styles.formSection}>
-              <h3 className={styles.legend}>Model Inputs</h3>
-              {fields.map((field, index) => (
-                  <div key={field.id} style={{ display: 'flex', alignItems: 'center', marginBottom: '8px', gap: '8px' }}>
-                      <input
-                          {...register(`model_paths.${index}.value`)}
-                          placeholder={`Model Path ${index + 1}`}
-                          className={styles.input}
-                      />
-                      <button type="button" onClick={() => setValue('base_model_index', index)} className={`${styles.buttonSecondarySm} ${watch('base_model_index') === index ? styles.buttonPrimary : ''}`}>Base</button>
-                      <button type="button" onClick={() => setValue('fallback_model_index', index)} className={`${styles.buttonSecondarySm} ${watch('fallback_model_index') === index ? styles.buttonPrimary : ''}`}>Fallback</button>
-                      <button type="button" onClick={() => remove(index)} className={styles.buttonOutlineSm}>Remove</button>
-                  </div>
-              ))}
-              <div style={{ paddingLeft: '192px', marginTop: '12px' }}>
-                  <button type="button" onClick={() => append({ value: '' })} className={styles.buttonSecondary}>Add Model Path</button>
-                  <button type="button" onClick={() => setValue('fallback_model_index', -1)} className={styles.buttonSecondary} style={{ marginLeft: '10px' }}>Clear Fallback</button>
-              </div>
-          </div>
+                <h3 className={styles.legend}>Model Inputs</h3>
+                {fields.map((field, index) => (
+                    <div key={field.id} style={{ display: 'flex', alignItems: 'center', marginBottom: '8px', gap: '8px' }}>
+                        <input
+                            {...register(`model_paths.${index}.value`)}
+                            placeholder={`Model Path ${index + 1}`}
+                            className={styles.input}
+                        />
+
+                        {/* --- THIS IS THE FIX --- */}
+                        <button 
+                            type="button" 
+                            onClick={() => setValue('base_model_index', index)} 
+                            className={watch('base_model_index') === index ? styles.buttonPrimarySm : styles.buttonSecondarySm}
+                        >
+                            Base
+                        </button>
+                        <button 
+                            type="button" 
+                            onClick={() => setValue('fallback_model_index', index)} 
+                            className={watch('fallback_model_index') === index ? styles.buttonPrimarySm : styles.buttonSecondarySm}
+                        >
+                            Fallback
+                        </button>
+                        
+                        <button type="button" onClick={() => remove(index)} className={styles.buttonOutlineSm}>
+                            Remove
+                        </button>
+                    </div>
+                ))}
+                <div style={{ paddingLeft: '192px', marginTop: '12px' }}>
+                    <button type="button" onClick={() => append({ value: '' })} className={styles.buttonSecondary}>Add Model Path</button>
+                    <button type="button" onClick={() => setValue('fallback_model_index', -1)} className={styles.buttonSecondary} style={{ marginLeft: '10px' }}>Clear Fallback</button>
+                </div>
+            </div>
 
           {/* --- Merge Settings Section --- */}
           <div className={styles.formSection}>
               <h3 className={styles.legend}>Merge Settings</h3>
               <FormRow label="Merge Method"><input type="text" {...register('merge_method')} className={styles.input} /></FormRow>
-              <FormRow label="Device"><select {...register('device')} className={styles.select}><option value="cuda">cuda</option><option value="cpu">cpu</option></select></FormRow>
+              <FormRow label="Device">
+                  <Controller name="device" control={control} render={({ field }) => (<CustomSelect options={['cuda', 'cpu']} value={field.value} onChange={field.onChange} />)} />
+              </FormRow>
               <FormRow label="Threads"><input type="number" {...register('threads', { valueAsNumber: true })} className={styles.input} /></FormRow>
-              <FormRow label="Merge Precision"><select {...register('merge_dtype')} className={styles.select}><option value="fp16">fp16</option><option value="bf16">bf16</option><option value="fp32">fp32</option><option value="fp64">fp64</option></select></FormRow>
-              <FormRow label="Save Precision"><select {...register('save_dtype')} className={styles.select}><option value="fp16">fp16</option><option value="bf16">bf16</option><option value="fp32">fp32</option><option value="fp64">fp64</option></select></FormRow>
+              <FormRow label="Merge Precision">
+                  <Controller name="merge_dtype" control={control} render={({ field }) => (<CustomSelect options={['fp16', 'bf16', 'fp32', 'fp64']} value={field.value} onChange={field.onChange} />)} />
+              </FormRow>
+              <FormRow label="Save Precision">
+                   <Controller name="save_dtype" control={control} render={({ field }) => (<CustomSelect options={['fp16', 'bf16', 'fp32', 'fp64']} value={field.value} onChange={field.onChange} />)} />
+              </FormRow>
           </div>
 
           {/* --- General Workflow Section --- */}
@@ -195,7 +233,9 @@ const MainConfigTab = () => {
           {/* --- Optimization Mode Section --- */}
           <div className={styles.formSection}>
                <h3 className={styles.legend}>Optimization Mode</h3>
-              <FormRow label="Mode"><select {...register('optimization_mode')} className={styles.select}><option value="merge">Merge</option><option value="recipe">Recipe</option><option value="layer_adjust">Layer Adjust</option></select></FormRow>
+              <FormRow label="Mode">
+                  <Controller name="optimization_mode" control={control} render={({ field }) => (<CustomSelect options={['merge', 'recipe', 'layer_adjust']} value={field.value} onChange={field.onChange} />)} />
+              </FormRow>
               {watchedOptimizationMode === 'recipe' && (
                   <div className={styles.subFieldset}>
                       <h4 style={{marginBottom: 'var(--space-12)'}}>Recipe Settings</h4>
@@ -214,27 +254,27 @@ const MainConfigTab = () => {
               <FormRow label="Iterations"><input type="number" {...register('optimizer.n_iters', { valueAsNumber: true })} className={styles.input} /></FormRow>
               <hr style={{margin: '20px 0', border: 'none', borderTop: '1px solid var(--color-border)'}} />
               <FormRow label="Select Optimizer">
-                  <select {...register('optimizer.type')} className={styles.select}>
-                      <option value="optuna">Optuna</option>
-                      <option value="bayes">Bayes</option>
-                  </select>
+                   <Controller name="optimizer.type" control={control} render={({ field }) => (<CustomSelect options={['optuna', 'bayes']} value={field.value} onChange={field.onChange} />)} />
               </FormRow>
               
               {watchedOptimizerType === 'optuna' && (
-                  <div className={styles.subFieldset}>
-                      <h4 style={{marginBottom: 'var(--space-12)'}}>Optuna Settings</h4>
-                      <FormRow label="Storage Dir"><input type="text" {...register('optimizer.optuna_config.storage_dir')} className={styles.input}/></FormRow>
-                      <FormRow label="Resume Study"><input type="text" {...register('optimizer.optuna_config.resume_study_name')} className={styles.input} /></FormRow>
-                      <FormRow label="Launch Dashboard"><input type="checkbox" {...register('optimizer.optuna_config.launch_dashboard')} className={styles.checkbox} /></FormRow>
-                      <FormRow label="Dashboard Port"><input type="number" {...register('optimizer.optuna_config.dashboard_port', { valueAsNumber: true })} className={styles.input} /></FormRow>
-                      
-                      <h5 style={{marginTop: 'var(--space-16)', marginBottom: 'var(--space-12)'}}>Sampler</h5>
-                      <FormRow label="Type"><select {...register('optimizer.optuna_config.sampler.type')} className={styles.select}><option value="tpe">TPE</option><option value="cmaes">CMA-ES</option><option value="random">Random</option><option value="grid">Grid</option><option value="qmc">QMC</option></select></FormRow>
-                      {watchedSamplerType === 'tpe' && (<> <FormRow label="Multivariate"><input type="checkbox" {...register('optimizer.optuna_config.sampler.multivariate')} className={styles.checkbox} /></FormRow> <FormRow label="Group"><input type="checkbox" {...register('optimizer.optuna_config.sampler.group')} className={styles.checkbox} /></FormRow> </>)}
-                      {watchedSamplerType === 'cmaes' && (<FormRow label="Restart Strategy"><select {...register('optimizer.optuna_config.sampler.restart_strategy')} className={styles.select}><option value="">None</option><option value="ipop">ipop</option><option value="bipop">bipop</option></select></FormRow>)}
-                      {watchedSamplerType === 'qmc' && (<> <FormRow label="QMC Type"><select {...register('optimizer.optuna_config.sampler.qmc_type')} className={styles.select}><option value="sobol">Sobol</option><option value="halton">Halton</option><option value="lhs">LHS</option></select></FormRow> <FormRow label="Scramble"><input type="checkbox" {...register('optimizer.optuna_config.sampler.scramble')} className={styles.checkbox} /></FormRow> </>)}
-                      {watchedSamplerType === 'grid' && (<FormRow label="Search Space" stacked><textarea {...register('optimizer.optuna_config.sampler.search_space')} className={styles.textarea} rows={4} placeholder={'alpha: [0.1, 0.5]\nbeta: [10, 20]'}></textarea></FormRow>)}
-                   </div>
+                <div className={styles.subFieldset}>
+                  <h4 style={{marginBottom: 'var(--space-12)'}}>Optuna Settings</h4>
+                  <FormRow label="Storage Dir"><input type="text" {...register('optimizer.optuna_config.storage_dir')} className={styles.input}/></FormRow>
+                  <FormRow label="Resume Study"><input type="text" {...register('optimizer.optuna_config.resume_study_name')} className={styles.input} /></FormRow>
+                  <FormRow label="Launch Dashboard"><input type="checkbox" {...register('optimizer.optuna_config.launch_dashboard')} className={styles.checkbox} /></FormRow>
+                  <FormRow label="Dashboard Port"><input type="number" {...register('optimizer.optuna_config.dashboard_port', { valueAsNumber: true })} className={styles.input} /></FormRow>
+                  
+                  <h5 style={{marginTop: 'var(--space-16)', marginBottom: 'var(--space-12)'}}>Sampler</h5>
+                  <FormRow label="Type">
+                      <Controller name="optimizer.optuna_config.sampler.type" control={control} render={({ field }) => (<CustomSelect options={['tpe', 'cmaes', 'random', 'grid', 'qmc']} value={field.value} onChange={field.onChange} />)} />
+                  </FormRow>
+                  {watchedSamplerType === 'cmaes' && (<FormRow label="Restart Strategy"><Controller name="optimizer.optuna_config.sampler.restart_strategy" control={control} render={({ field }) => (<CustomSelect options={['', 'ipop', 'bipop']} value={field.value} onChange={field.onChange} />)} /></FormRow>)}
+                  {watchedSamplerType === 'qmc' && (<FormRow label="QMC Type"><Controller name="optimizer.optuna_config.sampler.qmc_type" control={control} render={({ field }) => (<CustomSelect options={['sobol', 'halton', 'lhs']} value={field.value} onChange={field.onChange} />)} /></FormRow>)}
+                  {watchedSamplerType === 'tpe' && (<> <FormRow label="Multivariate"><input type="checkbox" {...register('optimizer.optuna_config.sampler.multivariate')} className={styles.checkbox} /></FormRow> <FormRow label="Group"><input type="checkbox" {...register('optimizer.optuna_config.sampler.group')} className={styles.checkbox} /></FormRow> </>)}
+                  {watchedSamplerType === 'qmc' && (<FormRow label="Scramble"><input type="checkbox" {...register('optimizer.optuna_config.sampler.scramble')} className={styles.checkbox} /></FormRow>)}
+                  {watchedSamplerType === 'grid' && (<FormRow label="Search Space" stacked><textarea {...register('optimizer.optuna_config.sampler.search_space')} className={styles.textarea} rows={4} placeholder={'alpha: [0.1, 0.5]\nbeta: [10, 20]'}></textarea></FormRow>)}
+                </div>
               )}
           </div>
           

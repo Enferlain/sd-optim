@@ -423,34 +423,38 @@
     background-size: 16px;
     padding-right: var(--space-32);
     
-    /* --- THIS IS THE FIX --- */
-    /* We'll use the exact same background and border as our text inputs! */
+    /* THIS IS THE FIX: We use the same background as our text inputs! */
     background-color: rgba(0, 0, 0, 0.1); 
-    border: 1px solid rgba(255, 255, 255, 0.2);
   
     /* And we apply the correct caret for our dark theme */
     background-image: var(--select-caret-dark);
+  
+    /* --- NEW ---: Explicitly set the color scheme for the dropdown's popup menu */
+    color-scheme: dark; 
   }
   
-  /* Add a dark mode specific caret */
-  @media (prefers-color-scheme: dark) {
-    select.form-control {
-      background-image: var(--select-caret-dark);
-    }
+  /* We don't need the old @media queries for the caret anymore, 
+     since we set it directly for each theme above. Let's remove them for cleanliness. */
+  
+  /* --- NEW ---: Add styles for the <option> elements within the dropdown */
+  select.form-control option {
+    /* Use our theme's dark surface color for the menu background */
+    background: var(--color-surface); 
+    color: var(--color-text);
   }
   
-  /* Also handle data-color-scheme */
-  [data-color-scheme="dark"] select.form-control {
-    background-image: var(--select-caret-dark);
-  }
-  
-  [data-color-scheme="light"] select.form-control {
-    background-image: var(--select-caret-light);
-  }
+  /* --- DEPRECATED --- We can remove the old data-color-scheme rules for the select caret,
+   as the `color-scheme` property is more direct. */
+  /*
+  [data-color-scheme="dark"] select.form-control { ... }
+  [data-color-scheme="light"] select.form-control { ... }
+  */
   
   .form-control:focus {
     border-color: var(--color-primary);
-    outline: var(--focus-outline);
+    /* Use the global --focus-ring variable for consistency */
+    box-shadow: var(--focus-ring);
+    outline: none; /* We use box-shadow for focus, so no need for outline */
   }
   
   .form-label {

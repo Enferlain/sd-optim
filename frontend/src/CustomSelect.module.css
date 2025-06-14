@@ -1,0 +1,67 @@
+/* Styling for our beautiful, custom-built dropdown! */
+
+.selectWrapper {
+    position: relative; /* This is crucial for positioning the menu */
+    width: 100%;
+    font-family: var(--font-family-base);
+}
+
+.selectTrigger {
+    /* Inherit the style from our global form controls! */
+    composes: form-control from global;
+    width: 100%;
+    text-align: left;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    cursor: pointer;
+}
+
+.caret {
+    transition: transform 0.2s ease-in-out;
+}
+
+.caretOpen {
+    transform: rotate(180deg);
+}
+
+.optionsMenu {
+    position: absolute;
+    top: calc(100% + var(--space-4));
+    left: 0;
+    right: 0;
+    z-index: 100;
+    
+    /* Instead of backdrop-filter, use a semi-transparent background */
+    background: rgba(0, 0, 0, 0.8);
+    
+    /* Add subtle glass-like effects */
+    box-shadow: 
+      0 8px 32px 0 rgba(0, 0, 0, 0.4),
+      inset 0 1px 0 rgba(255, 255, 255, 0.1),
+      inset 0 -1px 0 rgba(0, 0, 0, 0.1);
+    
+    border: 1px solid rgba(255, 255, 255, 0.2);
+    border-radius: var(--radius-base);
+    padding: var(--space-4);
+    max-height: 200px;
+    overflow-y: auto;
+  }
+
+.optionItem {
+    padding: var(--space-8) var(--space-12);
+    border-radius: var(--radius-sm);
+    cursor: pointer;
+    transition: background-color 0.15s ease-in-out;
+    color: var(--color-text);
+}
+
+.optionItem:hover {
+    background-color: var(--color-secondary-hover);
+}
+
+.optionSelected {
+    background-color: var(--color-primary);
+    color: var(--color-btn-primary-text);
+    font-weight: var(--font-weight-medium);
+}

@@ -12,11 +12,12 @@ const FormRow = ({ label, children, stacked = false }) => (
 );
 
 const MainConfigTab = () => {
-    // --- CORRECTED DATA STRUCTURE FOR useForm ---
     const { register, handleSubmit, reset, watch, control, setValue } = useForm({
+        // THIS PART NEEDS TO BE UPDATED!
         defaultValues: {
             defaults: [{ payloads: 'cargo_forge.yaml' }],
             run_name: '',
+            hydra: { run: { dir: '' } },
             webui: 'forge',
             configs_dir: '',
             conversion_dir: '',
@@ -30,11 +31,11 @@ const MainConfigTab = () => {
             threads: 4,
             merge_dtype: 'fp32',
             save_dtype: 'bf16',
+            add_extra_keys: false, // <-- New
             save_merge_artifacts: true,
             save_best: true,
             optimization_mode: 'merge',
             recipe_optimization: { recipe_path: '', target_nodes: '', target_params: '' },
-            // --- THIS IS THE CORRECTED NESTED STRUCTURE ---
             optimizer: { 
                 type: 'optuna', 
                 bayes: false, 
@@ -138,104 +139,63 @@ const MainConfigTab = () => {
       <form onSubmit={handleSubmit(onSubmit)} className={styles.formContainer}>
           <h2 style={{ paddingBottom: 'var(--space-12)' }}>Main Configuration</h2>
           
-          {/* --- Payloads & WebUI Section (Reordered!) --- */}
           <div className={styles.formSection}>
-              <h3 className={styles.legend}>Payloads</h3>
+              <h3 className={styles.legend}>Run & Payloads</h3>
+              <FormRow label="Run Name">
+                  <input type="text" {...register('run_name')} className={styles.input} />
+              </FormRow>
               <FormRow label="WebUI">
-                  <Controller
-                      name="webui"
-                      control={control}
-                      render={({ field }) => (
-                          <CustomSelect
-                              options={['forge', 'a1111', 'reforge', 'comfy', 'swarm']}
-                              value={field.value}
-                              onChange={field.onChange}
-                          />
-                      )}
-                  />
+                  <Controller name="webui" control={control} render={({ field }) => (<CustomSelect options={['forge', 'a1111', 'reforge', 'comfy', 'swarm']} value={field.value} onChange={field.onChange} />)} />
               </FormRow>
               <FormRow label="Cargo File">
-                  <Controller
-                      name="defaults.0.payloads"
-                      control={control}
-                      render={({ field }) => (
-                          <CustomSelect
-                              options={cargoFiles}
-                              value={field.value}
-                              onChange={field.onChange}
-                          />
-                      )}
-                  />
+                  <Controller name="defaults.0.payloads" control={control} render={({ field }) => (<CustomSelect options={cargoFiles} value={field.value} onChange={field.onChange} />)} />
               </FormRow>
           </div>
 
-          {/* --- Model Inputs Section --- */}
           <div className={styles.formSection}>
-                <h3 className={styles.legend}>Model Inputs</h3>
-                {fields.map((field, index) => (
-                    <div key={field.id} style={{ display: 'flex', alignItems: 'center', marginBottom: '8px', gap: '8px' }}>
-                        <input
-                            {...register(`model_paths.${index}.value`)}
-                            placeholder={`Model Path ${index + 1}`}
-                            className={styles.input}
-                        />
+              <h3 className={styles.legend}>File Paths</h3>
+              <FormRow label="Hydra Run Directory"><input type="text" {...register('hydra.run.dir')} className={styles.input} /></FormRow>
+              <FormRow label="Configs Directory"><input type="text" {...register('configs_dir')} className={styles.input} /></FormRow>
+              <FormRow label="Conversion Directory"><input type="text" {...register('conversion_dir')} className={styles.input} /></FormRow>
+              <FormRow label="Wildcards Directory"><input type="text" {...register('wildcards_dir')} className={styles.input} /></FormRow>
+              <FormRow label="Scorer Model Directory"><input type="text" {...register('scorer_model_dir')} className={styles.input} /></FormRow>
+          </div>
 
-                        {/* --- THIS IS THE FIX --- */}
-                        <button 
-                            type="button" 
-                            onClick={() => setValue('base_model_index', index)} 
-                            className={watch('base_model_index') === index ? styles.buttonPrimarySm : styles.buttonSecondarySm}
-                        >
-                            Base
-                        </button>
-                        <button 
-                            type="button" 
-                            onClick={() => setValue('fallback_model_index', index)} 
-                            className={watch('fallback_model_index') === index ? styles.buttonPrimarySm : styles.buttonSecondarySm}
-                        >
-                            Fallback
-                        </button>
-                        
-                        <button type="button" onClick={() => remove(index)} className={styles.buttonOutlineSm}>
-                            Remove
-                        </button>
-                    </div>
-                ))}
-                <div style={{ paddingLeft: '192px', marginTop: '12px' }}>
-                    <button type="button" onClick={() => append({ value: '' })} className={styles.buttonSecondary}>Add Model Path</button>
-                    <button type="button" onClick={() => setValue('fallback_model_index', -1)} className={styles.buttonSecondary} style={{ marginLeft: '10px' }}>Clear Fallback</button>
-                </div>
-            </div>
+          <div className={styles.formSection}>
+              <h3 className={styles.legend}>Model Inputs</h3>
+              {fields.map((field, index) => (
+                  <div key={field.id} style={{ display: 'flex', alignItems: 'center', marginBottom: '8px', gap: '8px' }}>
+                      <input {...register(`model_paths.${index}.value`)} placeholder={`Model Path ${index + 1}`} className={styles.input} />
+                      <button type="button" onClick={() => setValue('base_model_index', index)} className={watch('base_model_index') === index ? styles.buttonPrimarySm : styles.buttonSecondarySm}>Base</button>
+                      <button type="button" onClick={() => setValue('fallback_model_index', index)} className={watch('fallback_model_index') === index ? styles.buttonPrimarySm : styles.buttonSecondarySm}>Fallback</button>
+                      <button type="button" onClick={() => remove(index)} className={styles.buttonOutlineSm}>Remove</button>
+                  </div>
+              ))}
+              <div style={{ paddingLeft: '192px', marginTop: '12px' }}>
+                  <button type="button" onClick={() => append({ value: '' })} className={styles.buttonSecondary}>Add Model Path</button>
+                  <button type="button" onClick={() => setValue('fallback_model_index', -1)} className={styles.buttonSecondary} style={{ marginLeft: '10px' }}>Clear Fallback</button>
+              </div>
+          </div>
 
-          {/* --- Merge Settings Section --- */}
           <div className={styles.formSection}>
               <h3 className={styles.legend}>Merge Settings</h3>
               <FormRow label="Merge Method"><input type="text" {...register('merge_method')} className={styles.input} /></FormRow>
-              <FormRow label="Device">
-                  <Controller name="device" control={control} render={({ field }) => (<CustomSelect options={['cuda', 'cpu']} value={field.value} onChange={field.onChange} />)} />
-              </FormRow>
+              <FormRow label="Device"><Controller name="device" control={control} render={({ field }) => (<CustomSelect options={['cuda', 'cpu']} value={field.value} onChange={field.onChange} />)} /></FormRow>
               <FormRow label="Threads"><input type="number" {...register('threads', { valueAsNumber: true })} className={styles.input} /></FormRow>
-              <FormRow label="Merge Precision">
-                  <Controller name="merge_dtype" control={control} render={({ field }) => (<CustomSelect options={['fp16', 'bf16', 'fp32', 'fp64']} value={field.value} onChange={field.onChange} />)} />
-              </FormRow>
-              <FormRow label="Save Precision">
-                   <Controller name="save_dtype" control={control} render={({ field }) => (<CustomSelect options={['fp16', 'bf16', 'fp32', 'fp64']} value={field.value} onChange={field.onChange} />)} />
-              </FormRow>
+              <FormRow label="Merge Precision"><Controller name="merge_dtype" control={control} render={({ field }) => (<CustomSelect options={['fp16', 'bf16', 'fp32', 'fp64']} value={field.value} onChange={field.onChange} />)} /></FormRow>
+              <FormRow label="Save Precision"><Controller name="save_dtype" control={control} render={({ field }) => (<CustomSelect options={['fp16', 'bf16', 'fp32', 'fp64']} value={field.value} onChange={field.onChange} />)} /></FormRow>
+              <FormRow label="Add Extra Keys (v-pred)"><input type="checkbox" {...register('add_extra_keys')} className={styles.checkbox} /></FormRow>
           </div>
 
-          {/* --- General Workflow Section --- */}
           <div className={styles.formSection}>
               <h3 className={styles.legend}>General Workflow</h3>
               <FormRow label="Save Merge Artifacts"><input type="checkbox" {...register('save_merge_artifacts')} className={styles.checkbox} /></FormRow>
               <FormRow label="Save Best Model"><input type="checkbox" {...register('save_best')} className={styles.checkbox} /></FormRow>
           </div>
           
-          {/* --- Optimization Mode Section --- */}
           <div className={styles.formSection}>
                <h3 className={styles.legend}>Optimization Mode</h3>
-              <FormRow label="Mode">
-                  <Controller name="optimization_mode" control={control} render={({ field }) => (<CustomSelect options={['merge', 'recipe', 'layer_adjust']} value={field.value} onChange={field.onChange} />)} />
-              </FormRow>
+              <FormRow label="Mode"><Controller name="optimization_mode" control={control} render={({ field }) => (<CustomSelect options={['merge', 'recipe', 'layer_adjust']} value={field.value} onChange={field.onChange} />)} /></FormRow>
               {watchedOptimizationMode === 'recipe' && (
                   <div className={styles.subFieldset}>
                       <h4 style={{marginBottom: 'var(--space-12)'}}>Recipe Settings</h4>
@@ -278,11 +238,86 @@ const MainConfigTab = () => {
               )}
           </div>
           
-          {/* --- Image Generation & Scoring Sections ... --- */}
-          
-          <button type="submit" className={styles.submitButton}>Save Configuration</button>
-      </form>
-  );
+          <div className={styles.formSection}>
+                <h3 className={styles.legend}>Image Generation</h3>
+                <FormRow label="Images per Payload"><input type="number" {...register('batch_size', { valueAsNumber: true })} className={styles.input} /></FormRow>
+                <FormRow label="Save Images"><input type="checkbox" {...register('save_imgs')} className={styles.checkbox} /></FormRow>
+                <FormRow label="Image Score Avg"><Controller name="img_average_type" control={control} render={({ field }) => (<CustomSelect options={['arithmetic', 'geometric', 'quadratic']} value={field.value} onChange={field.onChange} />)} /></FormRow>
+                <FormRow label="Background Check"><input type="checkbox" {...register('background_check.enabled')} className={styles.checkbox} /></FormRow>
+            </div>
+
+            <div className={styles.formSection}>
+                <h3 className={styles.legend}>Connection Settings</h3>
+                <FormRow label="Concurrency Limit"><input type="number" {...register('generator_concurrency_limit', { valueAsNumber: true })} className={styles.input} /></FormRow>
+                <FormRow label="Keep-Alive (s)"><input type="number" {...register('generator_keepalive_interval', { valueAsNumber: true })} className={styles.input} /></FormRow>
+                <FormRow label="Total Timeout (s)"><input type="number" {...register('generator_total_timeout', { valueAsNumber: true })} className={styles.input} /></FormRow>
+            </div>
+
+            <div className={styles.formSection}>
+                <h3 className={styles.legend}>Scoring</h3>
+                <FormRow label="Scorers" stacked>
+                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '8px' }}>
+                        {allScorers.map(scorer => {
+                            const isManual = scorer === 'manual';
+                            const manualSelected = watchedScorers.includes('manual');
+                            return (
+                                <label key={scorer} style={{ display: 'flex', alignItems: 'center', gap: '5px', opacity: isManual ? 1 : (manualSelected ? 0.5 : 1) }}>
+                                    <input type="checkbox" value={scorer} {...register('scorer_method')} disabled={!isManual && manualSelected} onChange={(e) => {
+                                        const { checked, value } = e.target;
+                                        if (value === 'manual' && checked) {
+                                            setValue('scorer_method', ['manual']);
+                                        } else {
+                                            const currentScorers = watchedScorers.filter(s => s !== 'manual');
+                                            if (checked) {
+                                                setValue('scorer_method', [...currentScorers, value]);
+                                            } else {
+                                                setValue('scorer_method', currentScorers.filter(s => s !== value));
+                                            }
+                                        }
+                                    }} className={styles.checkbox} />
+                                    {scorer}
+                                </label>
+                            );
+                        })}
+                    </div>
+                </FormRow>
+                
+                {watchedScorers.length > 0 && !watchedScorers.includes('manual') && (
+                    <div className={styles.subFieldset}>
+                        <FormRow label="Scorer Avg Type"><Controller name="scorer_average_type" control={control} render={({ field }) => (<CustomSelect options={['arithmetic', 'geometric', 'quadratic']} value={field.value} onChange={field.onChange} />)}/></FormRow>
+                        <FormRow label="Default Scorer Device"><Controller name="scorer_default_device" control={control} render={({ field }) => (<CustomSelect options={['cpu', 'cuda']} value={field.value} onChange={field.onChange} />)}/></FormRow>
+                        <FormRow label="Print Individual Scores"><input type="checkbox" {...register('scorer_print_individual')} className={styles.checkbox}/></FormRow>
+                        
+                        <hr style={{margin: '20px 0', border: 'none', borderTop: '1px solid var(--color-border)'}} />
+                        
+                        {watchedScorers.map(scorer => (
+                            <div key={scorer}>
+                                <h4 style={{marginLeft: '20px', marginBottom:'10px'}}>{scorer}</h4>
+                                <FormRow label="Weight">
+                                    <Controller
+                                        name={`scorer_weight.${scorer}`}
+                                        control={control}
+                                        defaultValue={1.0}
+                                        render={({ field }) => (
+                                            <div style={{display: 'flex', alignItems: 'center', width: '100%', gap: '15px'}}>
+                                                <input type="range" min="0" max="2" step="0.05" {...field} style={{flexGrow: 1}} />
+                                                <span className={styles.sliderValue}>{Number(field.value).toFixed(2)}</span>
+                                            </div>
+                                        )}
+                                    />
+                                </FormRow>
+                                <FormRow label="Device Override">
+                                    <Controller name={`scorer_device.${scorer}`} control={control} render={({ field }) => (<CustomSelect options={['', 'cuda', 'cpu']} value={field.value} onChange={field.onChange} />)} />
+                                </FormRow>
+                            </div>
+                        ))}
+                    </div>
+                )}
+            </div>
+
+            <button type="submit" className={styles.submitButton}>Save Configuration</button>
+        </form>
+    );
 };
 
 export default MainConfigTab;

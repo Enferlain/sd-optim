@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { useForm, useFieldArray, Controller } from 'react-hook-form';
 import styles from './MainConfigTab.module.css';
 import CustomSelect from './CustomSelect.js'; // <-- Import our custom component!
+import FileInput from './FileInput.js';
 
 // Helper component
 const FormRow = ({ label, children, stacked = false }) => (
@@ -84,7 +85,7 @@ const MainConfigTab = () => {
     const [isLoading, setIsLoading] = useState(true);
     const [error, setError] = useState(null);
     const [cargoFiles, setCargoFiles] = useState([]);
-    const [allScorers, setAllScorers] = useState(['laion', 'hpsv21', 'pick', 'imagereward', 'cityaes', 'manual']);
+    const [allScorers, setAllScorers] = useState([]);
 
     const getBackendHost = () => {
         const currentHost = window.location.hostname;
@@ -92,29 +93,42 @@ const MainConfigTab = () => {
         return 'http://localhost:8000';
     };
 
+    // We update our data fetching logic.
     useEffect(() => {
-        const fetchData = async () => {
-            try {
-                const backendHost = getBackendHost();
-                const [configRes, cargoRes] = await Promise.all([
-                    fetch(`${backendHost}/config/`),
-                    fetch(`${backendHost}/config/cargo`)
-                ]);
-                if (!configRes.ok) throw new Error(`Config fetch failed: ${configRes.statusText}`);
-                if (!cargoRes.ok) throw new Error(`Cargo fetch failed: ${cargoRes.statusText}`);
-                const configData = await configRes.json();
-                const cargoData = await cargoRes.json();
-                setCargoFiles(cargoData);
-                let optimizerType = 'optuna';
-                if (configData.optimizer?.bayes) optimizerType = 'bayes';
-                const modelPathsAsObjects = (configData.model_paths || []).map(path => ({ value: path }));
-                const initialCargo = `cargo_${configData.webui}.yaml`;
-                configData.defaults = [{ payloads: initialCargo }];
-                reset({ ...configData, optimizer: { ...configData.optimizer, type: optimizerType }, model_paths: modelPathsAsObjects });
-            } catch (err) { setError(err); } finally { setIsLoading(false); }
-        };
-        fetchData();
-    }, [reset]);
+      const fetchData = async () => {
+          try {
+              const backendHost = getBackendHost();
+              // Fetch config, cargo, AND our new scorers list all at once!
+              const [configRes, cargoRes, scorersRes] = await Promise.all([
+                  fetch(`${backendHost}/config/`),
+                  fetch(`${backendHost}/config/cargo`),
+                  fetch(`${backendHost}/config/scorers`) // <-- New fetch call
+              ]);
+
+              if (!configRes.ok) throw new Error(`Config fetch failed: ${configRes.statusText}`);
+              if (!cargoRes.ok) throw new Error(`Cargo fetch failed: ${cargoRes.statusText}`);
+              if (!scorersRes.ok) throw new Error(`Scorers fetch failed: ${scorersRes.statusText}`);
+
+              const configData = await configRes.json();
+              const cargoData = await cargoRes.json();
+              const scorersData = await scorersRes.json(); // <-- Get the scorers list
+
+              // Use the data to set our component's state!
+              setCargoFiles(cargoData);
+              setAllScorers(scorersData); // <-- Set the dynamic list of scorers
+
+              // The rest of the logic is the same...
+              let optimizerType = 'optuna';
+              if (configData.optimizer?.bayes) optimizerType = 'bayes';
+              const modelPathsAsObjects = (configData.model_paths || []).map(path => ({ value: path }));
+              const initialCargo = `cargo_${configData.webui}.yaml`;
+              configData.defaults = [{ payloads: initialCargo }];
+              reset({ ...configData, optimizer: { ...configData.optimizer, type: optimizerType }, model_paths: modelPathsAsObjects });
+
+          } catch (err) { setError(err); } finally { setIsLoading(false); }
+      };
+      fetchData();
+  }, [reset]); // Dependency array doesn't need to change
 
     const onSubmit = (data) => {
         const submissionData = { ...data };
@@ -135,6 +149,39 @@ const MainConfigTab = () => {
     if (isLoading) return <p>Loading configuration...</p>;
     if (error) return <p>Error loading configuration: {error.message}</p>;
 
+    const handleAddModelClick = async () => {
+      if ('showOpenFilePicker' in window) {
+          try {
+              // We can even specify that we only want to see .safetensors files!
+              const [fileHandle] = await window.showOpenFilePicker({
+                  id: 'model-path-picker',
+                  types: [
+                      {
+                          description: 'Models',
+                          accept: { 'application/octet-stream': ['.safetensors', '.ckpt', '.pt'] },
+                      },
+                  ],
+              });
+              
+              // Once the user selects a file, we get its name...
+              const fileName = fileHandle.name;
+
+              // And then we append a new field to our array with that name!
+              append({ value: fileName });
+
+          } catch (err) {
+              // This happens if the user cancels the file picker, so we just ignore it.
+              if (err.name !== 'AbortError') {
+                  console.error("Error picking file:", err);
+              }
+          }
+      } else {
+          // Fallback for older browsers or environments
+          // Just add an empty row like before.
+          append({ value: '' });
+      }
+  };
+
     return (
       <form onSubmit={handleSubmit(onSubmit)} className={styles.formContainer}>
           <h2 style={{ paddingBottom: 'var(--space-12)' }}>Main Configuration</h2>
@@ -143,6 +190,13 @@ const MainConfigTab = () => {
               <h3 className={styles.legend}>Run & Payloads</h3>
               <FormRow label="Run Name">
                   <input type="text" {...register('run_name')} className={styles.input} />
+              </FormRow>
+              <FormRow label="Hydra Run Directory">
+                  <input 
+                      type="text" 
+                      {...register('hydra.run.dir')} 
+                      className={styles.input}
+                  />
               </FormRow>
               <FormRow label="WebUI">
                   <Controller name="webui" control={control} render={({ field }) => (<CustomSelect options={['forge', 'a1111', 'reforge', 'comfy', 'swarm']} value={field.value} onChange={field.onChange} />)} />
@@ -154,26 +208,67 @@ const MainConfigTab = () => {
 
           <div className={styles.formSection}>
               <h3 className={styles.legend}>File Paths</h3>
-              <FormRow label="Hydra Run Directory"><input type="text" {...register('hydra.run.dir')} className={styles.input} /></FormRow>
-              <FormRow label="Configs Directory"><input type="text" {...register('configs_dir')} className={styles.input} /></FormRow>
-              <FormRow label="Conversion Directory"><input type="text" {...register('conversion_dir')} className={styles.input} /></FormRow>
-              <FormRow label="Wildcards Directory"><input type="text" {...register('wildcards_dir')} className={styles.input} /></FormRow>
-              <FormRow label="Scorer Model Directory"><input type="text" {...register('scorer_model_dir')} className={styles.input} /></FormRow>
+              <FormRow label="Configs Directory">
+                  <FileInput name="configs_dir" control={control} directory={true} placeholder="path/to/model_configs" />
+              </FormRow>
+              <FormRow label="Conversion Directory">
+                  <FileInput name="conversion_dir" control={control} directory={true} placeholder="path/to/model_configs" />
+              </FormRow>
+              <FormRow label="Wildcards Directory">
+                  <FileInput name="wildcards_dir" control={control} directory={true} placeholder="path/to/wildcards" />
+              </FormRow>
+              <FormRow label="Scorer Model Directory">
+                  <FileInput name="scorer_model_dir" control={control} directory={true} placeholder="path/to/Scorer" />
+              </FormRow>
           </div>
 
+          {/* --- Model Inputs Section (New and Improved!) --- */}
           <div className={styles.formSection}>
               <h3 className={styles.legend}>Model Inputs</h3>
               {fields.map((field, index) => (
                   <div key={field.id} style={{ display: 'flex', alignItems: 'center', marginBottom: '8px', gap: '8px' }}>
-                      <input {...register(`model_paths.${index}.value`)} placeholder={`Model Path ${index + 1}`} className={styles.input} />
-                      <button type="button" onClick={() => setValue('base_model_index', index)} className={watch('base_model_index') === index ? styles.buttonPrimarySm : styles.buttonSecondarySm}>Base</button>
-                      <button type="button" onClick={() => setValue('fallback_model_index', index)} className={watch('fallback_model_index') === index ? styles.buttonPrimarySm : styles.buttonSecondarySm}>Fallback</button>
-                      <button type="button" onClick={() => remove(index)} className={styles.buttonOutlineSm}>Remove</button>
+                      {/* Go back to a simple input, as the "Add" button now handles picking */}
+                      <input
+                          {...register(`model_paths.${index}.value`)}
+                          placeholder="Path to model.safetensors"
+                          className={styles.input}
+                      />
+                      
+                        {/* --- THE NEW ONCLICK LOGIC USING NULL --- */}
+                        <button
+                            type="button"
+                            onClick={() => {
+                                // If it's already selected, set it to null. Otherwise, select it.
+                                const newIndex = watch('base_model_index') === index ? null : index;
+                                setValue('base_model_index', newIndex);
+                            }}
+                            className={watch('base_model_index') === index ? styles.buttonPrimarySm : styles.buttonSecondarySm}
+                        >
+                            Base
+                        </button>
+
+                        <button
+                            type="button"
+                            onClick={() => {
+                                // If it's already selected, set it to null. Otherwise, select it.
+                                const newIndex = watch('fallback_model_index') === index ? null : index;
+                                setValue('fallback_model_index', newIndex);
+                            }}
+                            className={watch('fallback_model_index') === index ? styles.buttonPrimarySm : styles.buttonSecondarySm}
+                        >
+                            Fallback
+                        </button>
+                        
+                        <button type="button" onClick={() => remove(index)} className={styles.buttonOutlineSm}>
+                            Remove
+                        </button>
                   </div>
               ))}
-              <div style={{ paddingLeft: '192px', marginTop: '12px' }}>
-                  <button type="button" onClick={() => append({ value: '' })} className={styles.buttonSecondary}>Add Model Path</button>
-                  <button type="button" onClick={() => setValue('fallback_model_index', -1)} className={styles.buttonSecondary} style={{ marginLeft: '10px' }}>Clear Fallback</button>
+              <div style={{ marginTop: '12px' }}>
+                  {/* The "Add" button now calls our new, smart handler! */}
+                  <button type="button" onClick={handleAddModelClick} className={styles.buttonSecondary}>
+                      Add Model Path
+                  </button>
               </div>
           </div>
 
@@ -220,7 +315,9 @@ const MainConfigTab = () => {
               {watchedOptimizerType === 'optuna' && (
                 <div className={styles.subFieldset}>
                   <h4 style={{marginBottom: 'var(--space-12)'}}>Optuna Settings</h4>
-                  <FormRow label="Storage Dir"><input type="text" {...register('optimizer.optuna_config.storage_dir')} className={styles.input}/></FormRow>
+                  <FormRow label="Storage Dir">
+                        <FileInput name="optimizer.optuna_config.storage_dir" control={control} directory={true} />
+                    </FormRow>                  
                   <FormRow label="Resume Study"><input type="text" {...register('optimizer.optuna_config.resume_study_name')} className={styles.input} /></FormRow>
                   <FormRow label="Launch Dashboard"><input type="checkbox" {...register('optimizer.optuna_config.launch_dashboard')} className={styles.checkbox} /></FormRow>
                   <FormRow label="Dashboard Port"><input type="number" {...register('optimizer.optuna_config.dashboard_port', { valueAsNumber: true })} className={styles.input} /></FormRow>
@@ -253,32 +350,48 @@ const MainConfigTab = () => {
                 <FormRow label="Total Timeout (s)"><input type="number" {...register('generator_total_timeout', { valueAsNumber: true })} className={styles.input} /></FormRow>
             </div>
 
+            {/* --- Scoring Section (New Layout!) --- */}
             <div className={styles.formSection}>
                 <h3 className={styles.legend}>Scoring</h3>
                 <FormRow label="Scorers" stacked>
-                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '8px' }}>
-                        {allScorers.map(scorer => {
-                            const isManual = scorer === 'manual';
-                            const manualSelected = watchedScorers.includes('manual');
-                            return (
-                                <label key={scorer} style={{ display: 'flex', alignItems: 'center', gap: '5px', opacity: isManual ? 1 : (manualSelected ? 0.5 : 1) }}>
-                                    <input type="checkbox" value={scorer} {...register('scorer_method')} disabled={!isManual && manualSelected} onChange={(e) => {
-                                        const { checked, value } = e.target;
-                                        if (value === 'manual' && checked) {
-                                            setValue('scorer_method', ['manual']);
-                                        } else {
-                                            const currentScorers = watchedScorers.filter(s => s !== 'manual');
-                                            if (checked) {
-                                                setValue('scorer_method', [...currentScorers, value]);
-                                            } else {
-                                                setValue('scorer_method', currentScorers.filter(s => s !== value));
-                                            }
-                                        }
-                                    }} className={styles.checkbox} />
-                                    {scorer}
-                                </label>
-                            );
-                        })}
+                    <div className={styles.scorerLayout}>
+                        {/* --- The Manual Scorer (Handled Separately) --- */}
+                        <div className={styles.manualScorer}>
+                             <label key="manual" className={styles.scorerLabel}>
+                                <input
+                                    type="checkbox"
+                                    value="manual"
+                                    {...register('scorer_method')}
+                                    onChange={(e) => {
+                                        setValue('scorer_method', e.target.checked ? ['manual'] : []);
+                                    }}
+                                    className={styles.checkbox}
+                                />
+                                Manual
+                            </label>
+                        </div>
+
+                        {/* A nice vertical separator line */}
+                        <div className={styles.scorerSeparator}></div>
+
+                        {/* --- The Automatic Scorers (Mapped from the filtered list) --- */}
+                        <div className={styles.autoScorersGrid}>
+                            {allScorers.filter(s => s !== 'manual').map(scorer => {
+                                const manualSelected = watchedScorers.includes('manual');
+                                return (
+                                    <label key={scorer} className={styles.scorerLabel} style={{ opacity: manualSelected ? 0.5 : 1 }}>
+                                        <input
+                                            type="checkbox"
+                                            value={scorer}
+                                            {...register('scorer_method')}
+                                            disabled={manualSelected}
+                                            className={styles.checkbox}
+                                        />
+                                        {scorer}
+                                    </label>
+                                );
+                            })}
+                        </div>
                     </div>
                 </FormRow>
                 
@@ -299,6 +412,7 @@ const MainConfigTab = () => {
                                         control={control}
                                         defaultValue={1.0}
                                         render={({ field }) => (
+                                            /* --- THIS IS THE SLIDER FIX --- */
                                             <div style={{display: 'flex', alignItems: 'center', width: '100%', gap: '15px'}}>
                                                 <input type="range" min="0" max="2" step="0.05" {...field} style={{flexGrow: 1}} />
                                                 <span className={styles.sliderValue}>{Number(field.value).toFixed(2)}</span>

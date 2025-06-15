@@ -6,6 +6,8 @@ __pycache__/
 
 # --- Frontend npm stuff ---
 frontend/node_modules/
+frontend/package-lock.json
+frontend/package.json
 
 # --- Distribution / Packaging ---
 .Python

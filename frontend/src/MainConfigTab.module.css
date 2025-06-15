@@ -22,7 +22,6 @@
     border-bottom: 1px solid var(--color-border); /* A nice separator line */
 }
 
-
 /* --- THE NEW, LEFT-ALIGNED TWO-COLUMN VERSION! --- */
 .formRow { 
     display: flex; 
@@ -75,3 +74,45 @@
 .buttonOutlineSm { composes: btn btn--sm btn--outline from global; }
 
 .submitButton { composes: btn btn--primary btn--lg from global; }
+
+.scorerLayout {
+    display: flex;
+    flex-direction: row;
+    align-items: flex-start;
+    gap: var(--space-20);
+}
+
+.manualScorer {
+    flex-shrink: 0;
+    padding-right: var(--space-20);
+}
+
+.scorerLabel {
+    display: flex;
+    align-items: center;
+    gap: var(--space-8);
+    cursor: pointer;
+    font-size: var(--font-size-md);
+}
+
+.scorerSeparator {
+    width: 1px;
+    background-color: var(--color-border);
+    align-self: stretch; /* Makes the line stretch to the full height */
+}
+
+.autoScorersGrid {
+    flex-grow: 1;
+    display: grid;
+    grid-template-columns: repeat(3, 1fr); /* The fixed 3-column layout! */
+    gap: var(--space-8); /* A single gap value for both rows and columns */
+}
+
+.sliderValue { 
+    font-size: var(--font-size-sm); 
+    color: var(--color-text); /* Use the main, bright text color! */
+    opacity: 0.9; /* Add a tiny bit of opacity to soften it just a touch */
+    min-width: 40px; 
+    text-align: right; 
+    font-family: var(--font-family-mono); 
+}

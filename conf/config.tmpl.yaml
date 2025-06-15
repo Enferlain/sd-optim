@@ -7,7 +7,6 @@
 # It loads this file (_self_), then a payload file, then the optimization guide.
 defaults:
   - _self_
-  - payloads: # cargo_a1111, cargo_forge, etc.
   # Loads the optimization guide which tells the optimizer WHAT to optimize.
   - optimization_guide: guide
 

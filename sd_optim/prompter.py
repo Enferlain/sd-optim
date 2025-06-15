@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Tuple
 from omegaconf import DictConfig, ListConfig, OmegaConf
+from ruamel.yaml import YAML
 
 PathT = os.PathLike
 
@@ -48,79 +49,97 @@ class CardDealer:
         return "".join(replacements)
 
 
-def assemble_payload(defaults: Dict, payload: Dict, webui_type: str) -> Dict:
-    """Assembles payloads differently based on the webui_type."""
-    if webui_type in ["a1111", "forge", "reforge"]:  # Handle the structure for a1111-like UIs
-        for k, v in defaults.items():
-            if k not in payload.keys():
-                payload[k] = v
-        return payload
-    elif webui_type == "comfy":
-        for k, v in defaults.items():
-            if k not in payload.keys():
-                payload[k] = {"value": v}
-        return payload
-    elif webui_type == "swarm":
-        for k, v in defaults.items():
-            if k not in payload.keys():
-                payload[k] = {"value": v}
-            else:
-                if "id" not in payload[k]:
-                    payload[k] = {"value": payload[k], "id": k}
-
-        return payload
-    else:
-        raise ValueError(f"Unsupported webui_type: {webui_type}")
-
-
-def unpack_cargo(cargo: DictConfig, webui_type: str) -> Tuple[Dict, Dict]:
-    defaults = {}
-    payloads = {}
-    for k, v in cargo.items():
-        if k == "cargo":
-            for p_name, p in v.items():
-                payloads[p_name] = OmegaConf.to_container(p)
-        elif isinstance(v, (DictConfig, ListConfig)):
-            defaults[k] = OmegaConf.to_container(v)
-        else:
-            defaults[k] = v
-    return defaults, payloads
-
-
 @dataclass
 class Prompter:
     cfg: DictConfig
 
     def __post_init__(self):
-        self.load_payloads()
-        self.dealer = CardDealer(self.cfg.wildcards_dir)
+        """Initializes paths based on the main configuration."""
+        self.dealer = CardDealer(self.cfg.get("wildcards_dir"))
+        project_root = Path(os.getcwd())
+        self.conf_dir = project_root / "conf"
+        self.payloads_dir = self.conf_dir / "payloads"
+        self.presets_dir = self.conf_dir / "webui_presets"
+        logger.info(f"Prompter Initialized. Reading Presets from: '{self.presets_dir}' and Payloads from: '{self.payloads_dir}'")
 
-    def load_payloads(self) -> None:
-        self.raw_payloads = {}
-        cargo_file = f"cargo_{self.cfg.webui}.yaml"
-        defaults, payloads = unpack_cargo(self.cfg.payloads.get(cargo_file, self.cfg.payloads), self.cfg.webui)
-        for payload_name, payload in payloads.items():
-            self.raw_payloads[payload_name] = assemble_payload(defaults, payload, self.cfg.webui)
+    def render_payloads(self) -> Tuple[List[Dict], List[str]]:
+        """
+        The new, **strict** payload rendering pipeline.
+        This function will now raise errors on any configuration mistake.
+        """
+        final_payloads = []
+        payload_names_for_run = []
+        yaml = YAML(typ='safe')
 
-    def render_payloads(self, batch_size: int = 0) -> Tuple[List[Dict], List[str]]:
-        payloads = []
-        paths = []
-        for p_name, p in self.raw_payloads.items():
-            for _ in range(batch_size):
-                rendered_payload = p.copy()  # Always create a copy
-                if "__" in p["prompt"]:
-                    processed_prompt = self.dealer.replace_wildcards(p["prompt"])
-                    rendered_payload["prompt"] = processed_prompt
+        # --- Strict Check 1: Ensure payloads_to_run exists and is not empty ---
+        payloads_to_run = self.cfg.get("payloads_to_run", [])
+        if not payloads_to_run:
+            raise ValueError(
+                "Configuration Error: 'payloads_to_run' is missing or empty in your config.yaml.\n"
+                "Please add the names of the payloads you want to run, for example:\n"
+                "payloads_to_run:\n"
+                "  - my_first_payload\n"
+                "  - my_second_payload"
+            )
+            
+        logger.info(f"Found {len(payloads_to_run)} payloads to process: {payloads_to_run}")
 
-                # Add alwayson_scripts if vpred_enabled is true
-                if rendered_payload.get("vpred_enabled", False):
-                    extension_name = rendered_payload.get("extension_name", "Forge2 extras")
-                    rendered_payload["alwayson_scripts"] = {
-                        extension_name: {
-                            "args": [True, 0, 0, 0, 0, 'v_prediction']
-                        }
-                    }
+        # --- Loop through each payload name ---
+        for payload_name in payloads_to_run:
+            
+            # --- Strict Check 2: The payload file must exist ---
+            payload_path = self.payloads_dir / f"{payload_name}.yaml"
+            if not payload_path.is_file():
+                raise FileNotFoundError(
+                    f"Configuration Error: Payload file '{payload_name}.yaml' not found!\n"
+                    f"Please check the spelling in your config.yaml or make sure the file exists in '{self.payloads_dir}'."
+                )
+            
+            try:
+                with open(payload_path, 'r', encoding='utf-8') as f:
+                    payload_specifics = yaml.load(f)
+            except Exception as e:
+                # --- Strict Check 3: The payload file must be valid YAML ---
+                raise ValueError(
+                    f"Configuration Error: Could not parse the payload file '{payload_path}'. It might be malformed.\n"
+                    f"YAML Parser Error: {e}"
+                ) from e
 
-                paths.append(p_name)
-                payloads.append(rendered_payload)
-        return payloads, paths
+            # --- Strict Check 4: The payload must specify which preset it uses ---
+            preset_filename = payload_specifics.get("webui_preset")
+            if not preset_filename:
+                raise KeyError(
+                    f"Configuration Error: Payload '{payload_name}.yaml' is missing the required 'webui_preset' key.\n"
+                    f"Please open the file and add a line like: 'webui_preset: forge.yaml'"
+                )
+
+            # --- Strict Check 5: The specified preset file must exist ---
+            preset_path = self.presets_dir / preset_filename
+            if not preset_path.is_file():
+                raise FileNotFoundError(
+                    f"Configuration Error: The payload '{payload_name}.yaml' specifies a preset '{preset_filename}' which was not found.\n"
+                    f"Please make sure the file exists in '{self.presets_dir}'."
+                )
+            
+            try:
+                with open(preset_path, 'r', encoding='utf-8') as f:
+                    preset_defaults = yaml.load(f)
+            except Exception as e:
+                raise ValueError(
+                    f"Configuration Error: Could not parse the preset file '{preset_path}'. It might be malformed.\n"
+                    f"YAML Parser Error: {e}"
+                ) from e
+            
+            # --- Assemble the payloads for the batch ---
+            for i in range(self.cfg.batch_size):
+                final_payload = {**preset_defaults, **payload_specifics}
+                
+                if "__" in final_payload.get("prompt", ""):
+                    final_payload["prompt"] = self.dealer.replace_wildcards(final_payload["prompt"])
+                
+                final_payloads.append(final_payload)
+                payload_name_with_batch_index = f"{payload_name}_{i+1}"
+                payload_names_for_run.append(payload_name_with_batch_index)
+
+        logger.info(f"Successfully rendered {len(final_payloads)} total payloads for generation.")
+        return final_payloads, payload_names_for_run

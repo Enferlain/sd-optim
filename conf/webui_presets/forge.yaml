@@ -1,19 +1,23 @@
 defaults:
   - cargo:
-    - negeuler1
-    - negeuler2
-    - negeuler3
-    - negeuler4
-    - noob5
-    - noob6
+#    - negeuler1 # needed
+    - negeuler2 # needed
+#    - negeuler3
+#    - negeuler4
+#    - noob5 # needed
+    - noob6 # needed
 #    - negeuler5
 #    - negeuler6
-    - negeuler7
-    - negeuler8
-    - noob1
-    - noob2
-    - noob3
-    
+#    - negeuler7
+#    - negeuler8 # needed
+#    - noob1 # needed
+#    - noob7 # needed
+#    - noob2 # needed
+#    - noob3 # needed
+#    - noob8 # needed
+#    - noob9 # hires
+#    - noob10 # hires
+
 score_weight: 1.0
 
 prompt: ""
@@ -21,14 +25,14 @@ negative_prompt: ""
 
 n_iter: 1
 batch_size: 1
-steps: 20
+steps: 28
 cfg_scale: 8
 width: 512
 height: 512
 sampler_name: Euler a
 sampler_index: Euler a
 
-seed: -1
+seed: 218
 subseed: -1
 subseed_strength: 0
 seed_resize_from_h: -1
@@ -54,3 +58,6 @@ s_churn: 0
 s_tmax: 0
 s_tmin: 0
 s_noise: 1
+
+vpred_enabled: true
+extension_name: "Forge2 extras"

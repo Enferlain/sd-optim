@@ -1,0 +1,171 @@
+defaults:
+  - _self_
+  - optimization_guide: guide
+
+run_name: ${merge_method}_${scorer_method} # Uses cfg.merge_method even for recipe opt
+hydra:
+  run:
+    dir: logs/${now:%Y-%m-%d_%H-%M-%S}_${run_name}
+  verbose: false
+
+# --- WebUI Connection ---
+webui_urls: # Maps UI identifiers to base URLs
+  a1111: http://localhost:7860
+  forge: http://localhost:7860
+  reforge: http://localhost:7860
+  comfy: http://localhost:8188
+  swarm: http://localhost:7801
+webui: forge # Choose your target WebUI: a1111, forge, reforge, comfy, swarm
+url: "${webui_urls[${webui}]}" # Automatically selects the URL based on 'webui' setting
+
+# --- File Paths ---
+configs_dir: D:\stable-diffusion-webui-forge\extensions\sd-optim\sd_optim\model_configs # Or e.g., "path/to/my/block_configs"
+conversion_dir: D:\stable-diffusion-webui-forge\extensions\sd-optim\sd_optim\model_configs # Or e.g., "path/to/my/converter_scripts"
+wildcards_dir: D:\stable-diffusion-webui-forge\extensions\Umi-AI-debloat\wildcards # Directory containing wildcard files
+scorer_model_dir: D:\stable-diffusion-webui-forge\models\Scorer # Directory to store/find scorer models
+
+# --- Model Inputs ---
+model_paths:  # List of paths to input models (.safetensors, .ckpt, etc.)
+  - D:\stable-diffusion-webui-forge\models\Stable-diffusion\2182048-62.safetensors
+  - D:\stable-diffusion-webui-forge\models\Stable-diffusion\2182048-62-Illv2.0-butterfly_merge-stabler.safetensors
+  - D:\stable-diffusion-webui-forge\models\Lora\SDXL\Potion_style_V5.safetensors
+  - D:\stable-diffusion-webui-forge\models\Stable-diffusion\Illustrious-XL-v2.0.safetensors
+  - D:\stable-diffusion-webui-forge\models\Stable-diffusion\ill11fishe218ddoutperpattn.safetensors
+  - D:\stable-diffusion-webui-forge\models\Stable-diffusion\ill11fishe218dd1.safetensors
+  - D:\stable-diffusion-webui-forge\models\Stable-diffusion\lu2.safetensors
+  - D:\stable-diffusion-webui-forge\models\Stable-diffusion\svdtse25secret.safetensors
+  - D:\stable-diffusion-webui-forge\models\Stable-diffusion\PandoMerge_VPRED_V8.2.safetensors
+  - D:\stable-diffusion-webui-forge\models\Stable-diffusion\bbwm-svdtse28it25-beziergsfcaodsetv-householder_merge-it_1_best-bf16.safetensors
+  - D:\stable-diffusion-webui-forge\models\Stable-diffusion\illustrious-XL-v0.1.safetensors
+  # - D:\stable-diffusion-webui-forge\models\Stable-diffusion\waiNSFWIllustrious_v130.safetensors
+  # - D:\stable-diffusion-webui-forge\models\Stable-diffusion\fisheminus1outv3lora.safetensors
+  # - path/to/lora.safetensors # Loras are automatically converted
+base_model_index: 10 # Index (starting from 0) of the model in model_paths to use as base for delta methods
+fallback_model_index: 1 # 3 # Optional: Index of model in model_paths to use for missing keys (-1 or null for none)
+
+# --- Merge Settings (sd-mecha) ---
+merge_method: delta_dis2      # delta_dist # Name of the sd-mecha merge method (built-in or custom)
+device: cuda                  # Device for merging: 'cuda' or 'cpu'
+threads: 4                   # Number of threads for sd-mecha merge execution
+merge_dtype: fp32            # Precision for merge calculation: fp16, bf16, fp32, fp64
+save_dtype: bf16              # Precision for saving the final model: fp16, bf16, fp32, fp64
+add_extra_keys: False         # Add v_pred and ztsnr keys for v-prediction models (True/False)
+
+# --- General Workflow ---
+save_merge_artifacts: True   # Save the source code of the merge method along with an executable recipe (True/False)
+save_best: True              # Save the best-scoring model separately (True/False)
+
+# --- Optimization Mode ---
+optimization_mode: merge # "merge", "layer_adjust", or "recipe"
+
+# Settings for "recipe" optimization mode
+recipe_optimization:
+  recipe_path: D:\stable-diffusion-webui-forge\extensions\sd-optim\logs\widendtest.mecha # Path to the .mecha recipe file
+  target_nodes: '&22'      # Node reference(s) within the recipe to optimize (e.g., '&3', ['&3', '&4'])
+  target_params: [t, s]
+
+# --- Optimizer Configuration ---
+optimizer:
+  # Choose ONE optimizer type
+  bayes: False  # Use bayesian-optimization library
+  optuna: True # Use Optuna library
+  # tpe: False     # (Deprecated/Not Implemented)
+  # atpe: False    # (Deprecated/Not Implemented)
+
+  # --- Common Optimizer Settings ---
+  random_state: 218     # Seed for reproducibility (-1 for random)
+  init_points: 11       # Number of initial exploration points/trials
+  n_iters: 11           # Number of subsequent exploitation iterations/trials
+
+  # --- Settings specific to 'bayes' optimizer ---
+  bayes_config: # NEW Sub-section
+    load_log_file: null   # Path to previous run's log file to resume (null or path string)
+    reset_log_file: False  # Overwrite log file if resuming (True/False)
+    sampler: sobol        # Initial sampling strategy: random, latin_hypercube, sobol, halton
+    acquisition_function:
+      kind: ucb             # ucb, ei, poi
+      kappa: 3              # Parameter for ucb
+      xi: 0.05              # Parameter for ei, poi
+      kappa_decay: 0.98     # Decay for ucb kappa
+      kappa_decay_delay: ${optimizer.init_points} # Delay before decay starts
+    bounds_transformer:   # Domain reduction settings
+      enabled: True         # Enable/disable domain reduction
+      gamma_osc: 0.65
+      gamma_pan: 0.9
+      eta: 0.83
+      minimum_window: 0.0
+
+  # --- Settings specific to 'optuna' optimizer ---
+  optuna_config: # NEW Sub-section
+    storage_dir: optuna_db # Folder to save study databases to
+    resume_study_name: null # Name of study to continue from
+    use_pruning: False         # Enable Optuna trial pruning (True/False)
+    pruner_type: median      # Pruner type: median, successive_halving
+    early_stopping: False    # Enable early stopping (True/False)
+    patience: 10             # Trials without improvement before stopping
+    min_improvement: 0.001   # Minimum score increase to reset patience
+    n_jobs: 1                # Number of parallel jobs for Optuna (use with caution)
+    sampler:
+      type: tpe              # Sampler type: tpe, random, cmaes, gp, qmc, grid, nsgaii, botorch
+      # --- TPE specific ---
+      multivariate: True
+      group: True
+      # warn_independent_sampling: True
+      # constant_liar: False
+      # --- CMA-ES specific ---
+      # restart_strategy: None # 'ipop', 'bipop'
+      # sigma0: None
+      # --- QMC specific ---
+      # qmc_type: sobol # 'sobol', 'halton', 'lhs'
+      # scramble: True
+      # --- Grid specific ---
+      # search_space: # Define exact search points for grid sampler
+      #   param1: [0.1, 0.5, 0.9]
+      #   param2: [10, 20, 30]
+      # --- NSGAII specific (Multi-objective) ---
+      # population_size: 50
+      # mutation_prob: None
+      # crossover_prob: 0.9
+      # swapping_prob: 0.5
+    launch_dashboard: True # Launch dashboard after run?
+    dashboard_port: 8080  # Port for the dashboard
+
+# --- Image Generation ---
+batch_size: 1             # Number of images generated per payload per iteration
+save_imgs: True           # Save generated images (True/False)
+img_average_type: arithmetic # Method for averaging scores within a batch: geometric, arithmetic, quadratic
+background_check:
+  enabled: true       # Set to true to enable the check
+  payloads: ["negeuler2"] # List of payload names (like negeuler2) to apply the check to
+
+# --- Generator/aiohttp Settings ---
+generator_concurrency_limit: 11 # Max simultaneous API requests to WebUI
+generator_keepalive_interval: 60 # Interval (s) for sending TCP Keep-Alive probes (e.g., 60)
+generator_total_timeout: 0    # Max total time (s) for one API call (e.g., 3600=1hr). Set to 0 or null to disable client timeout.
+
+# --- Scoring ---
+# For detailed scorer descriptions, see wiki/documentation.
+scorer_method: [manual] # [cityaes, luminaflex, background_blackness] # List of scorer identifiers (e.g., laion, chad, clip, blip, imagereward, hpsv21, pick, cityaes, manual)
+scorer_average_type: arithmetic # Method for averaging scores across different scorers: geometric, arithmetic, quadratic
+scorer_weight:            # Optional weights for each scorer (default is 1)
+  cityaes: 1.0
+  luminaflex: 1.0
+  background_blackness: 2.0
+  # lumidinov2l: 1.5
+  # lumidinov2g: 2.0
+  # laion: 0.5
+scorer_default_device: cpu # Default device for scorers: 'cpu' or 'cuda'
+scorer_device:            # Optional device override per scorer
+  # imagereward: cuda
+scorer_alt_location:      # Optional alternative paths for scorer models
+  # imagereward:
+  #   model_name: ImageReward.pt
+  #   model_dir: path/to/your/imagereward/folder
+scorer_print_individual: True # Print score from each individual scorer (True/False)
+
+# --- Visualization ---
+visualizations:
+  convergence_plot: True  # Generate plot showing score over iterations
+  # scatter_plot: False     # Not implemented
+  # unet_diagram: False     # Deprecated or needs update for sd-mecha
+  # heatmap: False          # Not implemented

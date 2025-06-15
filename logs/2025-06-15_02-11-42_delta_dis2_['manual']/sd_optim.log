@@ -1,0 +1,23 @@
+[2025-06-15 02:11:42,197][__main__][INFO] - ==================================================
+[2025-06-15 02:11:42,197][__main__][INFO] -              Starting sd-optim v1.x             
+[2025-06-15 02:11:42,197][__main__][INFO] - ==================================================
+[2025-06-15 02:11:42,197][__main__][INFO] - Selected WebUI: forge
+[2025-06-15 02:11:42,197][__main__][INFO] - Optimization Mode: merge
+[2025-06-15 02:11:42,197][__main__][INFO] - Merge Method: delta_dis2
+[2025-06-15 02:11:42,198][__main__][INFO] - Using custom configs directory: /home/user/sdoptimui/sd-optim/D:\stable-diffusion-webui-forge\extensions\sd-optim\sd_optim\model_configs (User Specified)
+[2025-06-15 02:11:42,198][__main__][INFO] - Using custom conversion directory: /home/user/sdoptimui/sd-optim/D:\stable-diffusion-webui-forge\extensions\sd-optim\sd_optim\model_configs (User Specified)
+[2025-06-15 02:11:42,198][__main__][INFO] - --- Loading Custom ModelConfigs ---
+[2025-06-15 02:11:42,198][sd_optim.utils][INFO] - Scanning for custom ModelConfigs in: /home/user/sdoptimui/sd-optim/D:\stable-diffusion-webui-forge\extensions\sd-optim\sd_optim\model_configs
+[2025-06-15 02:11:42,198][sd_optim.utils][WARNING] - Custom config directory not found: /home/user/sdoptimui/sd-optim/D:\stable-diffusion-webui-forge\extensions\sd-optim\sd_optim\model_configs. Skipping registration.
+[2025-06-15 02:11:42,198][__main__][INFO] - --- Loading Custom Converters/MergeMethods ---
+[2025-06-15 02:11:42,198][sd_optim.utils][INFO] - Scanning for custom Conversion/MergeMethods in: /home/user/sdoptimui/sd-optim/D:\stable-diffusion-webui-forge\extensions\sd-optim\sd_optim\model_configs
+[2025-06-15 02:11:42,198][sd_optim.utils][WARNING] - Custom conversion directory not found: /home/user/sdoptimui/sd-optim/D:\stable-diffusion-webui-forge\extensions\sd-optim\sd_optim\model_configs. Skipping registration.
+[2025-06-15 02:11:42,198][__main__][INFO] - --- Selecting Optimizer ---
+[2025-06-15 02:11:42,198][__main__][INFO] - Using Optimizer: Optuna
+[2025-06-15 02:11:42,198][__main__][INFO] - Optimizer configuration validated.
+[2025-06-15 02:11:42,199][__main__][INFO] - --- Attempting Postprocessing (Finally Block) ---
+[2025-06-15 02:11:42,199][__main__][WARNING] - Optimizer instance was not created, cannot run postprocessing.
+[2025-06-15 02:11:42,199][__main__][INFO] - No dashboard process was launched by this run to terminate.
+[2025-06-15 02:11:42,199][__main__][INFO] - ==================================================
+[2025-06-15 02:11:42,199][__main__][INFO] -               sd-optim run finished.              
+[2025-06-15 02:11:42,199][__main__][INFO] - ==================================================

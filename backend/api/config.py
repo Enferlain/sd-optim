@@ -2,6 +2,7 @@ from fastapi import APIRouter, HTTPException, Path
 from ruamel.yaml import YAML, YAMLError
 from pathlib import Path
 from typing import Dict, List, Optional, Union, Any
+from sd_optim.scorer import MODEL_DATA
 
 from backend.schemas import (
     ConfigUpdate,
@@ -165,3 +166,94 @@ async def update_payload_file(cargo_filename: str, payload_filename: str, payloa
         return {"message": f"Payload file '{payload_filename}' for cargo '{cargo_filename}' updated successfully."}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error updating payload file: {e}")
+
+# --- ADD THIS NEW ENDPOINT ---
+@router.get("/scorers")
+async def list_available_scorers() -> List[str]:
+    """
+    Dynamically lists all available scorer identifiers from the project configuration.
+    """
+    try:
+        # Get all keys from our MODEL_DATA dictionary in scorer.py
+        available_scorers = list(MODEL_DATA.keys())
+        
+        # Add the special, non-model-based scorers
+        available_scorers.extend(['manual', 'background_blackness'])
+        
+        # Return a sorted, unique list for a clean UI
+        return sorted(list(set(available_scorers)))
+    except Exception as e:
+        # This shouldn't fail, but it's good practice to have error handling
+        raise HTTPException(status_code=500, detail=f"Failed to list scorers: {e}")
+
+# --- ADD THIS NEW ENDPOINT to the file ---
+@router.get("/cargo/{filename}/defined-payloads")
+async def get_defined_payloads_from_cargo(filename: str) -> List[str]:
+    """
+    Parses a specific cargo YAML file to extract the list of defined payloads.
+    """
+    yaml = YAML(typ='safe')  # Use safe loader
+    cargo_path = payloads_dir / filename
+    if not cargo_path.is_file():
+        raise HTTPException(status_code=404, detail=f"Cargo file '{filename}' not found.")
+
+    try:
+        with open(cargo_path, 'r', encoding='utf-8') as f:
+            cargo_content = yaml.load(f)
+        
+        # Navigate the YAML structure to find the list of payloads
+        # It's inside 'defaults', which is a list, and the item we want has a 'cargo' key.
+        payload_list = []
+        if 'defaults' in cargo_content and isinstance(cargo_content['defaults'], list):
+            for item in cargo_content['defaults']:
+                if isinstance(item, dict) and 'cargo' in item:
+                    # Found it!
+                    payload_list = item['cargo']
+                    break
+        
+        if not isinstance(payload_list, list):
+            # Handle cases where the structure is wrong or 'cargo' isn't a list
+            return []
+
+        return payload_list
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error parsing cargo file '{filename}': {e}")
+
+
+# --- CARGO TEMPLATES ---
+@router.get("/cargo_templates")
+async def list_cargo_templates():
+    """Lists all available cargo template files."""
+    # Returns ["cargo_forge.yaml", "cargo_comfy.yaml"]
+
+@router.get("/cargo_templates/{template_name}")
+async def get_cargo_template(template_name: str):
+    """Gets the full contents of a specific cargo template."""
+    # Returns the full YAML content as JSON
+
+# --- PAYLOADS (Full CRUD!) ---
+@router.get("/payloads")
+async def list_payloads():
+    """Lists all available payload files."""
+    # Returns ["my_character.yaml", "style_test.yaml"]
+
+@router.get("/payloads/{payload_name}")
+async def get_payload(payload_name: str):
+    """Gets the contents of a specific payload file."""
+    # Returns the payload's YAML content as JSON
+
+@router.post("/payloads")
+async def create_payload(payload_data: dict):
+    """Creates a new payload .yaml file."""
+    # Expects a JSON body with a 'filename' and 'content'
+    # Saves the content to a new file in conf/payloads/
+
+@router.put("/payloads/{payload_name}")
+async def update_payload(payload_name: str, payload_data: dict):
+    """Updates an existing payload .yaml file."""
+    # Overwrites the specified file with new content
+
+@router.delete("/payloads/{payload_name}")
+async def delete_payload(payload_name: str):
+    """Deletes a payload .yaml file."""
+    # Deletes the specified file from conf/payloads/

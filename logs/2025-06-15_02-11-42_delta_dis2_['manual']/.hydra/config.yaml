@@ -1,0 +1,268 @@
+run_name: ${merge_method}_${scorer_method}
+webui_urls:
+  a1111: http://localhost:7860
+  forge: http://localhost:7860
+  reforge: http://localhost:7860
+  comfy: http://localhost:8188
+  swarm: http://localhost:7801
+webui: forge
+url: ${webui_urls[${webui}]}
+configs_dir: D:\stable-diffusion-webui-forge\extensions\sd-optim\sd_optim\model_configs
+conversion_dir: D:\stable-diffusion-webui-forge\extensions\sd-optim\sd_optim\model_configs
+wildcards_dir: D:\stable-diffusion-webui-forge\extensions\Umi-AI-debloat\wildcards
+scorer_model_dir: D:\stable-diffusion-webui-forge\models\Scorer
+model_paths:
+- D:\stable-diffusion-webui-forge\models\Stable-diffusion\2182048-62.safetensors
+- D:\stable-diffusion-webui-forge\models\Stable-diffusion\2182048-62-Illv2.0-butterfly_merge-stabler.safetensors
+- D:\stable-diffusion-webui-forge\models\Lora\SDXL\Potion_style_V5.safetensors
+- D:\stable-diffusion-webui-forge\models\Stable-diffusion\Illustrious-XL-v2.0.safetensors
+- D:\stable-diffusion-webui-forge\models\Stable-diffusion\ill11fishe218ddoutperpattn.safetensors
+- D:\stable-diffusion-webui-forge\models\Stable-diffusion\ill11fishe218dd1.safetensors
+- D:\stable-diffusion-webui-forge\models\Stable-diffusion\lu2.safetensors
+- D:\stable-diffusion-webui-forge\models\Stable-diffusion\svdtse25secret.safetensors
+- D:\stable-diffusion-webui-forge\models\Stable-diffusion\PandoMerge_VPRED_V8.2.safetensors
+- D:\stable-diffusion-webui-forge\models\Stable-diffusion\bbwm-svdtse28it25-beziergsfcaodsetv-householder_merge-it_1_best-bf16.safetensors
+- D:\stable-diffusion-webui-forge\models\Stable-diffusion\illustrious-XL-v0.1.safetensors
+base_model_index: 10
+fallback_model_index: 1
+merge_method: delta_dis2
+device: cuda
+threads: 4
+merge_dtype: fp32
+save_dtype: bf16
+add_extra_keys: false
+save_merge_artifacts: true
+save_best: true
+optimization_mode: merge
+recipe_optimization:
+  recipe_path: D:\stable-diffusion-webui-forge\extensions\sd-optim\logs\widendtest.mecha
+  target_nodes: '&22'
+  target_params:
+  - t
+  - s
+optimizer:
+  bayes: false
+  optuna: true
+  random_state: 218
+  init_points: 11
+  n_iters: 11
+  bayes_config:
+    load_log_file: null
+    reset_log_file: false
+    sampler: sobol
+    acquisition_function:
+      kind: ucb
+      kappa: 3
+      xi: 0.05
+      kappa_decay: 0.98
+      kappa_decay_delay: ${optimizer.init_points}
+    bounds_transformer:
+      enabled: true
+      gamma_osc: 0.65
+      gamma_pan: 0.9
+      eta: 0.83
+      minimum_window: 0.0
+  optuna_config:
+    storage_dir: optuna_db
+    resume_study_name: null
+    use_pruning: false
+    pruner_type: median
+    early_stopping: false
+    patience: 10
+    min_improvement: 0.001
+    n_jobs: 1
+    sampler:
+      type: tpe
+      multivariate: true
+      group: true
+    launch_dashboard: true
+    dashboard_port: 8080
+batch_size: 1
+save_imgs: true
+img_average_type: arithmetic
+background_check:
+  enabled: true
+  payloads:
+  - negeuler2
+generator_concurrency_limit: 11
+generator_keepalive_interval: 60
+generator_total_timeout: 0
+scorer_method:
+- manual
+scorer_average_type: arithmetic
+scorer_weight:
+  cityaes: 1.0
+  luminaflex: 1.0
+  background_blackness: 2.0
+scorer_default_device: cpu
+scorer_device: null
+scorer_alt_location: null
+scorer_print_individual: true
+visualizations:
+  convergence_plot: true
+payloads:
+  cargo:
+    negeuler2:
+      score_weight: 1.0
+      prompt: 1girl, rosmontis \(arknights\), arknights, ssamballking, (tianliang
+        duohe fangdongye:0.8), imi, solo, alternate costume, pajamas, choker, ears
+        down, cat ears, shy BREAK pov hands, grabbing another's ear, headpat, cute
+        fashion, looking at viewer, rim lighting, black background, simple background,
+        best quality, very aesthetic, absurdres
+      negative_prompt: worst quality, low quality, lowres, artist name, watermark,
+        bad anatomy, medium breasts, large breasts, (dark-skinned male:1.2), facial
+        tattoo, jacket
+      steps: 28
+      cfg_scale: 5.218
+      width: 1024
+      height: 1536
+      sampler_name: Refined Exponential Solver
+      scheduler: Beta V2c
+      enable_hr: false
+      denoising_strength: 0.35
+      firstphase_width: 0
+      firstphase_height: 0
+      hr_scale: 1.5
+      hr_upscaler: 4x_fatal_Anime_500000_G
+      hr_second_pass_steps: 0
+      hr_resize_x: 0
+      hr_resize_y: 0
+      seed: -1
+      batch_size: 1
+    noob6:
+      score_weight: 1.5
+      prompt: girl, chloe von einzbern, loli, wanke, shiun \(siun 5513\), long hair,
+        tank top, looking at viewer, middle finger, smile, @ @, (abstract background),
+        profile picture BREAK [film grain, glitch effect:11], overexposure, (bright
+        background), (chromatic aberration, ethereal:1.5), effervescent, upper body,
+        simple background
+      negative_prompt: worst quality, low quality, lowres, pubic hair, artist name,
+        signature, bad anatomy, half updo, updo
+      steps: 28
+      cfg_scale: 5.218
+      width: 1024
+      height: 1024
+      sampler_name: Refined Exponential Solver
+      scheduler: Beta V2c
+      enable_hr: false
+      denoising_strength: 0.35
+      firstphase_width: 0
+      firstphase_height: 0
+      hr_scale: 1.5
+      hr_upscaler: 4x_fatal_Anime_500000_G
+      hr_second_pass_steps: 0
+      hr_resize_x: 0
+      hr_resize_y: 0
+  score_weight: 1.0
+  prompt: ''
+  negative_prompt: ''
+  n_iter: 1
+  batch_size: 1
+  steps: 28
+  cfg_scale: 8
+  width: 512
+  height: 512
+  sampler_name: Euler a
+  sampler_index: Euler a
+  seed: 218
+  subseed: -1
+  subseed_strength: 0
+  seed_resize_from_h: -1
+  seed_resize_from_w: -1
+  enable_hr: false
+  denoising_strength: 0.45
+  firstphase_width: 0
+  firstphase_height: 0
+  hr_scale: 2
+  hr_upscaler: 4x_fatal_Anime_500000_G
+  hr_second_pass_steps: 0
+  hr_resize_x: 0
+  hr_resize_y: 0
+  styles: []
+  restore_faces: false
+  tiling: false
+  eta: 0
+  s_churn: 0
+  s_tmax: 0
+  s_tmin: 0
+  s_noise: 1
+  vpred_enabled: true
+  extension_name: Forge2 extras
+optimization_guide:
+  custom_block_config_id: sdxl-optim_blocks
+  components:
+  - name: unet
+    optimize_params:
+    - magnitude_ratio
+    - direction_ratio
+    strategies:
+    - type: all
+      optimize_params:
+      - magnitude_ratio
+      - direction_ratio
+      target_type: block
+      keys:
+      - UNET_IN03
+      - UNET_IN07
+      - UNET_MID00
+      - UNET_OUT01
+      - UNET_OUT08
+      - UNET_LABEL_EMBED
+  - name: null
+    optimize_params:
+    - alpha
+    strategies:
+    - type: group
+      optimize_params:
+      - alpha
+      target_type: key
+      groups:
+      - name: out02
+        keys:
+        - model.diffusion_model.out.0.bias
+        - model.diffusion_model.out.0.weight
+        - model.diffusion_model.out.2.bias
+        - model.diffusion_model.out.2.weight
+      - name: time_embed
+        keys:
+        - '*time_embed*'
+  - name: clip_l
+    optimize_params:
+    - magnitude_ratio
+    - direction_ratio
+    strategies:
+    - type: single
+  - name: clip_g
+    optimize_params:
+    - magnitude_ratio
+    - direction_ratio
+    strategies:
+    - type: single
+  - name: null
+    strategy: none
+    parameters:
+      detail1:
+      - -2.18
+      - 3
+      detail2:
+      - -2.18
+      - 4
+      detail3:
+      - 0
+      - 4
+      contrast:
+      - 2.18
+      - 7.5
+      brightness:
+      - -4
+      - -2
+      col1:
+      - -10
+      - 10
+      col2:
+      - -10
+      - 10
+      col3:
+      - -10
+      - 10
+  custom_bounds: null

@@ -187,16 +187,9 @@ const MainConfigTab = () => {
           <h2 style={{ paddingBottom: 'var(--space-12)' }}>Main Configuration</h2>
           
           <div className={styles.formSection}>
-              <h3 className={styles.legend}>Run & Payloads</h3>
+              <h3 className={styles.legend}>Runtime</h3>
               <FormRow label="Run Name">
                   <input type="text" {...register('run_name')} className={styles.input} />
-              </FormRow>
-              <FormRow label="Hydra Run Directory">
-                  <input 
-                      type="text" 
-                      {...register('hydra.run.dir')} 
-                      className={styles.input}
-                  />
               </FormRow>
               <FormRow label="WebUI">
                   <Controller name="webui" control={control} render={({ field }) => (<CustomSelect options={['forge', 'a1111', 'reforge', 'comfy', 'swarm']} value={field.value} onChange={field.onChange} />)} />
@@ -311,7 +304,36 @@ const MainConfigTab = () => {
               <FormRow label="Select Optimizer">
                    <Controller name="optimizer.type" control={control} render={({ field }) => (<CustomSelect options={['optuna', 'bayes']} value={field.value} onChange={field.onChange} />)} />
               </FormRow>
-              
+
+                {/* --- THIS IS THE NEW PART! --- */}
+                {watchedOptimizerType === 'bayes' && (
+                    <div className={styles.subFieldset}>
+                        <h4 style={{marginBottom: 'var(--space-12)'}}>Bayes Settings</h4>
+                        <FormRow label="Load Log File">
+                            <FileInput name="optimizer.bayes_config.load_log_file" control={control} placeholder="path/to/run.json" />
+                        </FormRow>
+                        <FormRow label="Reset Log File">
+                            <input type="checkbox" {...register('optimizer.bayes_config.reset_log_file')} className={styles.checkbox} />
+                        </FormRow>
+                        <FormRow label="Sampler">
+                            <Controller name="optimizer.bayes_config.sampler" control={control} render={({ field }) => (
+                                <CustomSelect options={['sobol', 'random', 'latin_hypercube', 'halton']} value={field.value} onChange={field.onChange} />
+                            )}/>
+                        </FormRow>
+
+                        <h5 style={{marginTop: 'var(--space-16)', marginBottom: 'var(--space-12)'}}>Acquisition Function</h5>
+                        <FormRow label="Kind">
+                            <Controller name="optimizer.bayes_config.acquisition_function.kind" control={control} render={({ field }) => (
+                                <CustomSelect options={['ucb', 'ei', 'poi']} value={field.value} onChange={field.onChange} />
+                            )}/>
+                        </FormRow>
+                        <FormRow label="Kappa"><input type="number" step="0.1" {...register('optimizer.bayes_config.acquisition_function.kappa', { valueAsNumber: true })} className={styles.input} /></FormRow>
+                        <FormRow label="Xi"><input type="number" step="0.01" {...register('optimizer.bayes_config.acquisition_function.xi', { valueAsNumber: true })} className={styles.input} /></FormRow>
+                        <FormRow label="Kappa Decay"><input type="number" step="0.01" {...register('optimizer.bayes_config.acquisition_function.kappa_decay', { valueAsNumber: true })} className={styles.input} /></FormRow>
+                        <FormRow label="Kappa Decay Delay"><input type="text" {...register('optimizer.bayes_config.acquisition_function.kappa_decay_delay')} className={styles.input} /></FormRow>
+                    </div>
+                )}
+
               {watchedOptimizerType === 'optuna' && (
                 <div className={styles.subFieldset}>
                   <h4 style={{marginBottom: 'var(--space-12)'}}>Optuna Settings</h4>

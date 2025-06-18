@@ -14,10 +14,8 @@ const GlyphCard = ({ name }) => (
 );
 
 function ConfigurationManager() {
-  const [activeTab, setActiveTab] = useState('Payload Workshop'); // Start here to see the new layout
+  const [activeTab, setActiveTab] = useState('Payload Workshop');
   const tabOptions = ['Main Config', 'Payload Workshop', 'Optimization Guide'];
-
-  // This state will be lifted up here later!
   const [selectedPayloads, setSelectedPayloads] = useState(['payload_three']);
 
   const renderTabContent = () => {
@@ -25,8 +23,7 @@ function ConfigurationManager() {
       case 'Main Config':
         return <MainConfigTab />;
       case 'Payload Workshop':
-        // We will pass down the state and functions to modify it later
-        return <PayloadsTab />; 
+        return <PayloadsTab />;
       case 'Optimization Guide':
         return <OptimizationGuideTab />;
       default:
@@ -35,10 +32,11 @@ function ConfigurationManager() {
   };
 
   return (
-    // This is now the main container for the entire three-panel layout
-    <div className={styles.pageLayout}>
-      {/* Panel 1: The Primary Sidebar with the tab selector */}
-      <div className={styles.primarySidebar}>
+    // This is now our GRID container. Its children are the grid items.
+    <div className={styles.pageGrid}>
+      
+      {/* Grid Item 1: The Tab Selector */}
+      <div className={styles.sidebarContainer}>
         <CustomSelect
             options={tabOptions}
             value={activeTab}
@@ -46,18 +44,18 @@ function ConfigurationManager() {
         />
       </div>
 
-      {/* Panel 2: The Selection Panel (conditionally rendered!) */}
+      {/* Grid Item 2: The Selection Panel (conditional) */}
       {activeTab === 'Payload Workshop' && (
-        <div className={styles.selectionPanel}>
+        <div className={styles.selectionContainer}>
             <h3>Selected Payloads</h3>
             <div className={styles.selectionBox}>
-                {selectedPayloads.map(name => <GlyphCard key={name} name={name} />)}
+                {/* ... content ... */}
             </div>
         </div>
       )}
 
-      {/* Panel 3: The Main Content Panel */}
-      <div className={styles.contentPanel}>
+      {/* Grid Item 3: The Main Content Panel */}
+      <div className={styles.contentContainer}>
         {renderTabContent()}
       </div>
     </div>

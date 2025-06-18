@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import LandingPage from './LandingPage.js';
-import Workbench from './Workbench.js'; // Import our new main component
+import Workbench from './Workbench.js'; // <-- Make sure it says Workbench here!
 import './App.css'; 
 
 function App() {
@@ -12,7 +12,6 @@ function App() {
 
   return (
     <div>
-      {/* We now launch the Workbench instead of the old ConfigurationManager */}
       {isBackendLaunched ? <Workbench /> : <LandingPage onBackendLaunch={handleBackendLaunch} />}
     </div>
   );

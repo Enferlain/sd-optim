@@ -6,8 +6,8 @@
 /* }
 
 /* This file now controls our glassy layout! */
-/* --- Global Styles we'll need --- */
-/* We define this FIRST, so other classes can compose from it! */
+
+/* --- Reusable Glass Panel Style (No Changes) --- */
 .glassPanel {
   background: rgba(255, 255, 255, 0.1); 
   backdrop-filter: blur(20px);
@@ -19,62 +19,59 @@
   color: var(--color-text);
 }
 
-/* This is our new top-level layout container */
-.pageLayout {
+/* --- The NEW Grid-Based Layout --- */
+.pageGrid {
   height: 100vh;
   width: 100vw;
-  display: flex;
-  justify-content: center;
-  align-items: flex-start; 
-  gap: var(--space-20);
   padding: var(--space-32);
   box-sizing: border-box;
+
+  /* 1. Define it as a grid */
+  display: grid;
+  
+  /* 2. Define the columns and rows */
+  grid-template-columns: 280px 1fr; /* First column is 280px wide, second takes the rest */
+  grid-template-rows: auto 1fr; /* First row is auto-height (for the dropdown), second takes the rest */
+  gap: var(--space-20);
+  
+  /* 3. Define the named areas - THIS IS THE KEY! */
+  grid-template-areas:
+    "sidebar content"
+    "selection content";
 }
 
-/* --- Panel 1: Primary Sidebar --- */
-.primarySidebar {
-  width: 240px;
-  flex-shrink: 0;
-  /* Now this will work, because glassPanel is defined above! */
-  composes: glassPanel; 
+/* 4. Assign each container to its named area */
+.sidebarContainer {
+  grid-area: sidebar;
+  composes: glassPanel; /* We can still reuse our styles! */
 }
 
-/* --- Panel 2: Selection Panel --- */
-.selectionPanel {
-  composes: glassPanel; /* This one works too! */
-  width: 250px;
-  flex-shrink: 0;
-  height: calc(100vh - (var(--space-32) * 2)); /* Fill vertical space */
+.selectionContainer {
+  grid-area: selection;
+  composes: glassPanel;
   display: flex;
   flex-direction: column;
   gap: var(--space-16);
 }
 
+.contentContainer {
+  grid-area: content;
+  composes: glassPanel;
+  overflow-y: auto; /* Let only this panel scroll */
+}
+
+
+/* --- Other styles for content inside the panels --- */
 .selectionBox {
   flex-grow: 1;
   border: 1px dashed var(--color-border);
   border-radius: var(--radius-lg);
   padding: var(--space-12);
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: var(--space-16);
   background: rgba(0,0,0,0.1);
-  overflow-y: auto; /* Allow scrolling if many payloads are selected */
-}
-
-/* --- Panel 3: Main Content --- */
-.contentPanel {
-  composes: glassPanel;
-  flex-grow: 1;
-  width: 100%;
-  max-width: 950px;
-  height: calc(100vh - (var(--space-32) * 2));
   overflow-y: auto;
-  padding: var(--space-24);
 }
 
-/* Placeholder for the Glyph Card, moved here to be accessible by both panels */
+/* GlyphCard styles can be moved to their own file later */
 .glyphCard {
   display: flex;
   flex-direction: column;

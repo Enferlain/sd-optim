@@ -1,39 +1,43 @@
-/* We use the :global selector to override the library's default styles */
-:global(.react-grid-layout) {
-  position: relative;
-  transition: height 200ms ease;
-}
-
-:global(.react-grid-item) {
-  transition: all 200ms ease;
-  transition-property: left, top;
-}
-
-:global(.react-grid-item.cssTransforms) {
-  transition-property: transform;
-}
-
-/* This is our custom panel styling */
-.panel {
-  /* Inherit the beautiful glass effect we made! */
-  composes: glassPanel from './ConfigurationManager.module.css';
-  height: 100%;
-  width: 100%;
-  overflow: hidden; /* Prevent content from spilling out */
-  display: flex;
-  flex-direction: column;
-}
-
-.panelHeader {
-  cursor: move; /* Change cursor to show it's draggable */
-  padding: var(--space-8) var(--space-12);
-  background-color: rgba(0,0,0,0.1);
-  border-bottom: 1px solid rgba(255,255,255,0.1);
-  font-weight: var(--font-weight-medium);
-}
-
-.panelContent {
-  padding: var(--space-16);
-  flex-grow: 1;
-  overflow-y: auto; /* Allow individual panels to scroll! */
-}
+.workbenchCanvas {
+    width: 100vw;
+    height: 100vh;
+    position: relative; /* This is the boundary for our windows */
+  }
+  
+  .glassPanel {
+    background: rgba(38, 40, 40, 0.7); /* Darker glass for better contrast */
+    backdrop-filter: blur(20px);
+    -webkit-backdrop-filter: blur(20px);
+    border: 1px solid rgba(255, 255, 255, 0.2);
+    border-radius: var(--radius-lg);
+    box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.3);
+    color: var(--color-text);
+    display: flex;
+    flex-direction: column;
+  }
+  
+  .panelHeader {
+    cursor: move;
+    padding: var(--space-8) var(--space-12);
+    background-color: rgba(0,0,0,0.2);
+    border-bottom: 1px solid rgba(255,255,255,0.1);
+    font-weight: var(--font-weight-medium);
+    flex-shrink: 0;
+  }
+  
+  .panelContent {
+    flex-grow: 1;
+    overflow-y: auto;
+    overflow-x: hidden;
+    padding: var(--space-16);
+  }
+  
+  /* --- ADD THIS AT THE END --- */
+  .resetButton {
+    /* Use our global button styles! */
+    composes: btn btn--secondary from './ConfigurationManager.module.css'; 
+    position: fixed; /* Keep it locked in place */
+    top: var(--space-16);
+    right: var(--space-16);
+    z-index: 9999; /* Make sure it's on top of all windows! */
+  }

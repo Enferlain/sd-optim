@@ -2,14 +2,15 @@ import React, { useState, useEffect } from 'react';
 import { Rnd } from 'react-rnd';
 import styles from './Workbench.module.css';
 
+import CustomSelect from './CustomSelect.js'; // We need our dropdown back!
 import MainConfigTab from './MainConfigTab.js';
 import PayloadsTab from './PayloadsTab.js';
 
-// --- A Reusable Window Component (No changes here) ---
+// --- Reusable Window Component (No changes) ---
 const Window = ({ panel, onDragStop, onResizeStop, onBringToFront, children }) => {
   return (
     <Rnd
-      style={{ zIndex: panel.zIndex }} // Use zIndex from state
+      style={{ zIndex: panel.zIndex }}
       className={styles.glassPanel}
       size={{ width: panel.width, height: panel.height }}
       position={{ x: panel.x, y: panel.y }}
@@ -21,7 +22,7 @@ const Window = ({ panel, onDragStop, onResizeStop, onBringToFront, children }) =
       onResizeStop={(e, direction, ref, delta, position) => {
         onResizeStop(panel.id, { width: ref.style.width, height: ref.style.height }, position);
       }}
-      dragHandleClassName={styles.panelHeader} // Make only the header draggable
+      dragHandleClassName={styles.panelHeader}
     >
       <div className={styles.panelHeader}>{panel.title}</div>
       <div className={styles.panelContent}>
@@ -31,92 +32,100 @@ const Window = ({ panel, onDragStop, onResizeStop, onBringToFront, children }) =
   );
 };
 
-// --- Define our default layout as a constant, so we can always refer back to it! ---
-const DEFAULT_LAYOUT = {
-  'main': { id: 'main', title: 'Main Configuration', x: 320, y: 40, width: 800, height: 700, zIndex: 1 },
-  'payloads': { id: 'payloads', title: 'Payload Workshop', x: 350, y: 80, width: 700, height: 600, zIndex: 2 },
-  'selection': { id: 'selection', title: 'Selected Payloads', x: 40, y: 40, width: 260, height: 400, zIndex: 3 }
+// --- Define the default layouts FOR EACH TAB ---
+const DEFAULT_LAYOUTS = {
+  "Main Config": {
+    'main': { id: 'main', title: 'Main Configuration', x: 50, y: 50, width: 800, height: 700, zIndex: 1 },
+  },
+  "Payload Workshop": {
+    'payloads': { id: 'payloads', title: 'Payload Workshop', x: 350, y: 50, width: 700, height: 600, zIndex: 2 },
+    'selection': { id: 'selection', title: 'Selected Payloads', x: 50, y: 50, width: 280, height: 450, zIndex: 3 }
+  },
+  "Optimization Guide": {
+    'guide': { id: 'guide', title: 'Optimization Guide', x: 50, y: 50, width: 900, height: 700, zIndex: 1 },
+  }
 };
 
-// --- The Main Workbench Component ---
 function Workbench() {
-  // We now initialize our state by checking localStorage first!
-  const [panels, setPanels] = useState(() => {
-    try {
-      const savedLayout = localStorage.getItem('workbench-layout');
-      return savedLayout ? JSON.parse(savedLayout) : DEFAULT_LAYOUT;
-    } catch (error) {
-      console.error("Failed to parse saved layout, using default.", error);
-      return DEFAULT_LAYOUT;
-    }
+  const [activeTab, setActiveTab] = useState('Payload Workshop');
+  const tabOptions = ['Main Config', 'Payload Workshop', 'Optimization Guide'];
+
+  // State now holds layouts for ALL tabs
+  const [layouts, setLayouts] = useState(() => {
+    const saved = localStorage.getItem('workbench-layouts'); // plural!
+    return saved ? JSON.parse(saved) : DEFAULT_LAYOUTS;
   });
 
-  // This `useEffect` hook is our auto-save feature! It runs whenever `panels` changes.
+  // Auto-save whenever any layout changes
   useEffect(() => {
-    try {
-      localStorage.setItem('workbench-layout', JSON.stringify(panels));
-    } catch (error) {
-      console.error("Failed to save layout.", error);
-    }
-  }, [panels]);
-
-  const handleDragStop = (id, position) => {
-    setPanels(prev => ({ ...prev, [id]: { ...prev[id], ...position } }));
-  };
-
-  const handleResizeStop = (id, size, position) => {
-    const newWidth = parseInt(size.width, 10);
-    const newHeight = parseInt(size.height, 10);
-    setPanels(prev => ({ ...prev, [id]: { ...prev[id], width: newWidth, height: newHeight, ...position } }));
-  };
+    localStorage.setItem('workbench-layouts', JSON.stringify(layouts));
+  }, [layouts]);
   
-  // This function brings a clicked/dragged window to the front
-  const bringToFront = (id) => {
-      setPanels(prev => {
-          const maxZ = Math.max(...Object.values(prev).map(p => p.zIndex));
-          if (prev[id].zIndex <= maxZ) {
-              return {...prev, [id]: { ...prev[id], zIndex: maxZ + 1 }};
-          }
-          return prev;
-      });
+  const currentPanels = layouts[activeTab] || {};
+
+  const handleLayoutChange = (panelId, position, size) => {
+    setLayouts(prevLayouts => {
+      const newLayouts = { ...prevLayouts };
+      const currentTabLayout = { ...newLayouts[activeTab] };
+      currentTabLayout[panelId] = { ...currentTabLayout[panelId], ...position, ...size };
+      newLayouts[activeTab] = currentTabLayout;
+      return newLayouts;
+    });
   };
 
-  // --- Our new "Emergency Reset" function! ---
-  const handleResetLayout = () => {
-    if (window.confirm("Are you sure you want to reset the layout to default?")) {
-      setPanels(DEFAULT_LAYOUT);
-      // We remove the saved layout so the default loads on next refresh too
-      localStorage.removeItem('workbench-layout');
+  const bringToFront = (panelId) => {
+    const currentTabLayout = layouts[activeTab];
+    const maxZ = Math.max(0, ...Object.values(currentTabLayout).map(p => p.zIndex));
+    if (currentTabLayout[panelId].zIndex <= maxZ) {
+        handleLayoutChange(panelId, { zIndex: maxZ + 1 });
     }
   };
+
+  const handleResetLayout = () => {
+      if (window.confirm(`Are you sure you want to reset the layout for the "${activeTab}" tab?`)) {
+          setLayouts(prev => ({...prev, [activeTab]: DEFAULT_LAYOUTS[activeTab]}));
+      }
+  };
+
+  const renderContentForPanel = (panelId) => {
+    if (panelId === 'main') return <MainConfigTab />;
+    if (panelId === 'payloads') return <PayloadsTab />;
+    if (panelId === 'selection') return <p>Selection Box Content...</p>;
+    if (panelId === 'guide') return <p>Optimization Guide Content...</p>;
+    return null;
+  }
 
   return (
-    <div className={styles.workbenchCanvas}>
-      {/* Our new Reset Button! */}
-      <button onClick={handleResetLayout} className={styles.resetButton}>
-        Reset Layout
-      </button>
+    <div className={styles.pageContainer}>
+      {/* The Permanent Sidebar */}
+      <div className={styles.sidebar}>
+          {/* We'll wrap the CustomSelect in a div that we can style */}
+          <div className={styles.glassPanel}>
+            <CustomSelect 
+              options={tabOptions}
+              value={activeTab}
+              onChange={setActiveTab}
+            />
+          </div>
+          <button onClick={handleResetLayout} className={styles.resetButton}>
+            Reset View
+          </button>
+      </div>
 
-      {Object.values(panels).map(panel => {
-        let content;
-        // A simple way to map content based on panel ID
-        if (panel.id === 'main') content = <MainConfigTab />;
-        else if (panel.id === 'payloads') content = <PayloadsTab />;
-        else if (panel.id === 'selection') content = <p>Selection Box Content</p>;
-        else content = <p>Empty Panel</p>;
-
-        return (
+      {/* The Workbench Canvas */}
+      <div className={styles.workbenchCanvas}>
+        {Object.values(currentPanels).map(panel => (
           <Window 
             key={panel.id}
             panel={panel} 
-            onDragStop={handleDragStop} 
-            onResizeStop={handleResizeStop}
+            onDragStop={(id, pos) => handleLayoutChange(id, pos)} 
+            onResizeStop={(id, size, pos) => handleLayoutChange(id, {x: pos.x, y: pos.y}, {width: parseInt(size.width, 10), height: parseInt(size.height, 10)})}
             onBringToFront={bringToFront}
           >
-            {content}
+            {renderContentForPanel(panel.id)}
           </Window>
-        )
-      })}
+        ))}
+      </div>
     </div>
   );
 }

@@ -1,19 +1,44 @@
-.workbenchCanvas {
-    width: 100vw;
+/* --- The Main Page Layout --- */
+.pageContainer {
+    display: flex;
     height: 100vh;
-    position: relative; /* This is the boundary for our windows */
+    width: 100vw;
+    padding: var(--space-32);
+    gap: var(--space-20);
+    box-sizing: border-box;
   }
   
-  .glassPanel {
-    background: rgba(38, 40, 40, 0.7); /* Darker glass for better contrast */
-    backdrop-filter: blur(20px);
-    -webkit-backdrop-filter: blur(20px);
-    border: 1px solid rgba(255, 255, 255, 0.2);
-    border-radius: var(--radius-lg);
-    box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.3);
-    color: var(--color-text);
+  /* --- The Permanent Sidebar --- */
+  .sidebar {
+    width: 280px;
+    flex-shrink: 0;
     display: flex;
     flex-direction: column;
+    gap: var(--space-20);
+    /* The sidebar itself doesn't need to be glass, just the dropdown inside */
+  }
+  
+  .resetButton {
+    /* This is the magic! We borrow the style from the other file. */
+    composes: btn btn--secondary from './ConfigurationManager.module.css';
+  }
+  
+  /* --- The Canvas where windows live --- */
+  .workbenchCanvas {
+    flex-grow: 1;
+    height: 100%;
+    position: relative;
+  }
+  
+  /* --- Window Styling --- */
+  .glassPanel {
+    /* This is the key change! We inherit all the beautiful glass styles. */
+    composes: glassPanel from './ConfigurationManager.module.css'; 
+    
+    /* And then we add the specific styles needed for a window */
+    display: flex;
+    flex-direction: column;
+    overflow: hidden; /* Prevent content from spilling out */
   }
   
   .panelHeader {

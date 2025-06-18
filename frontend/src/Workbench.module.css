@@ -3,26 +3,41 @@
     width: 100vw;
     height: 100vh;
     position: relative;
-    overflow: hidden; /* Hide anything that gets dragged off-screen */
+    overflow: hidden;
   }
   
-  /* --- Window Styling --- */
-  .glassPanel {
+/* --- Window Styling --- */
+.glassPanel {
     composes: glassPanel from './ConfigurationManager.module.css'; 
     display: flex;
     flex-direction: column;
     overflow: hidden;
+    cursor: move;
+    /* THE PADDING IS DEFINED HERE! */
+    padding: var(--space-16);
   }
   
-  /* The header is no longer the drag handle itself */
-  .panelHeader {
-    padding: var(--space-8) var(--space-12);
-    background-color: rgba(0,0,0,0.2);
-    border-bottom: 1px solid rgba(255,255,255,0.1);
-    font-weight: var(--font-weight-medium);
-    flex-shrink: 0;
-    /* Make the text unselectable so dragging feels smoother */
-    user-select: none;
+/* --- ADD THIS NEW HELPER CLASS --- */
+.noPadding {
+    padding: 0 !important; /* The !important makes sure it overrides the default padding */
+  }
+
+/* --- ADD THIS NEW STYLE for our special navigation window --- */
+.navigationPanel {
+    /* Remove padding so the dropdown can sit flush against the edges! */
+    padding: 0 !important; 
+    /* Make the background fully transparent so it just looks like a floating dropdown */
+    background: transparent;
+    border: none;
+    box-shadow: none;
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+  }
+  
+/* --- THIS IS OUR MODIFIER CLASS --- */
+/* It will be applied to the navigation window to override the padding */
+.flushContent {
+    padding: 0;
   }
   
   .panelContent {
@@ -30,6 +45,15 @@
     overflow-y: auto;
     overflow-x: hidden;
     padding: var(--space-16);
+    cursor: default;
+  }
+  
+  /* --- ADD THIS NEW HELPER CLASS --- */
+  .centeredContent {
+    display: flex;
+    align-items: center;     /* This centers it vertically */
+    justify-content: center; /* This centers it horizontally */
+    height: 100%;            /* Make sure it fills the window to center properly */
   }
   
   /* --- THIS IS THE MAGIC CLASS! --- */
@@ -39,21 +63,55 @@
   }
   
   /* --- The Pretty Reset Button --- */
-  .resetButton {
-    composes: btn from './ConfigurationManager.module.css';
+.resetButton {
+    /* Let's make it glassy, just like our panels! */
+    background: rgba(38, 40, 40, 0.5);
+    backdrop-filter: blur(10px);
+    -webkit-backdrop-filter: blur(10px);
+    border: 1px solid rgba(255, 255, 255, 0.2);
+    
+    /* Keep the core positioning and shape */
     position: fixed;
     top: var(--space-16);
     right: var(--space-16);
     z-index: 9999;
-    /* Make it a circle! */
     border-radius: var(--radius-full);
-    width: 40px;
-    height: 40px;
+    width: 44px;
+    height: 44px;
     padding: 0;
     display: flex;
     align-items: center;
     justify-content: center;
+    cursor: pointer;
+  
+    /* The magic ingredient! A smooth transition for all our effects! */
+    transition: all 0.2s ease-in-out;
   }
   
-  /* We need to make sure the CustomSelect inside its window is not draggable */
-  /* The easiest way is to wrap it in a div with the dragCancel class in the JSX */
+  /* --- The Hover Effect! --- */
+  .resetButton:hover {
+    /* Make it slightly bigger and give it a beautiful glow */
+    transform: scale(1.1);
+    border-color: rgba(255, 255, 255, 0.4);
+    box-shadow: 0 0 15px rgba(50, 184, 198, 0.4); /* A soft teal glow */
+  }
+  
+  /* --- The Click Effect! --- */
+  .resetButton:active {
+    /* Make it feel like it's being pressed down */
+    transform: scale(0.95);
+    background: rgba(38, 40, 40, 0.7);
+  }
+  
+  /* Style the SVG icon inside the button */
+  .resetButton svg {
+    color: var(--color-text);
+    opacity: 0.8;
+    transition: opacity 0.2s ease-in-out;
+  }
+  
+  /* Make the icon brighter on hover */
+  .resetButton:hover svg {
+    opacity: 1;
+  }
+  

@@ -1,0 +1,92 @@
+.workshopContainer {
+    display: flex;
+    gap: var(--space-24);
+    height: calc(100vh - 120px); /* Fill available space */
+  }
+  
+  .selectionPanel {
+    width: 250px;
+    flex-shrink: 0;
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-16);
+  }
+  
+  .selectionBox {
+    flex-grow: 1;
+    border: 1px dashed var(--color-border);
+    border-radius: var(--radius-lg);
+    padding: var(--space-12);
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: var(--space-16);
+    background: rgba(0,0,0,0.1);
+  }
+  
+  .workspacePanel {
+    flex-grow: 1;
+    display: flex;
+    flex-direction: column;
+  }
+  
+  .workspaceHeader {
+    display: flex;
+    gap: var(--space-12);
+    padding-bottom: var(--space-16);
+    align-items: center;
+  }
+  
+  .searchInput {
+    composes: form-control from global;
+    flex-grow: 1; /* Let the search bar fill space */
+  }
+  
+  /* We'll need to make button styles global or import them */
+  .button {
+      composes: btn btn--secondary from global;
+  }
+  
+  .workspaceCanvas {
+    flex-grow: 1;
+    position: relative; /* This is the key for the "infinite canvas"! */
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-lg);
+    padding: var(--space-16);
+    background: rgba(0,0,0,0.1);
+    /* For now, we use a grid to see our placeholders */
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
+    gap: var(--space-16);
+    align-content: flex-start;
+  }
+  
+  /* Placeholder for the Glyph Card */
+  .glyphCard {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: var(--space-8);
+    cursor: grab;
+  }
+  
+  .glyphVisual {
+    width: 80px;
+    height: 80px;
+    background-color: var(--color-secondary);
+    border: 2px solid var(--color-border);
+    border-radius: var(--radius-md);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 24px;
+  }
+  
+  .glyphName {
+    font-size: var(--font-size-sm);
+    color: var(--color-text);
+    max-width: 120px;
+    text-align: center;
+    word-wrap: break-word;
+  }
+  

@@ -33,8 +33,7 @@ MANIFEST
 # --- Installers / Logs ---
 pip-log.txt
 pip-delete-this-directory.txt
-logs/**/*.json
-logs/**/*.jsonl
+logs/
 *.jsonl # Optuna logs if created outside logs/
 
 # --- Test / Coverage ---

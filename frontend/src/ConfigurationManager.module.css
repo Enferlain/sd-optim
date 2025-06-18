@@ -6,81 +6,99 @@
 /* }
 
 /* This file now controls our glassy layout! */
-
-.layoutContainer {
-    height: 100vh;
-    width: 100vw;
-    display: flex;
-    justify-content: center;
-    
-    /* THE FIX for Alignment: Change 'center' to 'flex-start' */
-    align-items: flex-start; 
-  
-    gap: var(--space-20);
-    padding: var(--space-32);
-    box-sizing: border-box;
-  }
-  
-  /* This is the new style for our glass panels! */
-  .glassPanel {
-    /* The semi-transparent background is key! */
-    background: rgba(255, 255, 255, 0.1); 
-    
-    /* This is the magic that blurs what's behind it! */
-    backdrop-filter: blur(20px);
-    -webkit-backdrop-filter: blur(20px); /* For Safari browser support */
-    
-    /* A subtle border to define the edge */
-    border: 1px solid rgba(255, 255, 255, 0.2);
-    
-    border-radius: var(--radius-lg);
-    box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.2); /* A soft shadow for depth */
-    padding: var(--space-16);
-    color: var(--color-text);
-  }
-  
-/* --- The Sidebar --- */
-.sidebar {
-  /* THE FIX for Removing the Card: We delete the 'composes' line! */
-  composes: glassPanel;
-  
-  width: 240px;
-  flex-shrink: 0;
-
-  /* We also remove the margin-top so it aligns perfectly */
-  margin-top: 0; 
+/* --- Global Styles we'll need --- */
+/* We define this FIRST, so other classes can compose from it! */
+.glassPanel {
+  background: rgba(255, 255, 255, 0.1); 
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  border-radius: var(--radius-lg);
+  box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.2);
+  padding: var(--space-16);
+  color: var(--color-text);
 }
 
-/* --- The Main Content Panel --- */
+/* This is our new top-level layout container */
+.pageLayout {
+  height: 100vh;
+  width: 100vw;
+  display: flex;
+  justify-content: center;
+  align-items: flex-start; 
+  gap: var(--space-20);
+  padding: var(--space-32);
+  box-sizing: border-box;
+}
+
+/* --- Panel 1: Primary Sidebar --- */
+.primarySidebar {
+  width: 240px;
+  flex-shrink: 0;
+  /* Now this will work, because glassPanel is defined above! */
+  composes: glassPanel; 
+}
+
+/* --- Panel 2: Selection Panel --- */
+.selectionPanel {
+  composes: glassPanel; /* This one works too! */
+  width: 250px;
+  flex-shrink: 0;
+  height: calc(100vh - (var(--space-32) * 2)); /* Fill vertical space */
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-16);
+}
+
+.selectionBox {
+  flex-grow: 1;
+  border: 1px dashed var(--color-border);
+  border-radius: var(--radius-lg);
+  padding: var(--space-12);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-16);
+  background: rgba(0,0,0,0.1);
+  overflow-y: auto; /* Allow scrolling if many payloads are selected */
+}
+
+/* --- Panel 3: Main Content --- */
 .contentPanel {
   composes: glassPanel;
   flex-grow: 1;
   width: 100%;
   max-width: 950px;
-  
-  /* THE FIX for Alignment: We also remove the fixed height and give it a margin-top to match the dropdown's position */
-  height: auto; /* Let height be determined by content, up to max-height */
-  max-height: calc(100vh - (var(--space-32) * 2));
-  
+  height: calc(100vh - (var(--space-32) * 2));
   overflow-y: auto;
   padding: var(--space-24);
 }
-  
-/* Style for the dropdown in the sidebar */
-.tabSelect {
-    composes: form-control from global;
-    background-color: transparent; /* Make the dropdown box itself transparent */
-    border-color: rgba(255, 255, 255, 0.1);
-    color: var(--color-text); /* Ensure text is white */
-    font-weight: var(--font-weight-medium);
-  }
-  
-  /* In dark mode, the text on the select should be lighter! */
-  @media (prefers-color-scheme: dark) {
-      .tabSelect {
-          color: var(--color-text);
-      }
-  }
-  [data-color-scheme="dark"] .tabSelect {
-      color: var(--color-text);
-  }
+
+/* Placeholder for the Glyph Card, moved here to be accessible by both panels */
+.glyphCard {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-8);
+  cursor: grab;
+}
+
+.glyphVisual {
+  width: 80px;
+  height: 80px;
+  background-color: var(--color-secondary);
+  border: 2px solid var(--color-border);
+  border-radius: var(--radius-md);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 24px;
+}
+
+.glyphName {
+  font-size: var(--font-size-sm);
+  color: var(--color-text);
+  max-width: 120px;
+  text-align: center;
+  word-wrap: break-word;
+}

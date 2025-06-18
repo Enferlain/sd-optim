@@ -1,0 +1,39 @@
+/* We use the :global selector to override the library's default styles */
+:global(.react-grid-layout) {
+  position: relative;
+  transition: height 200ms ease;
+}
+
+:global(.react-grid-item) {
+  transition: all 200ms ease;
+  transition-property: left, top;
+}
+
+:global(.react-grid-item.cssTransforms) {
+  transition-property: transform;
+}
+
+/* This is our custom panel styling */
+.panel {
+  /* Inherit the beautiful glass effect we made! */
+  composes: glassPanel from './ConfigurationManager.module.css';
+  height: 100%;
+  width: 100%;
+  overflow: hidden; /* Prevent content from spilling out */
+  display: flex;
+  flex-direction: column;
+}
+
+.panelHeader {
+  cursor: move; /* Change cursor to show it's draggable */
+  padding: var(--space-8) var(--space-12);
+  background-color: rgba(0,0,0,0.1);
+  border-bottom: 1px solid rgba(255,255,255,0.1);
+  font-weight: var(--font-weight-medium);
+}
+
+.panelContent {
+  padding: var(--space-16);
+  flex-grow: 1;
+  overflow-y: auto; /* Allow individual panels to scroll! */
+}

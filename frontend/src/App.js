@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
-import LandingPage from '/home/user/sdoptimui/sd-optim/frontend/src/LandingPage.js';
-import ConfigurationManager from '/home/user/sdoptimui/sd-optim/frontend/src/ConfigurationManager.js'; // Import the new component
-import './App.css'; // <-- ADD THIS IMPORT!
+import LandingPage from './LandingPage.js';
+import Workbench from './Workbench.js'; // Import our new main component
+import './App.css'; 
 
 function App() {
   const [isBackendLaunched, setIsBackendLaunched] = useState(false);
@@ -12,7 +12,8 @@ function App() {
 
   return (
     <div>
-      {isBackendLaunched ? <ConfigurationManager /> : <LandingPage onBackendLaunch={handleBackendLaunch} />}
+      {/* We now launch the Workbench instead of the old ConfigurationManager */}
+      {isBackendLaunched ? <Workbench /> : <LandingPage onBackendLaunch={handleBackendLaunch} />}
     </div>
   );
 }

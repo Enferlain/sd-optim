@@ -116,3 +116,11 @@
     text-align: right; 
     font-family: var(--font-family-mono); 
 }
+
+/* --- ADD THIS NEW STYLE AT THE END --- */
+.headerRow {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding-bottom: var(--space-12); /* We move the padding here from the h2 */
+}

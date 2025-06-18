@@ -1,8 +1,10 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react'; // <-- I added 'useRef' right here!
 import { useForm, useFieldArray, Controller } from 'react-hook-form';
 import styles from './MainConfigTab.module.css';
-import CustomSelect from './CustomSelect.js'; // <-- Import our custom component!
+import CustomSelect from './CustomSelect.js';
 import FileInput from './FileInput.js';
+import { saveAs } from 'file-saver'; // Helper for downloading files
+import yaml from 'js-yaml'; // Helper for YAML parsing/dumping
 
 // Helper component
 const FormRow = ({ label, children, stacked = false }) => (
@@ -13,7 +15,7 @@ const FormRow = ({ label, children, stacked = false }) => (
 );
 
 const MainConfigTab = () => {
-    const { register, handleSubmit, reset, watch, control, setValue } = useForm({
+    const { register, handleSubmit, reset, watch, control, setValue, getValues } = useForm({
         // THIS PART NEEDS TO BE UPDATED!
         defaultValues: {
             defaults: [{ payloads: 'cargo_forge.yaml' }],
@@ -86,6 +88,7 @@ const MainConfigTab = () => {
     const [error, setError] = useState(null);
     const [cargoFiles, setCargoFiles] = useState([]);
     const [allScorers, setAllScorers] = useState([]);
+    const importFileRef = useRef(null);
 
     const getBackendHost = () => {
         const currentHost = window.location.hostname;
@@ -130,14 +133,67 @@ const MainConfigTab = () => {
       fetchData();
   }, [reset]); // Dependency array doesn't need to change
 
-    const onSubmit = (data) => {
-        const submissionData = { ...data };
-        const optimizerType = submissionData.optimizer.type;
-        submissionData.optimizer.bayes = optimizerType === 'bayes';
-        submissionData.optimizer.optuna = optimizerType === 'optuna';
-        delete submissionData.optimizer.type;
-        submissionData.model_paths = (submissionData.model_paths || []).map(field => field.value);
-        console.log("Submitting this data to the backend:", JSON.stringify(submissionData, null, 2));
+    // --- NEW: Export Handler ---
+    const handleExportConfig = () => {
+        const currentData = getValues(); // Get all current values from the form
+        
+        // Clean up the data to match the YAML structure
+        const exportData = { ...currentData };
+        const optimizerType = exportData.optimizer.type;
+        exportData.optimizer.bayes = optimizerType === 'bayes';
+        exportData.optimizer.optuna = optimizerType === 'optuna';
+        delete exportData.optimizer.type;
+        exportData.model_paths = (exportData.model_paths || []).map(field => field.value);
+        
+        // Convert the JSON object to a YAML string
+        try {
+            const yamlString = yaml.dump(exportData, {
+                noRefs: true, // Prevents YAML anchors/aliases for cleaner output
+                lineWidth: -1, // Don't wrap lines
+            });
+            const blob = new Blob([yamlString], { type: 'text/yaml;charset=utf-8' });
+            saveAs(blob, 'config.yaml'); // Trigger download
+        } catch (e) {
+            console.error("Error creating YAML for export:", e);
+            alert("Failed to export configuration.");
+        }
+    };
+    
+    // --- NEW: Import Handler ---
+    const handleImportClick = () => {
+        // Programmatically click the hidden file input
+        importFileRef.current?.click();
+    };
+
+    const handleFileImport = (event) => {
+        const file = event.target.files[0];
+        if (!file) return;
+
+        const reader = new FileReader();
+        reader.onload = (e) => {
+            try {
+                const text = e.target.result;
+                const importedData = yaml.load(text); // Parse the YAML file
+                
+                // Prepare data for the form just like we do when fetching
+                let optimizerType = 'optuna';
+                if (importedData.optimizer?.bayes) optimizerType = 'bayes';
+                const modelPathsAsObjects = (importedData.model_paths || []).map(path => ({ value: path }));
+                const initialCargo = `cargo_${importedData.webui}.yaml`;
+                importedData.defaults = [{ payloads: initialCargo }];
+
+                // Use reset to update the entire form with the new data
+                reset({ ...importedData, optimizer: { ...importedData.optimizer, type: optimizerType }, model_paths: modelPathsAsObjects });
+                alert("Configuration imported successfully!");
+            } catch (err) {
+                console.error("Error importing file:", err);
+                alert("Failed to import configuration. Please check if the file is a valid YAML config.");
+            }
+        };
+        reader.readAsText(file);
+        
+        // Clear the input value so we can import the same file again
+        event.target.value = null;
     };
 
     const watchedOptimizationMode = watch('optimization_mode');
@@ -183,8 +239,25 @@ const MainConfigTab = () => {
   };
 
     return (
-      <form onSubmit={handleSubmit(onSubmit)} className={styles.formContainer}>
-          <h2 style={{ paddingBottom: 'var(--space-12)' }}>Main Configuration</h2>
+        <div className={styles.formContainer}>
+          {/* --- THIS IS THE PART WE'RE CHANGING --- */}
+          {/* 
+            Find this old line:
+            <h2 style={{ paddingBottom: 'var(--space-12)' }}>Main Configuration</h2>
+          */}
+
+          {/* And replace it with this new div block: */}
+          <div className={styles.headerRow}>
+              <h2>Main Configuration</h2>
+              <a 
+                href="https://github.com/enferlain/sd-optim/wiki" // It's a real link! To our future wiki!
+                target="_blank" // This makes it open in a new tab!
+                rel="noopener noreferrer" // This is for security, Onii-chan!
+                className={styles.buttonOutlineSm} // Use our cute small outline button style
+              >
+                  Wiki
+              </a>
+          </div>
           
           <div className={styles.formSection}>
               <h3 className={styles.legend}>Runtime</h3>
@@ -451,9 +524,27 @@ const MainConfigTab = () => {
                 )}
             </div>
 
-            <button type="submit" className={styles.submitButton}>Save Configuration</button>
-        </form>
+         {/* --- NEW: Import/Export buttons replace the old submit button --- */}
+         <div className={styles.formSection} style={{ display: 'flex', justifyContent: 'flex-end', gap: 'var(--space-12)' }}>
+              
+              {/* Hidden file input for the import functionality */}
+              <input 
+                type="file" 
+                ref={importFileRef}
+                style={{ display: 'none' }}
+                accept=".yaml,.yml"
+                onChange={handleFileImport}
+              />
+
+              <button type="button" className={styles.buttonSecondary} onClick={handleImportClick}>
+                  Import Config
+              </button>
+              <button type="button" className={styles.buttonPrimary} onClick={handleExportConfig}>
+                  Export Config
+              </button>
+          </div>
+      </div>
     );
 };
 
-export default MainConfigTab;
+export default MainConfigTab; // <--- This is the line that's probably missing!

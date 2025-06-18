@@ -2,7 +2,8 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
-from backend.api import config, optimization
+# Now we import all our clean, single-responsibility routers!
+from backend.api import config, optimization, payloads, optimization_guide
 
 app = FastAPI()
 
@@ -15,13 +16,15 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-@app.get("/api")  # Change this to avoid conflict
+@app.get("/api")
 async def read_root():
     return {"message": "SD-Optim Standalone Backend"}
 
-# Include API routers FIRST
+# Include all our API routers
 app.include_router(config.router)
 app.include_router(optimization.router)
+app.include_router(payloads.router)
+app.include_router(optimization_guide.router) # <-- Add the new one!
 
-# Mount static files LAST (catches remaining requests)
+# Mount static files LAST
 app.mount("/", StaticFiles(directory="/home/user/sdoptimui/sd-optim/frontend/build", html=True), name="static")

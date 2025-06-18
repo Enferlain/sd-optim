@@ -312,3 +312,11 @@ class CargoData(BaseModel):
             instance._extra = extra_data
             return instance
         return data
+
+class PayloadUpdate(BaseModel):
+    """Schema for updating an existing payload file with new content."""
+    content: Dict[str, Any] = Field(..., description="The full YAML content of the payload as a dictionary.")
+
+class PayloadCreate(PayloadUpdate):
+    """Schema for creating a new payload. Inherits content and adds filename."""
+    filename: str = Field(..., description="The name of the new payload file (without .yaml extension).")

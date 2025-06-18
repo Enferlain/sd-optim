@@ -86,7 +86,8 @@ const MainConfigTab = () => {
     const { fields, append, remove } = useFieldArray({ control, name: "model_paths" });
     const [isLoading, setIsLoading] = useState(true);
     const [error, setError] = useState(null);
-    const [cargoFiles, setCargoFiles] = useState([]);
+    // --- REMOVED: No longer need to store cargo files in this component ---
+    // const [cargoFiles, setCargoFiles] = useState([]); 
     const [allScorers, setAllScorers] = useState([]);
     const importFileRef = useRef(null);
 
@@ -99,39 +100,35 @@ const MainConfigTab = () => {
     // We update our data fetching logic.
     useEffect(() => {
       const fetchData = async () => {
-          try {
-              const backendHost = getBackendHost();
-              // Fetch config, cargo, AND our new scorers list all at once!
-              const [configRes, cargoRes, scorersRes] = await Promise.all([
-                  fetch(`${backendHost}/config/`),
-                  fetch(`${backendHost}/config/cargo`),
-                  fetch(`${backendHost}/config/scorers`) // <-- New fetch call
-              ]);
+        try {
+            const backendHost = getBackendHost();
+            // --- REMOVED cargoRes from the Promise.all ---
+            const [configRes, scorersRes] = await Promise.all([
+                fetch(`${backendHost}/config/`),
+                fetch(`${backendHost}/config/scorers`)
+            ]);
 
-              if (!configRes.ok) throw new Error(`Config fetch failed: ${configRes.statusText}`);
-              if (!cargoRes.ok) throw new Error(`Cargo fetch failed: ${cargoRes.statusText}`);
-              if (!scorersRes.ok) throw new Error(`Scorers fetch failed: ${scorersRes.statusText}`);
+            if (!configRes.ok) throw new Error(`Config fetch failed: ${configRes.statusText}`);
+            if (!scorersRes.ok) throw new Error(`Scorers fetch failed: ${scorersRes.statusText}`);
 
-              const configData = await configRes.json();
-              const cargoData = await cargoRes.json();
-              const scorersData = await scorersRes.json(); // <-- Get the scorers list
+            const configData = await configRes.json();
+            const scorersData = await scorersRes.json();
 
-              // Use the data to set our component's state!
-              setCargoFiles(cargoData);
-              setAllScorers(scorersData); // <-- Set the dynamic list of scorers
+            // --- REMOVED: All logic related to setting cargo files ---
+            setAllScorers(scorersData);
 
-              // The rest of the logic is the same...
-              let optimizerType = 'optuna';
-              if (configData.optimizer?.bayes) optimizerType = 'bayes';
-              const modelPathsAsObjects = (configData.model_paths || []).map(path => ({ value: path }));
-              const initialCargo = `cargo_${configData.webui}.yaml`;
-              configData.defaults = [{ payloads: initialCargo }];
-              reset({ ...configData, optimizer: { ...configData.optimizer, type: optimizerType }, model_paths: modelPathsAsObjects });
+            let optimizerType = 'optuna';
+            if (configData.optimizer?.bayes) optimizerType = 'bayes';
+            const modelPathsAsObjects = (configData.model_paths || []).map(path => ({ value: path }));
+            
+            // --- REMOVED: No longer setting the `defaults` field in the form ---
 
-          } catch (err) { setError(err); } finally { setIsLoading(false); }
-      };
-      fetchData();
-  }, [reset]); // Dependency array doesn't need to change
+            reset({ ...configData, optimizer: { ...configData.optimizer, type: optimizerType }, model_paths: modelPathsAsObjects });
+
+        } catch (err) { setError(err.message); } finally { setIsLoading(false); } // Set error message directly
+    };
+    fetchData();
+}, [reset]);
 
     // --- NEW: Export Handler ---
     const handleExportConfig = () => {
@@ -198,12 +195,12 @@ const MainConfigTab = () => {
 
     const watchedOptimizationMode = watch('optimization_mode');
     const watchedOptimizerType = watch('optimizer.type');
-    const watchedWebUI = watch('webui');
+    // --- REMOVED: No longer need to watch WebUI to update a defaults field ---
     const watchedScorers = watch('scorer_method', []);
-    const watchedSamplerType = watch('optimizer.optuna_config.sampler.type'); // <-- WATCHING THE SAMPLER!
-    useEffect(() => { if (watchedWebUI) { setValue('defaults.0.payloads', `cargo_${watchedWebUI}.yaml`); } }, [watchedWebUI, setValue]);
+    const watchedSamplerType = watch('optimizer.optuna_config.sampler.type');
+    
     if (isLoading) return <p>Loading configuration...</p>;
-    if (error) return <p>Error loading configuration: {error.message}</p>;
+    if (error) return <p>Error loading configuration: {error}</p>; // Display the error message
 
     const handleAddModelClick = async () => {
       if ('showOpenFilePicker' in window) {
@@ -267,9 +264,7 @@ const MainConfigTab = () => {
               <FormRow label="WebUI">
                   <Controller name="webui" control={control} render={({ field }) => (<CustomSelect options={['forge', 'a1111', 'reforge', 'comfy', 'swarm']} value={field.value} onChange={field.onChange} />)} />
               </FormRow>
-              <FormRow label="Cargo File">
-                  <Controller name="defaults.0.payloads" control={control} render={({ field }) => (<CustomSelect options={cargoFiles} value={field.value} onChange={field.onChange} />)} />
-              </FormRow>
+              {/* --- REMOVED: The old Cargo File dropdown is gone! --- */}
           </div>
 
           <div className={styles.formSection}>

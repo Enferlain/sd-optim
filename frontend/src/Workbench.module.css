@@ -1,53 +1,28 @@
-/* --- The Main Page Layout --- */
-.pageContainer {
-    display: flex;
-    height: 100vh;
+/* --- The Canvas where windows live --- */
+.workbenchCanvas {
     width: 100vw;
-    padding: var(--space-32);
-    gap: var(--space-20);
-    box-sizing: border-box;
-  }
-  
-  /* --- The Permanent Sidebar --- */
-  .sidebar {
-    width: 280px;
-    flex-shrink: 0;
-    display: flex;
-    flex-direction: column;
-    gap: var(--space-20);
-    /* The sidebar itself doesn't need to be glass, just the dropdown inside */
-  }
-  
-  .resetButton {
-    /* This is the magic! We borrow the style from the other file. */
-    composes: btn btn--secondary from './ConfigurationManager.module.css';
-  }
-  
-  /* --- The Canvas where windows live --- */
-  .workbenchCanvas {
-    flex-grow: 1;
-    height: 100%;
+    height: 100vh;
     position: relative;
+    overflow: hidden; /* Hide anything that gets dragged off-screen */
   }
   
   /* --- Window Styling --- */
   .glassPanel {
-    /* This is the key change! We inherit all the beautiful glass styles. */
     composes: glassPanel from './ConfigurationManager.module.css'; 
-    
-    /* And then we add the specific styles needed for a window */
     display: flex;
     flex-direction: column;
-    overflow: hidden; /* Prevent content from spilling out */
+    overflow: hidden;
   }
   
+  /* The header is no longer the drag handle itself */
   .panelHeader {
-    cursor: move;
     padding: var(--space-8) var(--space-12);
     background-color: rgba(0,0,0,0.2);
     border-bottom: 1px solid rgba(255,255,255,0.1);
     font-weight: var(--font-weight-medium);
     flex-shrink: 0;
+    /* Make the text unselectable so dragging feels smoother */
+    user-select: none;
   }
   
   .panelContent {
@@ -57,12 +32,28 @@
     padding: var(--space-16);
   }
   
-  /* --- ADD THIS AT THE END --- */
+  /* --- THIS IS THE MAGIC CLASS! --- */
+  /* Any element with this class will NOT trigger a drag on the window */
+  .dragCancel {
+    /* This class doesn't need any styles, it's just a marker for react-rnd */
+  }
+  
+  /* --- The Pretty Reset Button --- */
   .resetButton {
-    /* Use our global button styles! */
-    composes: btn btn--secondary from './ConfigurationManager.module.css'; 
-    position: fixed; /* Keep it locked in place */
+    composes: btn from './ConfigurationManager.module.css';
+    position: fixed;
     top: var(--space-16);
     right: var(--space-16);
-    z-index: 9999; /* Make sure it's on top of all windows! */
+    z-index: 9999;
+    /* Make it a circle! */
+    border-radius: var(--radius-full);
+    width: 40px;
+    height: 40px;
+    padding: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
   }
+  
+  /* We need to make sure the CustomSelect inside its window is not draggable */
+  /* The easiest way is to wrap it in a div with the dragCancel class in the JSX */

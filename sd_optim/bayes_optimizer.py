@@ -47,10 +47,10 @@ class BayesOptimizer(Optimizer):
 
         # First create a fresh logger
         self.json_logger = JSONLogger(path=str(self.log_file_path),
-                                      reset=self.cfg.optimizer.reset_log_file)  # Renamed to json_logger
+                                      reset=self.cfg.optimizer.bayes_config.get("reset_log_file", False))
 
         # Load previous data if specified
-        load_log_path = self.cfg.optimizer.get("load_log_file")
+        load_log_path = self.cfg.optimizer.bayes_config.get("load_log_file")
         if load_log_path:
             load_log_file = Path(load_log_path)
             if load_log_file.is_file():
@@ -79,7 +79,7 @@ class BayesOptimizer(Optimizer):
         logger.debug(f"Initial Parameter Bounds: {self.optimizer_pbounds}")  # Use the attribute directly
 
         # --- Acquisition Function Configuration ---
-        acq_config = self.cfg.optimizer.get("acquisition_function", {})
+        acq_config = self.cfg.optimizer.bayes_config.get("acquisition_function", {})
         acquisition_function = UtilityFunction(
             kind=acq_config.get("kind", "ucb"),
             kappa=acq_config.get("kappa", 3.0),
@@ -89,15 +89,14 @@ class BayesOptimizer(Optimizer):
         )
 
         # --- Bounds Transformer Configuration ---
-        bt_config = self.cfg.optimizer.get("bounds_transformer", {})
+        bt_config = self.cfg.optimizer.bayes_config.get("bounds_transformer", {})
         bounds_transformer_instance = SequentialDomainReductionTransformer(
             gamma_osc=bt_config.get("gamma_osc", 0.65),
             gamma_pan=bt_config.get("gamma_pan", 0.9),
             eta=bt_config.get("eta", 0.83),
             minimum_window=bt_config.get("minimum_window", 0.15),
         )
-        bounds_transformer_enabled = self.cfg.optimizer.get("bounds_transformer_enabled",
-                                                            False)  # Use explicit enable flag
+        bounds_transformer_enabled = bt_config.get("enabled", False)
 
         # --- Synchronous Wrapper for Async Target Function ---
         def sync_target_function_wrapper(**params_dict):
@@ -157,11 +156,12 @@ class BayesOptimizer(Optimizer):
         remaining_init_points = max(0, init_points - completed_trials)
 
         if remaining_init_points > 0:
-            sampler_type = self.cfg.optimizer.get("sampler", "random").lower()
-            # Separate continuous and categorical/binary for sampling
-            continuous_bounds = {k: v for k, v in pbounds.items() if
+            sampler_type = self.cfg.optimizer.bayes_config.get("sampler", "random").lower()
+
+            # We need to reference the class attribute `self.optimizer_pbounds`.
+            continuous_bounds = {k: v for k, v in self.optimizer_pbounds.items() if
                                  not (isinstance(v, tuple) and v in [(0.0, 1.0), (1.0, 0.0)])}
-            categorical_params = {k: v for k, v in pbounds.items() if
+            categorical_params = {k: v for k, v in self.optimizer_pbounds.items() if
                                   (isinstance(v, tuple) and v in [(0.0, 1.0), (1.0, 0.0)])}
 
             if sampler_type != "random" and continuous_bounds:

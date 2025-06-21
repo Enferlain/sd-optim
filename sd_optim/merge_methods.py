@@ -30,6 +30,13 @@ from sd_mecha import Parameter, Return, merge_method  # Import Parameter and Ret
 from sd_optim.svd import torch_svd_lowrank # you need to make your own or use the one from mecha
 from torch import Tensor # Import Tensor
 
+try:
+    import cupy as cp
+    from cupy.cuda import cusolver
+    CUPY_AVAILABLE = True
+except ImportError:
+    CUPY_AVAILABLE = False
+
 EPSILON = 1e-10
 
 
@@ -2427,6 +2434,150 @@ class MergeMethods:
                 merged += model * weight_reshaped  # Broadcasts to [out_channels, in_channels, H, W]
 
         return merged
+
+    @merge_method
+    def pop_lora_seq(
+            *models: Parameter(Tensor, "delta"),
+            base_model_index: Parameter(int) = 0,
+            alpha: Parameter(float) = 0.5,
+            rank_ratio: Parameter(float) = 0.25,
+            early_exit: Parameter(bool) = True,
+            **kwargs
+    ) -> Return(Tensor, "delta"):
+        """
+        True Sequential Application of pop_lora (v2 - Flexible & Robust)
+
+        Strictly adheres to the original pop_lora logic, applied sequentially.
+        Allows specifying which model is the base.
+        The basis for projection is calculated ONCE from the specified base model
+        and is NEVER changed. At each step, the next model in the sequence is
+        compared against the current accumulated result, and the resulting
+        delta is projected onto the ORIGINAL base's structure.
+        """
+        if not 0 <= base_model_index < len(models):
+            raise ValueError(f"base_model_index must be between 0 and {len(models) - 1}.")
+
+        if early_exit and alpha == 0.0:
+            return torch.zeros_like(models[0])
+
+        model_list = list(models)
+        start_model = model_list.pop(base_model_index)
+        other_models = model_list
+
+        original_shape = start_model.shape
+        if len(original_shape) <= 1:
+            current_model_state = start_model.clone()
+            for next_model in other_models:
+                current_model_state += alpha * (next_model - current_model_state)
+            return current_model_state - start_model
+
+        start_model_2d = start_model.view(original_shape[0], -1)
+
+        # 1. Get the structural basis of the CHOSEN base model. This is our fixed canvas.
+        Qa_base, _ = MergeMethods._stable_qr(start_model_2d)
+
+        # 2. Initialize the total accumulated delta. We start with no change.
+        total_delta_2d = torch.zeros_like(start_model_2d)
+
+        # 3. The main sequential loop iterates through the remaining models.
+        for next_model in other_models:
+            # 4. The "current state" of our model is the start + all accumulated deltas so far.
+            current_model_state = start_model_2d + total_delta_2d
+            next_model_2d = next_model.view(original_shape[0], -1)
+
+            # 5. Calculate the difference between the next model and our CURRENT STATE.
+            delta = next_model_2d - current_model_state
+
+            # 6. Project this new delta onto the ORIGINAL, FIXED base's structure.
+            projected_delta = Qa_base @ (Qa_base.T @ delta) if Qa_base.shape[1] > 0 else torch.zeros_like(
+                start_model_2d)
+
+            # 7. Simplify the projected delta into a low-rank update.
+            Q_diff, R_diff = MergeMethods._stable_qr(projected_delta)
+
+            if Q_diff.numel() == 0 or R_diff.numel() == 0:
+                step_update_delta = torch.zeros_like(start_model_2d)
+            else:
+                max_rank = min(Q_diff.shape[1], R_diff.shape[0])
+                rank = max(1, int(max_rank * rank_ratio))
+                rank = min(rank, max_rank)
+
+                Q_diff_trunc = Q_diff[:, :rank]
+                R_diff_trunc = R_diff[:rank, :]
+                step_update_delta = Q_diff_trunc @ R_diff_trunc
+
+            # 8. Add this single step's filtered and simplified update to our running total delta.
+            total_delta_2d += alpha * step_update_delta
+
+        # 9. The final result is the total accumulated delta, reshaped to its original glory.
+        return total_delta_2d.reshape(original_shape)
+
+    def _stable_qr(x: Tensor):
+        """
+        Performs RRQR using cuSOLVER's dgeqp3/sgeqp3 for maximum performance.
+        Uses DLPack for zero-copy tensor transfer between PyTorch and CuPy.
+        """
+        if not CUPY_AVAILABLE:
+            raise ImportError("You need to install CuPy for this optimized version to work!")
+
+        if x.numel() == 0:
+            return torch.empty((x.shape[0], 0), device=x.device, dtype=x.dtype), \
+                torch.empty((0, x.shape[1]), device=x.device, dtype=x.dtype)
+
+        # 1. Zero-copy view of the PyTorch tensor in CuPy via DLPack
+        x_cupy = cp.from_dlpack(torch.utils.dlpack.to_dlpack(x))
+
+        # Ensure it's a float32 or float64, as cuSOLVER requires one of them.
+        if x_cupy.dtype not in [cp.float32, cp.float64]:
+            x_cupy = x_cupy.astype(cp.float64)  # Default to float64 for precision
+
+        # 2. Setup cuSOLVER handle and memory
+        handle = cusolver.create()
+        m, n = x_cupy.shape
+        k = min(m, n)
+
+        jpvt = cp.zeros(n, dtype=cp.int32)
+        tau = cp.zeros(k, dtype=x_cupy.dtype)
+
+        # Select correct functions based on dtype
+        if x_cupy.dtype == cp.float64:
+            buffer_size_func, geqp3_func, ormqr_func, buffer_size_ormqr_func = \
+                cusolver.dnDgeqp3_bufferSize, cusolver.dnDgeqp3, cusolver.dnDormqr, cusolver.dnDormqr_bufferSize
+        else:  # float32
+            buffer_size_func, geqp3_func, ormqr_func, buffer_size_ormqr_func = \
+                cusolver.dnSgeqp3_bufferSize, cusolver.dnSgeqp3, cusolver.dnSormqr, cusolver.dnSormqr_bufferSize
+
+        # 3. Perform pivoted QR decomposition
+        work_size = buffer_size_func(handle, m, n, x_cupy.data.ptr, m)
+        work = cp.empty(work_size, dtype=x_cupy.dtype)
+        geqp3_func(handle, m, n, x_cupy.data.ptr, m, jpvt.data.ptr, tau.data.ptr, work.data.ptr, work_size,
+                   info := cp.empty(1, dtype=cp.int32))
+        cp.cuda.runtime.deviceSynchronize()
+        assert info[0] == 0, f"cusolver geqp3 failed with error code {info[0]}"
+
+        # 4. Extract R and explicitly form Q
+        R_cupy = cp.triu(x_cupy)[:k, :]
+        Q_cupy = cp.eye(m, k, dtype=x_cupy.dtype)
+
+        work_size_ormqr = buffer_size_ormqr_func(handle, 'L', 'N', m, k, k, x_cupy.data.ptr, m, tau.data.ptr,
+                                                 Q_cupy.data.ptr, m)
+        work_ormqr = cp.empty(work_size_ormqr, dtype=x_cupy.dtype)
+        ormqr_func(handle, 'L', 'N', m, k, k, x_cupy.data.ptr, m, tau.data.ptr, Q_cupy.data.ptr, m, work_ormqr.data.ptr,
+                   work_size_ormqr, info)
+        cp.cuda.runtime.deviceSynchronize()
+        assert info[0] == 0, f"cusolver ormqr failed with error code {info[0]}"
+
+        # 5. Unpivot R using the pivot indices from geqp3
+        pivots = jpvt - 1  # cuSOLVER is 1-based, we need 0-based
+        inv_pivots = cp.argsort(pivots)
+        R_cupy_unpivoted = R_cupy[:, inv_pivots]
+
+        # 6. Zero-copy conversion back to PyTorch and cleanup
+        Q_torch = torch.from_dlpack(Q_cupy.to_dlpack()).to(x.device)
+        R_torch = torch.from_dlpack(R_cupy_unpivoted.to_dlpack()).to(x.device)
+
+        cusolver.destroy(handle)
+        return Q_torch, R_torch
 
     # @staticmethod
     # @merge_method

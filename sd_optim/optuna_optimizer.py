@@ -1,4 +1,4 @@
-# optuna_optimizer.py - Version 1.5 - directory correction
+# optuna_optimizer.py - Version 1.6 - objective fixes
 
 import os
 import subprocess
@@ -10,9 +10,10 @@ import numpy as np
 import optuna.visualization as vis
 import torch
 import optuna
+import asyncio
 
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Any
 
 from hydra.core.hydra_config import HydraConfig
 from omegaconf import ListConfig
@@ -63,9 +64,9 @@ class OptunaOptimizer(Optimizer):
             raise  # Re-raise critical errors
 
         # Early stopping settings
-        self.early_stopping = self.cfg.optimizer.get("early_stopping", False)
-        self.patience = self.cfg.optimizer.get("patience", 10)
-        self.min_improvement = self.cfg.optimizer.get("min_improvement", 0.001)
+        self.early_stopping = self.cfg.optimizer.optuna_config.get("early_stopping", False)
+        self.patience = self.cfg.optimizer.optuna_config.get("patience", 10)
+        self.min_improvement = self.cfg.optimizer.optuna_config.get("min_improvement", 0.001)
         self.no_improvement_count = 0
 
         # Tracking metrics
@@ -136,7 +137,7 @@ class OptunaOptimizer(Optimizer):
             return False  # Return early if basic fields missing
 
         # Validate sampler config
-        sampler_config = self.cfg.optimizer.get("sampler", {})
+        sampler_config = self.cfg.optimizer.optuna_config.get("sampler", {})
         sampler_type = sampler_config.get("type", "tpe").lower()
         if sampler_type == "grid" and "search_space" not in sampler_config:
             logger.error("Grid sampler selected but 'search_space' is missing in optimizer.sampler config.")
@@ -145,7 +146,7 @@ class OptunaOptimizer(Optimizer):
 
         # Validate pruner config (if pruning enabled)
         if self.cfg.optimizer.get("use_pruning", False):
-            pruner_type = self.cfg.optimizer.get("pruner_type", "median").lower()
+            pruner_type = self.cfg.optimizer.optuna_config.get("pruner_type", "median").lower()
             if pruner_type not in ["median", "successive_halving"]:
                 logger.warning(f"Unknown pruner_type '{pruner_type}'. Optuna might default or error.")
             # Add pruner-specific checks if needed
@@ -154,7 +155,7 @@ class OptunaOptimizer(Optimizer):
 
     def _configure_sampler(self):
         """Configure and return the appropriate sampler based on configuration."""
-        sampler_config = self.cfg.optimizer.get("sampler", {})
+        sampler_config = self.cfg.optimizer.optuna_config.get("sampler", {})
         sampler_type = sampler_config.get("type", "tpe").lower()
         seed = self.cfg.optimizer.random_state
 
@@ -334,7 +335,7 @@ class OptunaOptimizer(Optimizer):
             storage = f"sqlite:///{storage_path.resolve()}"
 
         # --- Check if resuming a specific study ---
-        study_to_resume = self.cfg.optimizer.get("resume_study_name", None)  # Get name from config
+        study_to_resume = self.cfg.optimizer.optuna_config.get("resume_study_name", None)
 
         try:
             if study_to_resume:
@@ -440,7 +441,7 @@ class OptunaOptimizer(Optimizer):
                     self.study.optimize,
                     func=self._objective,
                     n_trials=remaining_trials,
-                    n_jobs=self.cfg.optimizer.get("n_jobs", 1),
+                    n_jobs=self.cfg.optimizer.optuna_config.get("n_jobs", 1),
                     show_progress_bar=True,
                     # --- VVV REMOVED _checkpoint_callback VVV ---
                     callbacks=[self._trial_callback]  # Only log trial info
@@ -488,72 +489,72 @@ class OptunaOptimizer(Optimizer):
         logger.info(f"Restored {len(self.study.trials)} valid trials")
 
     def _objective(self, trial: Trial) -> float:
-        """Objective function for Optuna optimization."""
-        # Convert param bounds to Optuna parameter suggestions
-        params = {}
-        # Use self.optimizer_pbounds (or self.param_info) which was set during __post_init__
+        """
+        Objective function for Optuna, supporting advanced parameter suggestions like
+        log scale, step, categorical, and continuous ranges.
+        """
+        params: Dict[str, Any] = {}
         if not self.optimizer_pbounds:
             logger.error("Optimizer bounds not initialized in _objective. Cannot suggest parameters.")
-            raise optuna.exceptions.TrialPruned("Bounds not available")  # Prune trial if bounds missing
+            raise optuna.exceptions.TrialPruned("Bounds not available")
 
-        # V1.2 - Corrected int vs float range detection
-        for param_name, bounds_value in self.optimizer_pbounds.items():
-            suggested_value = None
+        for param_name, bound_config in self.optimizer_pbounds.items():
             try:
-                logger.debug(f"Suggesting for: '{param_name}', Bounds: {bounds_value} (Type: {type(bounds_value)})")
-                if isinstance(bounds_value, tuple) and len(bounds_value) == 2:
-                    # --- CORRECTED LOGIC ---
-                    # Check if BOTH bounds are actual Python integers
-                    if all(isinstance(v, int) for v in bounds_value):
-                        # Explicit Integer Range
-                        low, high = int(bounds_value[0]), int(bounds_value[1])
-                        if low == high:
-                            suggested_value = low
-                            trial.set_user_attr(f"fixed_{param_name}", True)
-                            logger.debug(" -> Fixed Int")
-                        else:
-                            suggested_value = trial.suggest_int(param_name, low, high)
-                            logger.debug(" -> suggest_int (Explicit Int Range)")
-                    # Otherwise (at least one is float, or they are floats like 0.0, 1.0), treat as float
-                    else:
-                        low, high = float(bounds_value[0]), float(bounds_value[1])
-                        if abs(low - high) < 1e-9:  # Check for fixed float
-                            suggested_value = low
-                            trial.set_user_attr(f"fixed_{param_name}", True)
-                            logger.debug(" -> Fixed Float")
-                        else:
-                            # This now correctly handles (0.0, 1.0)
-                            suggested_value = trial.suggest_float(param_name, low, high)
-                            logger.debug(" -> suggest_float (Float Range or Mixed)")
-                    # --- END OF CORRECTION ---
+                # Case 1: Rich dictionary format (e.g., {"range": (0, 1), "log": True})
+                # This is for our new advanced settings.
+                if isinstance(bound_config, dict) and "range" in bound_config:
+                    low, high = bound_config["range"]
+                    log = bound_config.get("log", False)
+                    step = bound_config.get("step", None)
 
-                elif isinstance(bounds_value, list):
-                    # Categorical logic (remains the same)
-                    if len(bounds_value) == 1:
-                        suggested_value = bounds_value[0]
-                        trial.set_user_attr(f"fixed_{param_name}", True)
-                        logger.debug(" -> Fixed Categorical")
+                    # Check if it should be an integer suggestion
+                    is_integer_range = isinstance(low, int) and isinstance(high, int) and (
+                                step is None or isinstance(step, int))
+
+                    if is_integer_range:
+                        params[param_name] = trial.suggest_int(param_name, low, high, step=step or 1, log=log)
+                        logger.debug(
+                            f"Suggesting for '{param_name}': Int range [{low}-{high}], Step={step or 1}, Log={log}")
+                    else:  # Otherwise, it's a float
+                        params[param_name] = trial.suggest_float(param_name, float(low), float(high), step=step,
+                                                                 log=log)
+                        logger.debug(
+                            f"Suggesting for '{param_name}': Float range [{low}-{high}], Step={step}, Log={log}")
+
+                # Case 2: List format (always for categorical choices)
+                # In YAML: `param: [value1, value2, value3]`
+                elif isinstance(bound_config, list):
+                    params[param_name] = trial.suggest_categorical(param_name, bound_config)
+                    logger.debug(f"Suggesting for '{param_name}': Categorical {bound_config}")
+
+                # Case 3: Tuple format (for simple continuous ranges, backward compatibility)
+                # In YAML: `param: (0.0, 1.0)`
+                elif isinstance(bound_config, tuple):
+                    if len(bound_config) != 2: raise ValueError("Range tuple must have 2 values.")
+                    low, high = bound_config
+                    if isinstance(low, int) and isinstance(high, int):
+                        params[param_name] = trial.suggest_int(param_name, low, high)
+                        logger.debug(f"Suggesting for '{param_name}': Simple Int range [{low}-{high}]")
                     else:
-                        suggested_value = trial.suggest_categorical(param_name, bounds_value)
-                        logger.debug(" -> suggest_categorical")
-                elif isinstance(bounds_value, (int, float)):
-                    # Fixed value logic (remains the same)
-                    suggested_value = bounds_value
-                    trial.set_user_attr(f"fixed_{param_name}", True)
-                    logger.debug(" -> Fixed Value")
+                        params[param_name] = trial.suggest_float(param_name, float(low), float(high))
+                        logger.debug(f"Suggesting for '{param_name}': Simple Float range [{low}-{high}]")
+
+                # Case 4: Single number (fixed parameter, not optimized)
+                elif isinstance(bound_config, (int, float)):
+                    params[param_name] = bound_config
+                    logger.debug(f"Using fixed value for '{param_name}': {bound_config}")
+
                 else:
-                    logger.warning(f"Unsupported bound type: {type(bounds_value)} for '{param_name}'.")
-                    raise optuna.exceptions.TrialPruned(f"Unsupported bounds for {param_name}")
+                    raise ValueError(f"Unsupported bounds format for '{param_name}': {bound_config}")
 
-                params[param_name] = suggested_value
             except Exception as e_suggest:
-                logger.error(f"Error during suggestion for '{param_name}' with bounds {bounds_value}: {e_suggest}",
-                             exc_info=True)
-                raise  # Re-raise error to stop trial
+                logger.error(
+                    f"Error during parameter suggestion for '{param_name}' with config {bound_config}: {e_suggest}",
+                    exc_info=True)
+                raise  # Re-raise to stop the trial, as it's a config error.
 
         try:
             # Run the async function in a synchronous context
-            import asyncio
             result = asyncio.run(self.sd_target_function(params))
 
             # Update metrics

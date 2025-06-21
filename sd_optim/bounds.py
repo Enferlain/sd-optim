@@ -548,37 +548,57 @@ class ParameterHandler:
         # Return the full metadata (with updated bounds) AND the specific bounds for the optimizer
         return params_info, optimizer_pbounds
 
-    # V1.1 - Updated validation logic from bounds.py
+    # V1.2 - Better validation, more types and conflict warnings
     @staticmethod
     def validate_custom_bounds(
-            custom_bounds: Optional[Dict[str, Union[List[float], List[int], int, float]]]
-    ) -> Dict[str, Union[Tuple[float, float], float, int, List]]:
-        """Validates the custom_bounds dictionary and returns typed bounds."""
-        if custom_bounds is None:
-            return {}
-        validated_bounds: Dict[str, Union[Tuple[float, float], float, int, List]] = {}
-        for param_name, bound in custom_bounds.items():
+            custom_bounds: Optional[Dict[str, Any]]
+    ) -> Dict[str, Any]:
+        if custom_bounds is None: return {}
+
+        validated_bounds: Dict[str, Any] = {}
+        for param_name, bound_config in custom_bounds.items():
             try:
-                if isinstance(bound, (list, ListConfig)):  # Check omegaconf list too
-                    bound_list = list(bound)  # Convert if ListConfig
-                    if len(bound_list) == 2 and all(isinstance(v, (int, float)) for v in bound_list):
-                        val1, val2 = float(bound_list[0]), float(bound_list[1])
-                        if val1 > val2: raise ValueError("Lower bound > Upper bound")
-                        validated_bounds[param_name] = (val1, val2)  # Range
-                    elif all(isinstance(v, (int, float)) for v in bound_list):
-                        # Categorical: Keep as list, ensure numeric
-                        validated_bounds[param_name] = [float(v) if isinstance(v, float) else int(v) for v in
-                                                        bound_list]
-                    else:
-                        raise ValueError("List must be [min, max] or categorical [v1, v2,...] of numbers.")
-                elif isinstance(bound, (int, float)):
-                    validated_bounds[param_name] = float(bound) if isinstance(bound, float) else int(bound)  # Fixed
+                # Case 1: Rich dictionary format (for ranges with options)
+                if isinstance(bound_config, (dict, DictConfig)):
+                    if "range" not in bound_config:
+                        raise ValueError("Rich bound format requires a 'range' key.")
+
+                    validated_param = {}
+                    range_val = list(bound_config["range"])
+                    if len(range_val) != 2: raise ValueError("'range' must have 2 values [min, max].")
+                    validated_param["range"] = (float(range_val[0]), float(range_val[1]))
+
+                    if "log" in bound_config: validated_param["log"] = bool(bound_config["log"])
+                    if "step" in bound_config: validated_param["step"] = float(bound_config["step"])
+
+                    # --- ADDED: Edge Case Validation ---
+                    if validated_param.get("log") and validated_param.get("step"):
+                        logger.warning(
+                            f"For parameter '{param_name}', both 'log' and 'step' are specified. "
+                            f"Optuna will prioritize 'log' sampling over the step interval."
+                        )
+                    # --- END OF ADDITION ---
+
+                    validated_bounds[param_name] = validated_param
+
+                # Case 2: List format (always for categorical)
+                elif isinstance(bound_config, (list, ListConfig)):
+                    validated_bounds[param_name] = list(bound_config)
+
+                # Case 3: Tuple format (simple continuous range)
+                elif isinstance(bound_config, tuple):
+                    if len(bound_config) != 2: raise ValueError("Range tuple must have 2 values (min, max).")
+                    validated_bounds[param_name] = bound_config
+
+                # Case 4: Fixed value
+                elif isinstance(bound_config, (int, float)):
+                    validated_bounds[param_name] = bound_config
+
                 else:
-                    raise ValueError("Bound type must be list, int, or float.")
-            except ValueError as e:
-                logger.error(
-                    f"Invalid custom bound configuration for '{param_name}': {bound}. Error: {e}. Skipping this bound.")
-            except Exception as e_gen:
-                logger.error(
-                    f"Unexpected error validating custom bound for '{param_name}': {bound}. Error: {e_gen}. Skipping.")
+                    raise ValueError(
+                        "Bound must be a tuple (range), list (categorical), dict (advanced), int, or float.")
+
+            except Exception as e:
+                logger.error(f"Invalid custom bound for '{param_name}': {bound_config}. Error: {e}. Skipping.")
+
         return validated_bounds

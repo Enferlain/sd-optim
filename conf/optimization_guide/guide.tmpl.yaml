@@ -1,112 +1,100 @@
-# Example Optimization Guide using Custom Blocks
+# sd-optim Optimization Guide Template
+# This file tells the optimizer WHAT to optimize and HOW.
+# It defines which parameters of a merge method are applied to which parts of the model.
 
-# --- IMPORTANT ---
-# This tells the ParameterHandler in bounds.py to use our custom block definition
-# for components listed below that are also defined within sdxl-optim_blocks.yaml.
-# It MUST match the 'identifier' in the block config file AND be registered by setup_custom_blocks.
-#custom_block_config_id: "sdxl-optim_blocks"
+# --- [Optional] Custom Block Configuration ---
+# If you are using custom-defined blocks (e.g., grouping UNET layers in a non-standard way),
+# specify the identifier of your custom block .yaml file here. This file must be in your 'configs_dir'.
+# The optimizer will use this config for any component listed below that is defined within it.
+# For any other component, it will fall back to the base model's standard block and key structure.
+# custom_block_config_id: "sdxl-optim_blocks"
 
-# --- Component Optimization Strategies ---
-# Define how parameters (like 'alpha' from weighted_sum) are applied.
-# The 'name' MUST match a component name in the config identified by 'custom_block_config_id'
-# (if defined there) OR in the base model config (e.g., 'sdxl-sgm').
-
+# --- Component & Strategy Definitions ---
+# This is the core of the guide. It's a list where each item defines the strategy for a model component.
+# A component MUST match a name in either your custom_block_config or the base model config (e.g., 'diffuser', 'clip_l').
 components:
-  - name: diffuser # Define the component
-    optimize_params: [alpha, rank_ratio] # Default params for strategies below
-    # Use multiple 'group' strategies for different layer types/stages
+  # --- Example 1: Detailed 'diffuser' (UNET) strategy using multiple groups ---
+  - name: diffuser
+    # You can specify which merge method parameters this component's strategies should apply to.
+    # This is useful if your merge method has multiple optimizable parameters (e.g., alpha, rank, constraint).
+    optimize_params: [alpha, rank_ratio]
     strategies:
-      - type: group
-        groups:
-          - name: unet_down_op_early # First downsample (input_blocks.3.0.op.*)
-            # Optimize this, but constrain HIGH based on findings for non-grey results
-            keys: ["*.input_blocks.3.0.op.*"]
+      # You can have multiple strategies per component. The optimizer will process them in order.
+      # It's crucial that a single model key (or block) is not assigned to more than one parameter.
 
+      # Strategy A: Use 'group' to apply shared parameters to specific sets of layers.
       - type: group
+        # Optional: Override the component-level optimize_params for just this strategy.
+        # optimize_params: [alpha]
         groups:
-          - # out8 stuff
-          - name: unet_out08 # Blocks 1, 2
+          - name: unet_early_in # A descriptive name for this group of blocks/keys.
             keys:
-              - "model.diffusion_model.input_blocks.8.0.skip_connection.bias"
+              # Use wildcards to select multiple blocks or keys.
+              - "UNET_IN00" # A specific block name from your custom block config.
+              - "UNET_IN0[1-3]" # A pattern that matches UNET_IN01, UNET_IN02, UNET_IN03.
+              # - "*.input_blocks.0.*" # You can also target raw keys if not using blocks.
+          - name: unet_mid
+            keys: ["UNET_MID00"]
 
-      - type: group
-        groups:
-         # Input Attention (Keep these optimizable, trended higher alpha)
-         - name: in04_attn1
-           keys: ["*.input_blocks.4.*.attn1.*.weight"]
-
-  - name: # clip_l # Define next component
-    optimize_params: [alpha] # Default params
-    strategies:
-      - type: select # Apply select strategy (can target blocks or keys)
-        optimize_params: [alpha] # Only apply alpha via select here
+      # Strategy B: Use 'select' to optimize individual layers with their own unique parameters.
+      - type: select
         keys:
-          - "CLIP_L_EMBEDDING" # Block name
-          - "CLIP_L_IN1[0-1]" # Block pattern
-          - "*.output_blocks.5.*.conv2.*" # Key pattern
-      - type: single # Apply single strategy to remaining params for this component
-        optimize_params: [constraint, rank_ratio] # Apply to constraint & rank_ratio
+          - "*.output_blocks.8.*" # Target a specific key pattern from the base model config.
+        # By default, this will create a unique 'alpha' and 'rank_ratio' for each matching key.
 
-  - name: clip_g # Define next component
-    optimize_params: [alpha] # Default params
+  # --- Example 2: Simple 'clip_l' strategy using 'all' ---
+  - name: clip_l
+    # 'all' is the simplest strategy. It creates a unique, optimizable parameter
+    # for every single block/key within this component.
+    # Use with caution, as this can create hundreds of parameters!
     strategies:
-      - type: all # Apply select strategy (can target blocks or keys)
-        optimize_params: [alpha] # Only apply alpha via select here
+      - type: all
+        optimize_params: [alpha] # Only optimize 'alpha' for every block in clip_l.
 
-  # Example 5: Do not optimize 'vae'
-  # - name: vae
-  #   strategy: none
+  # --- Example 3: Mixed strategy for 'clip_g' ---
+  - name: clip_g
+    strategies:
+      # Strategy A: Apply a single, shared 'alpha' value to all embedding-related keys.
+      - type: single
+        optimize_params: [alpha]
+        # We can target raw keys even if a custom block config exists.
+        target_type: key
+        keys:
+          - "*.embedding.*" # A wildcard pattern for keys.
+          # Note: The 'single' strategy also needs a 'keys' list to know what to apply the single param to.
 
-  # Example 6: Placeholder for layer adjustments (not currently optimized)
-  - name: layer_adjustments
-    strategy: none
-    parameters: # These are NOT optimized if strategy is 'none', just kept for reference
-      detail1: [-2.18, 3]
-      detail2: [-2.18, 4]
-      detail3: [0, 4]
-      contrast: [2.18, 7.5]
-      brightness: [-4, -2]
-      col1: [-10, 10]
-      col2: [-10, 10]
-      col3: [-10, 10]
+      # Strategy B: Don't optimize the rest of the clip_g layers at all.
+      - type: none # 'none' is a special strategy that does nothing. Useful for excluding parts of a component.
 
-# --- Custom Bounds ---
-# Optional section to override the default bounds (0.0, 1.0) for specific parameters
-# generated by the strategies above.
-# Parameter names depend on the component name, strategy, key/group names, and the merge method's parameter name.
-# See the [[Configuration]] wiki page for detailed naming conventions.
+  # --- Example 4: Do not optimize the 'vae' component at all ---
+  - name: vae
+    strategies:
+      - type: none
+
+# --- [Optional] Custom Parameter Bounds ---
+# This section allows you to override the default bounds for any parameter generated by the strategies above.
+# The parameter name is constructed as:
+# - For 'select' or 'all': {key_or_block_name}_{param_name} (e.g., UNET_IN04_alpha)
+# - For 'group' or 'single': {group_name}_{param_name} (e.g., unet_early_in_alpha)
 custom_bounds:
-  # --- Examples based on merge_method having an 'alpha' parameter ---
+  # --- Override bounds for a specific parameter generated by a 'select' or 'all' strategy ---
+  # "UNET_IN05_alpha": [0.1, 0.5] # Constrain the alpha for this specific block.
 
-  # If strategy: all for 'unet'
-  # "unet.input_blocks.0.0.weight_alpha": [0.1, 0.9]
+  # --- Override bounds for a parameter shared by a 'group' or 'single' strategy ---
+  # "unet_mid_alpha": [0.4, 0.6] # Constrain the alpha for the middle block group.
 
-  # If strategy: select for 'txt1' with key "transformer.text_model.encoder.layers.10.mlp.fc1.weight"
-  # "transformer.text_model.encoder.layers.10.mlp.fc1.weight_alpha": [0.2, 0.8]
+  # --- Override bounds for ALL parameters with a certain base name (e.g., 'rank_ratio') ---
+  # This is a powerful global override.
+  # rank_ratio: [0.05, 0.5] # Constrain all rank_ratio parameters, regardless of block/group.
 
-  # If strategy: group for 'txt2' with group name 'text_encoder_early_layers'
-  # text_encoder_early_layers_alpha: [0.3, 0.7]
+  # --- Set a FIXED value for a parameter (it will no longer be optimized) ---
+  # This is useful for turning off optimization for a specific part.
+  # "UNET_OUT08_alpha": 0.0 # Force this block's alpha to always be 0.0.
 
-  # If strategy: single for 'vae'
-  # vae_single_param_alpha: [0.4, 0.6]
+  # --- Define CATEGORICAL options for a parameter ---
+  # The optimizer will choose one of these specific values instead of a continuous range.
+  # "some_group_lora_dim": [8, 16, 32, 64]
 
-  # --- General Examples ---
-  # Override bounds for *all* parameters named 'constraint' (if generated by the strategies)
-  # constraint: [0.01, 0.2]
-
-  # Override bounds for *all* parameters named 'k'
-  # k: [0.1, 0.5]
-
-  # Set a fixed value for a parameter (it won't be optimized)
-  # some_parameter_name: 0.75
-
-  # Define categorical options
-  # some_categorical_parameter: [128, 256, 512]
-
-  # Define binary options
-  # some_binary_parameter: [0, 1]
-
-
-# --- Deprecated/Obsolete Sections ---
-# custom_ranges: # Removed - Use custom_bounds with specific key names instead
-# merge_keys: # Removed - sd-mecha handles key filtering differently
+  # --- Define BINARY options (0 or 1) ---
+  # This is useful for boolean flags in a merge method.
+  # "unet_mid_early_exit": [0, 1]

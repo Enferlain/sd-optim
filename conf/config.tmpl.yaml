@@ -1,153 +1,168 @@
+# sd-optim Configuration Template
+# This is the main configuration file. Copy this to 'config.yaml' and edit it for your run.
+# Tip: In YAML, 'null' means the value is not set.
+
+# --- Default Loading Structure (Hydra) ---
+# This section tells Hydra how to compose the final configuration.
+# It loads this file (_self_), then a payload file, then the optimization guide.
 defaults:
   - _self_
-  # Select payload configuration based on the chosen webui
-  - payloads: cargo_${webui}  # Dynamically loads cargo_a1111, cargo_forge, etc.
+  - payloads: # cargo_a1111, cargo_forge, etc.
+  # Loads the optimization guide which tells the optimizer WHAT to optimize.
   - optimization_guide: guide
 
-run_name: ${merge_method}_${scorer_method} # Uses cfg.merge_method even for recipe opt
+# --- Run & Logging Configuration (Hydra) ---
+# Sets the name for the run, used in the output directory name.
+run_name: ${merge_method}_${scorer_method} # Example: weighted_sum_['laion','chad']
 hydra:
   run:
+    # Defines the output directory for logs, images, and merged models for each run.
     dir: logs/${now:%Y-%m-%d_%H-%M-%S}_${run_name}
+  # verbose: true # Uncomment for very detailed Hydra logging during startup.
 
 # --- WebUI Connection ---
-webui_urls: # Maps UI identifiers to base URLs
+webui_urls: # A map of WebUI identifiers to their base URLs.
   a1111: http://localhost:7860
   forge: http://localhost:7860
   reforge: http://localhost:7860
   comfy: http://localhost:8188
   swarm: http://localhost:7801
-webui: forge # Choose your target WebUI: a1111, forge, reforge, comfy, swarm
-url: "${webui_urls[${webui}]}" # Automatically selects the URL based on 'webui' setting
+webui: forge # Choose your target WebUI: a1111, forge, reforge, comfy, swarm.
+url: "${webui_urls[${webui}]}" # This line automatically selects the correct URL from the map above. Do not change.
 
-# --- File Paths ---
-configs_dir: D:\stable-diffusion-webui-forge\extensions\sd-optim\sd_optim\model_configs # Or e.g., "path/to/my/block_configs"
-conversion_dir: D:\stable-diffusion-webui-forge\extensions\sd-optim\sd_optim\model_configs # Or e.g., "path/to/my/converter_scripts"
-wildcards_dir: D:\stable-diffusion-webui-forge\extensions\Umi-AI-debloat\wildcards # Directory containing wildcard files
-scorer_model_dir: D:\stable-diffusion-webui-forge\models\Scorer # Directory to store/find scorer models
+# --- Core File Paths ---
+# These paths tell the optimizer where to find necessary files.
+configs_dir: path/to/sd-optim/sd_optim/model_configs # Path to your custom sd-mecha block definition .yaml files.
+conversion_dir: path/to/sd-optim/sd_optim/model_configs # Path to your custom sd-mecha converter .py scripts.
+wildcards_dir: path/to/your/wildcards # Path to your wildcard files for dynamic prompting.
+scorer_model_dir: path/to/your/models/Scorer # Path where scorer models are downloaded to and loaded from.
 
 # --- Model Inputs ---
-model_paths:  # List of paths to input models (.safetensors, .ckpt, etc.)
+# A list of full paths to the models you want to use in the merge.
+# Order matters, as the index is used for base_model and fallback_model.
+model_paths:
   - path/to/model_a.safetensors
   - path/to/model_b.safetensors
-  # - path/to/lora.safetensors # Loras are automatically converted
-base_model_index: 0 # Index (starting from 0) of the model in model_paths to use as base for delta methods
-fallback_model_index: 0 # Optional: Index of model in model_paths to use for missing keys (-1 or null for none)
+  # - path/to/any_lora.safetensors # LoRAs are automatically detected and converted to deltas.
+base_model_index: 0 # Index (from 0) of the model in model_paths to use as the base for 'delta' methods (e.g., add_difference).
+fallback_model_index: -1 # Optional: Index of a model to use for any missing keys in the final merge. Use -1 or null to disable.
 
 # --- Merge Settings (sd-mecha) ---
-merge_method: weighted_sum # Name of the sd-mecha merge method (built-in or custom)
-device: cpu               # Device for merging: 'cuda' or 'cpu'
-threads: 4                # Number of threads for sd-mecha merge execution
-merge_dtype: fp64         # Precision for merge calculation: fp16, bf16, fp32, fp64
-save_dtype: bf16          # Precision for saving the final model: fp16, bf16, fp32, fp64
-add_extra_keys: False     # Add v_pred and ztsnr keys for v-prediction models (True/False)
+merge_method: weighted_sum # Name of the sd-mecha merge method to optimize (can be built-in or custom from merge_methods.py).
+device: cuda # Device for merging: 'cuda' for GPU (faster), 'cpu' for system RAM (uses less VRAM).
+threads: 4 # Number of threads for sd-mecha to use during merging. More can be faster but uses more RAM.
+merge_dtype: fp32 # Precision for calculations: fp16, bf16, fp32, fp64. fp32 or fp64 is recommended for accuracy.
+save_dtype: bf16 # Precision for the final saved model file: fp16, bf16, fp32, fp64. bf16 or fp16 is recommended for size.
+add_extra_keys: False # For v-prediction models, set to True to add v_pred and ztsnr keys to the final model.
 
 # --- General Workflow ---
-save_merge_method_code: False # Save the source code of the merge method used (True/False)
-save_best: True           # Save the best-scoring model separately (True/False)
+save_merge_artifacts: True # If True, saves a self-contained, runnable .py script that can reproduce the merge exactly.
+save_best: True # If True, saves a copy of the best-scoring model with '_best' appended to the filename.
 
 # --- Optimization Mode ---
-optimization_mode: merge  # "merge", "layer_adjust", or "recipe"
+optimization_mode: merge # "merge": Optimizes parameters for a single merge method. "recipe": Optimizes parameters within a .mecha file. "layer_adjust": Optimizes layer fine-tuning parameters.
 
-# Settings for "recipe" optimization mode
+# Settings for "recipe" optimization mode. Only used if optimization_mode is "recipe".
 recipe_optimization:
-  enabled: False          # Enable/disable recipe optimization mode
-  recipe_path: path/to/recipe.mecha # Path to the .mecha recipe file
-  target_nodes: '&1'      # Node reference(s) within the recipe to optimize (e.g., '&3', ['&3', '&4'])
+  recipe_path: path/to/your/recipe.mecha # Path to the .mecha recipe file to be optimized.
+  target_nodes: '&8' # The reference(s) to the node(s) inside the .mecha file to optimize (e.g., '&8', ['&8', '&12']).
+  target_params: [alpha, beta] # The name(s) of the parameter(s) within the target node(s) to optimize.
 
 # --- Optimizer Configuration ---
 optimizer:
-  # Choose ONE optimizer type
-  bayes: True  # Use bayesian-optimization library
-  optuna: False # Use Optuna library
-  # tpe: False     # (Deprecated/Not Implemented)
-  # atpe: False    # (Deprecated/Not Implemented)
+  # --- CHOOSE ONE OPTIMIZER ---
+  bayes: False # Use the 'bayesian-optimization' library. Slower but can be effective for complex spaces.
+  optuna: True # Use the 'optuna' library. Powerful, flexible, with many samplers and a dashboard.
+  # tpe: False # (Deprecated)
+  # atpe: False # (Deprecated)
 
   # --- Common Optimizer Settings ---
-  random_state: -1     # Seed for reproducibility (-1 for random)
-  init_points: 10       # Number of initial exploration points/trials
-  n_iters: 10          # Number of subsequent exploitation iterations/trials
+  random_state: -1 # Seed for reproducibility. Use -1 for a random seed on each run, or a specific number (e.g., 42) for identical runs.
+  init_points: 10 # Number of initial random exploration trials before the optimizer starts its "smart" exploitation.
+  n_iters: 20 # Number of subsequent exploitation trials. Total trials = init_points + n_iters.
 
   # --- Settings specific to 'bayes' optimizer ---
-  bayes_config: # NEW Sub-section
-    load_log_file: null   # Path to previous run's log file to resume (null or path string)
-    reset_log_file: False  # Overwrite log file if resuming (True/False)
-    sampler: sobol        # Initial sampling strategy: random, latin_hypercube, sobol, halton
+  bayes_config:
+    load_log_file: null # Path to a previous run's .json log file to resume from. Set to null to start fresh.
+    reset_log_file: False # If resuming, set to True to overwrite the new log file instead of appending.
+    sampler: sobol # Initial sampling strategy: random, latin_hypercube, sobol, halton.
     acquisition_function:
-      kind: ucb             # ucb, ei, poi
-      kappa: 3              # Parameter for ucb
-      xi: 0.05              # Parameter for ei, poi
-      kappa_decay: 0.98     # Decay for ucb kappa
-      kappa_decay_delay: ${optimizer.init_points} # Delay before decay starts
-    bounds_transformer:   # Domain reduction settings
-      enabled: True         # Enable/disable domain reduction
-      gamma_osc: 0.65
-      gamma_pan: 0.9
-      eta: 0.83
+      kind: ucb # 'ucb' (Upper Confidence Bound), 'ei' (Expected Improvement), 'poi' (Probability of Improvement).
+      kappa: 3.0 # Parameter for 'ucb'. Higher kappa encourages exploration.
+      xi: 0.05 # Parameter for 'ei' and 'poi'. Higher xi encourages exploration.
+      kappa_decay: 0.98 # Decays kappa over time to shift from exploration to exploitation.
+      kappa_decay_delay: ${optimizer.init_points} # How many iterations to wait before starting kappa decay.
+
+    bounds_transformer: # Domain reduction settings.
+      enabled: False # Enable/disable domain reduction, which narrows the search space over time.
+      gamma_osc: 0.7
+      gamma_pan: 1.0
+      eta: 0.9
       minimum_window: 0.0
 
   # --- Settings specific to 'optuna' optimizer ---
-  optuna_config: # NEW Sub-section
-    storage_dir: optuna_db # Folder to save study databases to
-    resume_study_name: null # Name of study to continue from
-    use_pruning: False         # Enable Optuna trial pruning (True/False)
-    pruner_type: median      # Pruner type: median, successive_halving
-    early_stopping: False    # Enable early stopping (True/False)
-    patience: 10             # Trials without improvement before stopping
-    min_improvement: 0.001   # Minimum score increase to reset patience
-    n_jobs: 1                # Number of parallel jobs for Optuna (use with caution)
+  optuna_config:
+    storage_dir: optuna_db # Folder where Optuna's study database files (.db) will be saved.
+    resume_study_name: null # To resume a specific study, provide its name here (e.g., "run_20250612_191003_tpe"). Set to null for new runs.
+    use_pruning: False # Enable Optuna trial pruning to stop unpromising trials early.
+    pruner_type: median # Pruner type: 'median' or 'successive_halving'.
+    early_stopping: False # Enable early stopping for the entire study if no improvement is seen.
+    patience: 10 # Number of trials without improvement before stopping the study.
+    min_improvement: 0.001 # Minimum score increase required to reset the patience counter.
+    n_jobs: 1 # Number of parallel jobs for Optuna. >1 can speed up optimization but is EXPERIMENTAL and may cause issues.
     sampler:
-      type: tpe              # Sampler type: tpe, random, cmaes, gp, qmc, grid, nsgaii, botorch
-      # --- TPE specific ---
-      multivariate: True
-      group: True
+      type: tpe # Sampler algorithm: tpe, random, cmaes, gp, qmc, grid.
+      # --- TPE specific (Tree-structured Parzen Estimator) ---
+      multivariate: True # Use multivariate TPE, can capture correlations between parameters.
+      group: True # Group parameters together for optimization.
       # warn_independent_sampling: True
       # constant_liar: False
       # --- CMA-ES specific ---
-      # restart_strategy: None # 'ipop', 'bipop'
-      # sigma0: None
-      # --- QMC specific ---
-      # qmc_type: sobol # 'sobol', 'halton', 'lhs'
+      # restart_strategy: 'ipop' # Strategy for restarting the sampler: 'ipop', 'bipop', or null.
+      # sigma0: 0.1 # Initial step-size.
+      # --- QMC specific (Quasi-Monte Carlo) ---
+      # qmc_type: 'sobol' # 'sobol', 'halton', or 'lhs'.
       # scramble: True
       # --- Grid specific ---
-      # search_space: # Define exact search points for grid sampler
-      #   param1: [0.1, 0.5, 0.9]
-      #   param2: [10, 20, 30]
-      # --- NSGAII specific (Multi-objective) ---
-      # population_size: 50
-      # mutation_prob: None
-      # crossover_prob: 0.9
-      # swapping_prob: 0.5
-    launch_dashboard: True # Launch dashboard after run?
-    dashboard_port: 8080  # Port for the dashboard
+      # search_space: # Define the exact points for the grid sampler to try.
+      #   alpha: [0.1, 0.5, 0.9]
+      #   beta: [10, 20, 30]
+    launch_dashboard: True # If True, automatically launches the Optuna dashboard in the background when the run starts.
+    dashboard_port: 8080 # Port for the Optuna dashboard.
 
 # --- Image Generation ---
-batch_size: 1             # Number of images generated per payload per iteration
-save_imgs: True           # Save generated images (True/False)
-img_average_type: arithmetic # Method for averaging scores within a batch: geometric, arithmetic, quadratic
+batch_size: 1 # Number of images to generate for EACH payload per iteration.
+save_imgs: True # Save all generated images to the run's 'imgs' folder.
+img_average_type: arithmetic # How to average scores within a batch: 'arithmetic', 'geometric', or 'quadratic'.
+background_check: # Settings for the background blackness scorer.
+  enabled: False # Set to true to enable the check. This scorer is useful for character-focused models.
+  payloads: [] # List of payload names (e.g., ["noob1", "noob2"]) to apply this specific check to.
+
 # --- Generator/aiohttp Settings ---
-generator_concurrency_limit: 11 # Max simultaneous API requests to WebUI
-generator_keepalive_interval: 60 # Interval (s) for sending TCP Keep-Alive probes (e.g., 60)
-generator_total_timeout: 0    # Max total time (s) for one API call (e.g., 3600=1hr). Set to 0 or null to disable client timeout.
+generator_concurrency_limit: 10 # Max number of simultaneous API requests to the WebUI.
+generator_keepalive_interval: 60 # Interval (seconds) for sending TCP Keep-Alive probes to prevent connection drops.
+generator_total_timeout: 0 # Max total time (seconds) for a single API call. Set to 0 or null to disable client timeout.
 
 # --- Scoring ---
-# For detailed scorer descriptions, see wiki/documentation.
-scorer_method: [manual] # List of scorer identifiers (e.g., laion, chad, clip, blip, imagereward, hpsv21, pick, cityaes, manual)
-scorer_average_type: arithmetic # Method for averaging scores across different scorers: geometric, arithmetic, quadratic
-scorer_weight:            # Optional weights for each scorer (default is 1)
+# List of scorer identifiers to use. The final score is an average of these.
+# See scorer.py for all available identifiers (e.g., laion, hpsv21, pick, cityaes, luminaflex, manual, background_blackness).
+scorer_method: [manual]
+scorer_average_type: arithmetic # How to average scores from DIFFERENT scorers: 'arithmetic', 'geometric', or 'quadratic'.
+scorer_weight: # Optional weights for each scorer (default is 1.0).
   # cityaes: 1.2
   # laion: 0.5
-scorer_default_device: cpu # Default device for scorers: 'cpu' or 'cuda'
-scorer_device:            # Optional device override per scorer
+scorer_default_device: cpu # Default device for scorers: 'cpu' or 'cuda'.
+scorer_device: # Optional device override per scorer.
   # imagereward: cuda
-scorer_alt_location:      # Optional alternative paths for scorer models
+scorer_alt_location: # Optional alternative paths for specific scorer models.
   # imagereward:
   #   model_name: ImageReward.pt
   #   model_dir: path/to/your/imagereward/folder
-scorer_print_individual: True # Print score from each individual scorer (True/False)
+scorer_print_individual: True # Print the score from each individual scorer in the console.
 
 # --- Visualization ---
 visualizations:
-  convergence_plot: True  # Generate plot showing score over iterations
-  # scatter_plot: False     # Not implemented
-  # unet_diagram: False     # Deprecated or needs update for sd-mecha
-  # heatmap: False          # Not implemented
+  convergence_plot: True # Generate a plot showing the score over iterations.
+  # scatter_plot: False # (Not implemented)
+  # unet_diagram: False # (Deprecated)
+  # heatmap: False # (Not implemented)

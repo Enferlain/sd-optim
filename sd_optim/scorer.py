@@ -100,11 +100,11 @@ MODEL_DATA = {
     "luminaflex": {  # <<< Our identifier
         "url": None,
         "file_name": "AnatomyFlaws-v14.7_adabelief_fl_naflex_4670_s1K.safetensors",
-        # "AnatomyFlaws-v11.3_adabelief_fl_naflex_3000_s9K.safetensors",
-        # "AnatomyFlaws-v6.6_adabeleif_fl_sigmoid_so400m_naflex_efinal_s10K_final.safetensors", # Head filename
+        # "file_name": "AnatomyFlaws-v11.3_adabelief_fl_naflex_3000_s9K.safetensors",
+        # "file_name": "AnatomyFlaws-v6.6_adabeleif_fl_sigmoid_so400m_naflex_efinal_s10K_final.safetensors", # Head filename
         "config_name": "AnatomyFlaws-v14.7_adabelief_fl_naflex_4670.config.json",
-        # "AnatomyFlaws-v11.3_adabelief_fl_naflex_3000.config.json",
-        # "AnatomyFlaws-v6.6_adabeleif_fl_sigmoid_so400m_naflex.config.json" # Config filename
+        # "config_name": "AnatomyFlaws-v11.3_adabelief_fl_naflex_3000.config.json",
+        # "config_name": "AnatomyFlaws-v6.6_adabeleif_fl_sigmoid_so400m_naflex.config.json" # Config filename
     },
     "lumidinov2l": {
         "url": None,

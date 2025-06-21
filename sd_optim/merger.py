@@ -357,12 +357,24 @@ class Merger:
 
     def _slice_models(self, prepared_model_nodes: List[RecipeNodeOrValue], merge_method: MergeMethod) -> List[
         RecipeNodeOrValue]:
-        """Slices the model list to match the expected number for non-varargs methods."""
+        """Slices the model list to match the expected number of model-type arguments."""
         param_info = merge_method.get_param_names()
         if param_info.has_varargs():
-            return prepared_model_nodes  # Method accepts variable args, no slicing needed
+            return prepared_model_nodes
 
-        expected_num_models = len(param_info.args)  # Number of positional args is the expected count
+        # --- THIS IS THE FIX ---
+        # Instead of just counting all arguments, we check their types.
+        input_types = merge_method.get_input_types().args
+
+        # Count how many arguments expect a StateDict (i.e., a model) vs a plain Tensor/value
+        expected_num_models = 0
+        for arg_type in input_types:
+            # get_origin helps handle types like StateDict[Tensor]
+            origin_type = getattr(arg_type, '__origin__', arg_type)
+            if origin_type and issubclass(origin_type, sd_mecha.extensions.merge_methods.StateDict):
+                expected_num_models += 1
+        # For weighted_sum, this will correctly count 2 (for 'a' and 'b').
+
         num_provided = len(prepared_model_nodes)
 
         if num_provided > expected_num_models:
@@ -372,7 +384,6 @@ class Merger:
             )
             return prepared_model_nodes[:expected_num_models]
         elif num_provided < expected_num_models:
-            # This case should ideally be caught earlier or handled by defaults
             logger.warning(
                 f"Merge method '{merge_method.identifier}' expects {expected_num_models} model arguments, "
                 f"but only {num_provided} were prepared. This might lead to errors."

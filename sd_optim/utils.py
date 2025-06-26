@@ -721,6 +721,7 @@ def main():
         output_dtype=SAVE_DTYPE,
         threads=THREADS,
         model_dirs=[MODELS_DIR],
+        check_mandatory_keys=False,
     )
     print("\\nMerge complete!")
 

@@ -2204,7 +2204,6 @@ class MergeMethods:
 
         return merged.reshape(original_shape)
 
-    @staticmethod
     @merge_method
     def delta_dis(
             *models: Parameter(Tensor, "delta"), # subtract
@@ -2212,9 +2211,13 @@ class MergeMethods:
             direction_ratio: Parameter(Tensor) = 0.75,
             above_average_ratio: Parameter(Tensor) = 1.2,
             calibration_value: Parameter(Tensor) = 1.0,
+            early_exit: Parameter(bool) = 1.0,
             **kwargs,
     ) -> Return(Tensor, "delta"): # add diff
         """Improved delta disentanglement merge based on WIDEN"""
+
+        if early_exit and magnitude_ratio == 0.0 and direction_ratio == 0.0:
+            return models[0]
 
         def tensor_components(t: Tensor):
             # Handle scalars and empty tensors consistently
@@ -2320,9 +2323,13 @@ class MergeMethods:
             direction_ratio: Parameter(Tensor) = 0.75,
             above_average_ratio: Parameter(Tensor) = 1.2,
             calibration_value: Parameter(Tensor) = 1.0,
+            early_exit: Parameter(bool) = 1.0,
             **kwargs,
     ) -> Return(Tensor, "delta"):  # add diff
         """Improved delta disentanglement merge based on WIDEN"""
+
+        if early_exit and magnitude_ratio == 0.0 and direction_ratio == 0.0:
+            return models[0]
 
         def tensor_components(t: Tensor):
             """Disentangle tensor into magnitude and direction components"""

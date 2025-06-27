@@ -18,7 +18,7 @@ from typing import Dict, Optional, List, Tuple, Any
 from omegaconf import DictConfig, open_dict, ListConfig
 from sd_mecha import serialization, extensions, recipe_nodes
 from sd_mecha.extensions.merge_methods import MergeMethod, RecipeNodeOrValue
-from sd_mecha.recipe_nodes import RecipeNodeOrValue, ModelRecipeNode, RecipeNode
+from sd_mecha.recipe_nodes import RecipeNodeOrValue, ModelRecipeNode, RecipeNode, MergeRecipeNode
 from sd_mecha.extensions import model_configs, merge_methods  # Import model_configs
 
 # Assuming utils contains MergeMethodCodeSaver and add_extra_keys
@@ -863,79 +863,69 @@ class Merger:
             cache: Optional[Dict],
             iteration: int,
     ) -> Path:
-        logger.info(f"--- Starting Recipe Optimization (Patcher vFINAL) for Iteration {iteration} ---")
+        """
+        Orchestrates the optimization of a .mecha recipe.
+        This "thinker" method validates, generates node objects, and then calls
+        "doer" utilities to rewrite the recipe text and execute.
+        """
+        logger.info(f"--- Coordinating Recipe Optimization for Iteration {iteration} ---")
         recipe_cfg = self.cfg.recipe_optimization
-
         recipe_path = Path(recipe_cfg.recipe_path)
-        recipe_text = recipe_path.read_text(encoding="utf-8")
+        original_recipe_text = recipe_path.read_text(encoding="utf-8")
 
-        # --- Step 1: Build the initial object graph ONCE ---
-        def get_all_nodes(text):
-            lines = text.strip().split('\n')
-            node_map = {}
-            for i in range(1, len(lines)):
-                node_map[i - 1] = sd_mecha.deserialize(lines[:i + 1])
-            return node_map
+        # --- Step 1: VALIDATION (The "Thinker" validates its own plan) ---
+        target_node_ref = recipe_cfg.target_nodes
+        target_node_idx = int(target_node_ref.strip('&'))
 
-        all_nodes_map = get_all_nodes(recipe_text)
-        root_node = all_nodes_map[max(all_nodes_map.keys())]
+        # Deserialize once to get the target node for validation
+        all_nodes_map = {
+            i: sd_mecha.deserialize(original_recipe_text.split('\n')[:i + 2])
+            for i in range(len(original_recipe_text.strip().split('\n')) - 1)
+        }
+        target_node = all_nodes_map.get(target_node_idx)
 
-        # --- Step 2: Set the output name (this is fine here) ---
-        self.output_file = self.create_model_output_name(
-            iteration=iteration,
-            recipe_node=root_node
-        )
+        if not isinstance(target_node, MergeRecipeNode):
+            raise TypeError(f"Target node {target_node_ref} is not a merge node.")
+        valid_params = set(target_node.merge_method.get_param_names().kwargs.keys())
+        for param_name in recipe_cfg.target_params:
+            if param_name not in valid_params:
+                raise ValueError(
+                    f"Target parameter '{param_name}' not found in method '{target_node.merge_method.identifier}'.")
+        logger.info("Pre-validation successful.")
+
+        # Set output file path
+        self.output_file = self.create_model_output_name(iteration=iteration, recipe_node=target_node)
         logger.info(f"Set output path for this iteration to: {self.output_file}")
 
-        # --- Step 3: THE MULTI-PARAMETER FIX ---
+        # --- Step 2: GENERATION (The "Thinker" creates the node objects) ---
+        new_param_nodes = self._prepare_param_recipe_args(params, param_info, target_node.merge_method)
 
-        # Ensure target_params is a list so we can loop over it
-        target_params = recipe_cfg.target_params
-        if isinstance(target_params, str):
-            target_params = [target_params]
+        # --- Step 3: SERIALIZATION (Call a simple utility) ---
+        new_node_strings, param_to_final_idx = utils.serialize_nodes_for_rewrite(new_param_nodes)
 
-        # Start with the original root_node. We will update this in the loop.
-        current_root_node = root_node
+        # --- Step 4: REWRITING (Call the main "doer" utility) ---
+        final_recipe_text = utils.rewrite_recipe_text(
+            original_recipe_text=original_recipe_text,
+            target_node_idx=target_node_idx,
+            new_node_strings=new_node_strings,
+            param_to_final_idx=param_to_final_idx
+        )
 
-        for target_param_name in target_params:
-            logger.info(f"Processing target parameter: '{target_param_name}'")
+        # --- Step 5: EXECUTION ---
+        try:
+            final_recipe_node = sd_mecha.deserialize(final_recipe_text)
+        except Exception as e:
+            debug_path = Path(HydraConfig.get().runtime.output_dir) / f"iteration_{iteration}_failed_recipe.mecha"
+            debug_path.write_text(final_recipe_text, encoding="utf-8")
+            raise ValueError(f"Final recipe deserialization failed. Saved debug recipe to {debug_path}: {e}")
 
-            target_node_ref = recipe_cfg.target_nodes
-            target_node_idx = int(target_node_ref.strip('&'))
-            target_merge_node = all_nodes_map.get(target_node_idx)
-
-            if not isinstance(target_merge_node, recipe_nodes.MergeRecipeNode):
-                raise TypeError(f"Target node &{target_node_idx} is not a merge node.")
-
-            # Generate the dictionary of ALL possible parameter nodes for this method
-            new_param_nodes_dict = self._prepare_param_recipe_args(
-                params, param_info, target_merge_node.merge_method
-            )
-
-            # Extract the specific node for the CURRENT parameter in the loop
-            if target_param_name not in new_param_nodes_dict:
-                logger.warning(
-                    f"Could not generate a node for param '{target_param_name}'. It might be using a default. Skipping patch for this param.")
-                continue  # Move to the next parameter in the list
-
-            new_param_node_for_patcher = new_param_nodes_dict[target_param_name]
-
-            # Patch the graph, making sure to use the MOST RECENT version of the graph
-            patcher = utils.RecipePatcher(target_merge_node, target_param_name, new_param_node_for_patcher)
-            current_root_node = current_root_node.accept(patcher)
-
-            logger.info(f"Successfully patched graph for parameter '{target_param_name}'.")
-
-        # After the loop, current_root_node is the final, fully-patched graph
-        final_recipe_node = current_root_node
-
-        # --- Step 4: Execute and Save ---
         model_path = self.output_file
         self._save_recipe_etc(final_recipe_node, model_path, iteration)
         self._execute_recipe(final_recipe_node, model_path)
 
-        logger.info(f"Recipe optimization completed. Output: {model_path}")
+        logger.info(f"Recipe optimization coordination complete. Output: {model_path}")
         return model_path
+
 
     def layer_adjust(self, params: Dict, cfg: DictConfig) -> Path:  # Takes params
         """Loads a model, applies layer adjustments, and saves the modified model."""

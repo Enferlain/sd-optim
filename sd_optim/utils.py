@@ -188,79 +188,88 @@ def resolve_merge_method(merge_method_name: str) -> merge_methods.MergeMethod:
 ###########################
 ### Recipe Optimization ###
 ###########################
-class RecipePatcher(recipe_nodes.RecipeVisitor):
+def serialize_nodes_for_rewrite(
+        nodes_dict: Dict[str, sd_mecha.recipe_nodes.RecipeNode]
+) -> Tuple[List[str], Dict[str, int]]:
     """
-    Traverses an existing recipe graph and builds a new one, patching in
-    new logic for a specific parameter on a target node. This operates
-    entirely on RecipeNode objects, avoiding text manipulation.
+    Takes a dictionary of named RecipeNode objects and serializes them into
+    a list of .mecha string lines and a map of name to final line index.
+    This is a generic utility for preparing nodes for rewriting.
     """
+    all_new_lines = []
+    param_to_final_idx = {}
+    current_offset = 0
 
-    def __init__(self,
-                 target_merge_node: recipe_nodes.MergeRecipeNode,
-                 target_param_name: str,
-                 new_param_node: recipe_nodes.RecipeNode):
+    # Sort for deterministic output
+    for param_name, node in sorted(nodes_dict.items()):
+        serialized_text = sd_mecha.serialize(node)
+        node_lines = serialized_text.strip().split('\n')[1:]
 
-        self.target_merge_node = target_merge_node
-        self.target_param_name = target_param_name
-        self.new_param_node = new_param_node
-        self.memo: Dict[recipe_nodes.RecipeNode, recipe_nodes.RecipeNode] = {}
+        def shift_ref(match):
+            original_idx = int(match.group(1))
+            return f"&{original_idx + current_offset}"
 
-    def visit(self, node: recipe_nodes.RecipeNode) -> recipe_nodes.RecipeNode:
-        if node in self.memo:
-            return self.memo[node]
-        new_node = node.accept(self)
-        self.memo[node] = new_node
-        return new_node
+        shifted_lines = [re.sub(r'&(\d+)', shift_ref, line) for line in node_lines]
 
-    def visit_literal(self, node: recipe_nodes.LiteralRecipeNode) -> recipe_nodes.RecipeNode:
-        # This is correct. Terminal nodes are returned as-is.
-        return node
+        all_new_lines.extend(shifted_lines)
+        param_to_final_idx[param_name] = current_offset + len(node_lines) - 1
+        current_offset += len(node_lines)
 
-    def visit_model(self, node: recipe_nodes.ModelRecipeNode) -> recipe_nodes.RecipeNode:
-        # This is also correct.
-        return node
+    return all_new_lines, param_to_final_idx
 
-    def visit_merge(self, node: recipe_nodes.MergeRecipeNode) -> recipe_nodes.RecipeNode:
-        if node in self.memo:
-            return self.memo[node]
 
-        # Rebuild children first by recursively visiting them.
-        new_args = tuple(arg.accept(self) for arg in node.args)
-        new_kwargs = {k: v.accept(self) for k, v in node.kwargs.items()}
+def rewrite_recipe_text(
+        original_recipe_text: str,
+        target_node_idx: int,
+        new_node_strings: List[str],
+        param_to_final_idx: Dict[str, int]
+) -> str:
+    """
+    Rewrites a .mecha recipe text by prepending new nodes and patching a target line.
+    This function is a PURE text manipulator with the corrected "shift, then patch" logic.
+    """
+    original_lines = original_recipe_text.strip().split('\n')[1:]
+    num_new_nodes = len(new_node_strings)
 
-        rebuilt_node = recipe_nodes.MergeRecipeNode(node.merge_method, new_args, new_kwargs, node.cache)
+    # Helper function to perform the shift
+    def shift_old_ref(match):
+        original_idx = int(match.group(1))
+        return f"&{original_idx + num_new_nodes}"
 
-        # NOW, check if this REBUILT node is our target.
-        if node is self.target_merge_node:
-            logger.debug(
-                f"PATCHER: Found target node {node.merge_method.identifier}. Patching param '{self.target_param_name}'.")
+    # --- The New, Corrected Logic ---
+    rewritten_lines = []
+    for i, line in enumerate(original_lines):
+        # Clean the line of comments and whitespace first
+        line_base = line.split('#', 1)[0].strip()
+        if not line_base: continue
 
-            # This is the final, correct patching logic.
-            # We take the freshly rebuilt node and create a final version with our new parameter.
-            param_info = rebuilt_node.merge_method.get_param_names()
-            final_args = list(rebuilt_node.args)
-            final_kwargs = rebuilt_node.kwargs.copy()
+        # STEP 1: Always perform the global reference shift first.
+        # This turns old references like `&14` into `&26`.
+        shifted_line = re.sub(r'&(\d+)', shift_old_ref, line_base)
 
-            patched = False
-            if self.target_param_name in param_info.args:
-                idx = param_info.args.index(self.target_param_name)
-                if idx < len(final_args):
-                    final_args[idx] = self.new_param_node
-                    patched = True
+        # STEP 2: NOW, check if this is the target line we need to patch.
+        if i == target_node_idx:
+            # We take the *already shifted* line and patch in our new, correct, and final parameter references.
+            # These new references (e.g., `&5`, `&11`) will NOT be shifted again.
+            line_to_append = shifted_line
+            for param_name, new_node_index in param_to_final_idx.items():
+                pattern = re.compile(f"({re.escape(param_name)}=)([^ ]+)")
+                line_to_append = pattern.sub(f"\\1&{new_node_index}", line_to_append)
+        else:
+            # If it's not the target line, the globally shifted version is all we need.
+            line_to_append = shifted_line
 
-            if not patched and self.target_param_name in param_info.kwargs:
-                final_kwargs[self.target_param_name] = self.new_param_node
-                patched = True
+        rewritten_lines.append(line_to_append)
 
-            if not patched:
-                # This handles implicit defaults.
-                final_kwargs[self.target_param_name] = self.new_param_node
+    logger.info("Successfully shifted original recipe references and patched target line.")
 
-            rebuilt_node = recipe_nodes.MergeRecipeNode(rebuilt_node.merge_method, tuple(final_args), final_kwargs,
-                                                        rebuilt_node.cache)
-
-        self.memo[node] = rebuilt_node
-        return rebuilt_node
+    # --- Assembly step remains the same ---
+    final_recipe_text = (
+            "version 0.1.0\n" +
+            "\n".join(new_node_strings) + "\n" +
+            "\n".join(rewritten_lines)
+    )
+    return final_recipe_text
 
 
 class ModelVisitor(recipe_nodes.RecipeVisitor):
@@ -795,30 +804,36 @@ def get_source_code_for_methods(method_names: Set[str]) -> Tuple[Set[str], str]:
             self.generic_visit(node)
 
     for method_name in sorted(list(method_names)):
-        try:
-            # Step 1: Get the source code
-            if method_name not in _source_cache:
-                method_obj = sd_mecha.extensions.merge_methods.resolve(method_name)
+        for method_name in sorted(list(method_names)):
+            try:
+                # Instead of using sd_mecha.resolve(), we use OUR OWN resolver.
+                # This ensures we correctly find methods from our MergeMethods class.
+                method_obj = resolve_merge_method(method_name)
+
+                # The rest of the logic can now proceed safely
                 source_text = inspect.getsource(method_obj.__wrapped__)
                 _source_cache[method_name] = textwrap.dedent(source_text)
 
-            source_code = _source_cache[method_name]
-            all_source_code_blocks.append(source_code)
+                source_code = _source_cache[method_name]
+                all_source_code_blocks.append(source_code)
 
-            # Step 2: Keep track of the source file
-            method_obj = sd_mecha.extensions.merge_methods.resolve(method_name)
-            module = inspect.getmodule(inspect.unwrap(method_obj))
-            if module and hasattr(module, '__file__'):
-                files_to_scan.add(Path(module.__file__))
+                module = inspect.getmodule(inspect.unwrap(method_obj))
+                if module and hasattr(module, '__file__'):
+                    files_to_scan.add(Path(module.__file__))
 
-            # Step 3: Parse the function source to find all names it uses
-            parser = FullNameFinder()
-            parser.visit(ast.parse(source_code))
-            all_used_names.update(parser.names)
+                parser = FullNameFinder()
+                parser.visit(ast.parse(source_code))
+                all_used_names.update(parser.names)
 
-        except Exception as e:
-            logger.error(f"Could not get or parse source for '{method_name}': {e}")
-            all_source_code_blocks.append(f"# ERROR: Could not get source for {method_name}")
+            except (ValueError, TypeError) as e:
+                # Now, if resolve_merge_method fails, it will raise a SystemExit,
+                # which is better than a silent failure. We can catch this if we want.
+                logger.error(f"Could not get or parse source for '{method_name}': {e}")
+                all_source_code_blocks.append(f"# ERROR: Could not get source for {method_name}")
+            except SystemExit:
+                logger.error(
+                    f"FATAL: resolve_merge_method could not find '{method_name}'. Halting artifact generation for this method.")
+                all_source_code_blocks.append(f"# ERROR: Could not resolve merge method '{method_name}'.")
 
     # Step 4: Scan the discovered files to find imports AND top-level assignments
     relevant_imports = set()

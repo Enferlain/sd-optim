@@ -1,4 +1,5 @@
 import logging
+import re
 from pathlib import Path
 
 import sd_mecha
@@ -558,6 +559,29 @@ class ParameterHandler:
         validated_bounds: Dict[str, Any] = {}
         for param_name, bound_config in custom_bounds.items():
             try:
+                # Case 0: strings as tuple
+                if isinstance(bound_config, str):
+                    # This regex matches "(num1, num2)" and captures the numbers
+                    match = re.match(r'^\(\s*(-?\d+\.?\d*)\s*,\s*(-?\d+\.?\d*)\s*\)$', bound_config.strip())
+                    if match:
+                        # Extract the two numbers as strings
+                        num1_str, num2_str = match.groups()
+                        # Convert to int if possible, otherwise float, to preserve type
+                        try:
+                            num1 = int(num1_str)
+                        except ValueError:
+                            num1 = float(num1_str)
+                        try:
+                            num2 = int(num2_str)
+                        except ValueError:
+                            num2 = float(num2_str)
+                        # Overwrite bound_config with the parsed tuple
+                        bound_config = (num1, num2)
+                        logger.debug(f"Successfully parsed string '{param_name}' into tuple: {bound_config}")
+                    else:
+                        # If it's a string but doesn't match, it's an error.
+                        raise ValueError(f"String value '{bound_config}' is not a valid tuple format '(min, max)'.")
+
                 # Case 1: Rich dictionary format (for ranges with options)
                 if isinstance(bound_config, (dict, DictConfig)):
                     if "range" not in bound_config:

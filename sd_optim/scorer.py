@@ -1,4 +1,5 @@
 import asyncio
+import inspect
 import io
 import platform
 import subprocess
@@ -32,6 +33,7 @@ from sd_optim.models.NoAIScore import NoAIScore as NOAI
 from sd_optim.models.CityAesthetics import CityAestheticsScorer as CITY
 from sd_optim.models.AestheticV25 import AestheticV25 as AES25
 from sd_optim.models.LumiAnatomy import HybridAnatomyScorer as LUMI
+from sd_optim.models.SimpleQuality import SimpleQualityScorer as SQ
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO)
@@ -115,6 +117,10 @@ MODEL_DATA = {
         "url": None,
         "file_name": "AnatomyFlaws-v6.4_adabeleif_fl_sigmoid_dinov2_giant_efinal_s10K_final.safetensors",
         "config_name": "AnatomyFlaws-v6.4_adabeleif_fl_sigmoid_dinov2_giant.config.json"
+    },
+    "simplequality": {
+        "url": None,  # No download needed - uses OpenCV/numpy
+        "file_name": None,
     },
 }
 
@@ -400,6 +406,11 @@ class AestheticScorer:
             #         "config_path": "config_name"    # Needs 'config_name' in MODEL_DATA["lumistyle"]
             #      }
             # },
+            "simplequality": {
+                "class": SQ,
+                "files": {},  # No files needed
+                "extra_args": {}  # No extra arguments needed
+            },
         }
         # --- End Factory Config ---
 
@@ -428,11 +439,12 @@ class AestheticScorer:
             file_paths_ok = True
 
             # 1. Add device
-            try:
-                constructor_args["device"] = self.cfg.scorer_device.get(evaluator_lower, self.cfg.scorer_default_device)
-            except KeyError:
-                logger.error(f"Device config missing for '{evaluator}'. Skipping.")
-                continue
+            if evaluator_lower != 'simplequality':
+                try:
+                    constructor_args["device"] = self.cfg.scorer_device.get(evaluator_lower, self.cfg.scorer_default_device)
+                except KeyError:
+                    logger.error(f"Device config missing for '{evaluator}'. Skipping.")
+                    continue
 
             # 2. Resolve and check file paths
             if "files" in config:
@@ -561,7 +573,17 @@ class AestheticScorer:
                         logger.error(f"Scorer instance for '{evaluator}' not found.")
                         individual_eval_score = 0.0
                     else:
-                        individual_eval_score = scorer_instance.score(image=image, prompt=prompt)
+                        # --- THE NEW, SMART WAY! ---
+                        # 1. Start with the arguments that every scorer needs.
+                        score_args = {'image': image}
+                        # 2. Check if the scorer's 'score' method wants a 'prompt'.
+                        score_params = inspect.signature(scorer_instance.score).parameters
+                        if 'prompt' in score_params:
+                            score_args['prompt'] = prompt
+
+                        # 3. Call the scorer with only the arguments it accepts!
+                        individual_eval_score = scorer_instance.score(**score_args)
+
                 except Exception as e:
                     logger.error(f"Error scoring with {evaluator}: {e}", exc_info=True)
                     individual_eval_score = 0.0

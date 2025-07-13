@@ -1,5 +1,6 @@
 import re
 import sys
+import warnings
 
 import pywt
 import sd_mecha
@@ -2317,130 +2318,181 @@ class MergeMethods:
         return merged
 
     @merge_method
-    def delta_dis2(
-            *models: Parameter(Tensor, "delta"),  # subtract
-            magnitude_ratio: Parameter(Tensor) = 0.6,
-            direction_ratio: Parameter(Tensor) = 0.75,
-            above_average_ratio: Parameter(Tensor) = 1.2,
-            calibration_value: Parameter(Tensor) = 1.0,
-            early_exit: Parameter(bool) = 1.0,
+    def delta_widen(
+            *models: Parameter(Tensor, "delta"),
+            baseline_index: Parameter(int) = -1,
+            magnitude_ratio: Parameter(float) = 2.0,  # Now actually works
+            direction_ratio: Parameter(float) = 2.0,  # Now actually works
+            above_average_ratio: Parameter(float) = 2.0,  # Now actually works
+            calibration_value: Parameter(float) = 5.0,  # Now actually works
+            early_exit: Parameter(float) = 1.0,
             **kwargs,
-    ) -> Return(Tensor, "delta"):  # add diff
-        """Improved delta disentanglement merge based on WIDEN"""
+    ) -> Return(Tensor, "delta"):
+        """
+        WIDEN-based Disentanglement Merge with Fixed Parameter Sensitivity.
 
-        if early_exit and magnitude_ratio == 0.0 and direction_ratio == 0.0:
-            return models[0]
+        This version preserves raw divergence magnitudes to ensure all parameters
+        have meaningful impact on the final merge.
+
+        Args:
+            *models (Tensor): A list of the model deltas (e.g., LoRA weights) to be merged.
+            baseline_index (int): Controls the merge strategy.
+                - `-1` (Unbiased Merge): Compares all models to a zero tensor.
+                - `0, 1, ...` (Biased/Patching Merge): Compares all other models to the
+                  delta at this index.
+            magnitude_ratio (float): The weight given to the magnitude component of the
+                deltas. Now has actual impact on results.
+            direction_ratio (float): The weight given to the direction component of the
+                deltas. Now has actual impact on results.
+            above_average_ratio (float): A threshold multiplier to identify "critical"
+                parameters. Now works on raw divergences.
+            calibration_value (float): The factor by which to boost the importance of
+                critical parameters. Now has dramatic effects.
+            early_exit (float): If True, and both magnitude and direction ratios are 0,
+                returns baseline immediately.
+            **kwargs: Catches any other parameters passed to the merge method.
+
+        Returns:
+            Tensor: The final merged delta tensor, with the same dtype and on the same
+                device as the input models.
+        """
+        original_dtype = models[0].dtype
+        device = models[0].device
+
+        # Early exit optimization
+        if early_exit == 1.0 and magnitude_ratio == 0.0 and direction_ratio == 0.0:
+            if 0 <= baseline_index < len(models):
+                return models[baseline_index]
+            else:
+                return torch.zeros_like(models[0])
+
+        # Determine baseline
+        if baseline_index == -1:
+            baseline_tensor = torch.zeros_like(models[0])
+        elif 0 <= baseline_index < len(models):
+            baseline_tensor = models[baseline_index]
+        else:
+            raise ValueError(
+                f"Invalid baseline_index: {baseline_index}. Must be -1 or between 0 and {len(models) - 1}.")
 
         def tensor_components(t: Tensor):
-            """Disentangle tensor into magnitude and direction components"""
+            """
+            Disentangle a tensor into magnitude and direction.
+            This version handles all tensors consistently on a per-output-feature basis.
+            """
             if t.numel() == 0:
-                return torch.tensor([0.0], device=t.device), torch.tensor([1.0], device=t.device)
-            if t.dim() == 0:  # Scalar
-                return torch.tensor([torch.abs(t)], device=t.device), torch.tensor([torch.sign(t)], device=t.device)
-            if t.dim() == 1:  # 1D vector
-                mag = torch.norm(t)
-                dir = t / (mag + 1e-8)
-                return mag.unsqueeze(0), dir.unsqueeze(0)
-            elif t.dim() == 2:  # Linear/embedding layers
-                mag = torch.norm(t, p=2, dim=0)  # Column-wise
-                dir = t / (mag.unsqueeze(0) + 1e-8)
-            elif t.dim() == 4:  # Conv layers - explicit like your original
-                t_2d = t.reshape(t.shape[0], -1)  # [out_channels, in_channels*H*W]
-                mag = torch.norm(t_2d, p=2, dim=0)  # Column-wise (was dim=1 in your code)
-                dir = t_2d / (mag.unsqueeze(0) + 1e-8)
-                dir = dir.reshape(t.shape)  # Back to 4D
-            else:  # Higher dimensions
-                orig_shape = t.shape
-                t_2d = t.reshape(t.shape[0], -1)
-                mag = torch.norm(t_2d, p=2, dim=0)
-                dir = t_2d / (mag.unsqueeze(0) + 1e-8)
-                dir = dir.reshape(orig_shape)
+                return (
+                    torch.tensor(0.0, device=device, dtype=t.dtype),
+                    torch.tensor(0.0, device=device, dtype=t.dtype),
+                )
+            if t.dim() <= 1:
+                return torch.abs(t), torch.sign(t)
 
-            return mag, dir
+            orig_shape = t.shape
+            t_2d = t.reshape(orig_shape[0], -1)
+            mag = torch.norm(t_2d, p=2, dim=1)
+            dir_2d = t_2d / (mag.unsqueeze(1) + 1e-12)
+            return mag, dir_2d.reshape(orig_shape)
 
-        def compute_divergence(mag, dir, ref_mag, ref_dir):
-            """Compute divergence from reference (backbone)"""
-            # Magnitude divergence: |m - m_ref|
+        def compute_raw_divergence(mag, dir_tensor, ref_mag, ref_dir):
+            """Compute raw divergence from reference (preserving actual magnitudes)."""
+            # Keep raw magnitude differences - NO RANKING
             mag_div = torch.abs(mag - ref_mag)
 
-            # Direction divergence: 1 - cosine_similarity
-            if dir.dim() == 1:
-                cos_sim = torch.cosine_similarity(dir, ref_dir, dim=0)
+            # Compute directional divergence
+            if dir_tensor.dim() <= 1:
+                cos_sim = dir_tensor * ref_dir
             else:
-                # Column-wise cosine similarity for 2D tensors
-                cos_sim = torch.cosine_similarity(dir, ref_dir, dim=0)
+                dir_flat = dir_tensor.reshape(dir_tensor.shape[0], -1)
+                ref_dir_flat = ref_dir.reshape(ref_dir.shape[0], -1)
+                cos_sim = torch.nn.functional.cosine_similarity(dir_flat, ref_dir_flat, dim=1, eps=1e-12)
 
-            dir_div = 1 - cos_sim
-
+            dir_div = 1.0 - cos_sim
             return mag_div, dir_div
 
-        def rank_within_model(values: Tensor):
-            """Rank values within [0, 1] range"""
-            if values.numel() == 0:
-                return torch.tensor([], device=values.device, dtype=values.dtype)
-            if values.dim() == 0:
-                return torch.tensor(0.5, device=values.device, dtype=values.dtype)
+        # --- Compute Raw Divergences for All Models ---
+        ref_mag, ref_dir = tensor_components(baseline_tensor)
 
-            # Sort and create normalized ranks
-            sorted_vals, sorted_idx = torch.sort(values.flatten())
-            ranks = torch.arange(len(sorted_vals), device=values.device, dtype=values.dtype) / len(sorted_vals)
+        all_mag_divs = []
+        all_dir_divs = []
 
-            # Scatter back to original positions
-            result = torch.zeros_like(values.flatten())
-            result.scatter_(0, sorted_idx, ranks)
-            return result.view(values.shape)
+        for i, model in enumerate(models):
+            mag, dir_tensor = tensor_components(model)
+            mag_div, dir_div = compute_raw_divergence(mag, dir_tensor, ref_mag, ref_dir)
 
-        # Use zero tensor as backbone reference (since we're working with deltas)
-        ref_mag, ref_dir = tensor_components(torch.zeros_like(models[0]))
+            if i == baseline_index:
+                # Baseline model gets high importance (but not infinite)
+                all_mag_divs.append(torch.ones_like(mag_div) * torch.max(mag_div).item() * 2.0)
+                all_dir_divs.append(torch.ones_like(dir_div) * torch.max(dir_div).item() * 2.0)
+            else:
+                all_mag_divs.append(mag_div)
+                all_dir_divs.append(dir_div)
 
-        # Process each model and compute divergences
-        mag_ranks = []
-        dir_ranks = []
+        # --- Apply Critical Parameter Detection on RAW Divergences ---
+        enhanced_mag_divs = []
+        enhanced_dir_divs = []
 
-        for model in models:
-            mag, dir = tensor_components(model)
-            mag_div, dir_div = compute_divergence(mag, dir, ref_mag, ref_dir)
+        for i in range(len(models)):
+            raw_mag_div = all_mag_divs[i]
+            raw_dir_div = all_dir_divs[i]
 
-            mag_ranks.append(rank_within_model(mag_div))
-            dir_ranks.append(rank_within_model(dir_div))
+            # Apply critical parameter detection on RAW values
+            if above_average_ratio > 0:
+                # Use median for more robust threshold detection
+                mag_threshold = torch.median(raw_mag_div) * above_average_ratio
+                dir_threshold = torch.median(raw_dir_div) * above_average_ratio
 
-        # Stack ranks
-        mag_ranks = torch.stack(mag_ranks)
-        dir_ranks = torch.stack(dir_ranks)
+                # Identify critical parameters
+                critical_mag = raw_mag_div > mag_threshold
+                critical_dir = raw_dir_div > dir_threshold
 
-        # Combined weighted ranks
-        combined_ranks = magnitude_ratio * mag_ranks + direction_ratio * dir_ranks
+                # Apply strong calibration to critical parameters
+                calibrated_mag = torch.where(
+                    critical_mag,
+                    raw_mag_div * calibration_value,
+                    raw_mag_div * 0.5  # Suppress non-critical
+                )
+                calibrated_dir = torch.where(
+                    critical_dir,
+                    raw_dir_div * calibration_value,
+                    raw_dir_div * 0.5  # Suppress non-critical
+                )
+            else:
+                calibrated_mag = raw_mag_div
+                calibrated_dir = raw_dir_div
 
-        # Apply softmax for importance scores
-        importance_scores = torch.softmax(combined_ranks, dim=0)
+            enhanced_mag_divs.append(calibrated_mag)
+            enhanced_dir_divs.append(calibrated_dir)
 
-        # Score calibration (as per WIDEN paper)
-        avg_importance = importance_scores.mean(dim=0, keepdim=True)
-        critical_mask = importance_scores > (avg_importance * above_average_ratio)
-        importance_scores[critical_mask] = calibration_value
+        # --- Combine Magnitude and Direction with Parameter Ratios ---
+        combined_importance = []
+        for i in range(len(models)):
+            # NOW the parameter ratios have real impact on raw divergences
+            combined = (magnitude_ratio * enhanced_mag_divs[i]) + (direction_ratio * enhanced_dir_divs[i])
+            combined_importance.append(combined)
 
-        # Final weighted merge
-        merged = torch.zeros_like(models[0])
+        # --- Apply Standard Softmax (No Temperature Needed) ---
+        softmax_input = torch.stack(combined_importance, dim=0)
+
+        if original_dtype == torch.float16:
+            warnings.warn("Input dtype is float16. Upcasting to float32 for softmax stability.", UserWarning)
+            importance_scores = torch.softmax(softmax_input.to(torch.float32), dim=0).to(original_dtype)
+        else:
+            importance_scores = torch.softmax(softmax_input, dim=0)
+
+        # --- Final Merge ---
+        merged_delta = torch.zeros_like(models[0])
         for i, model in enumerate(models):
             weight = importance_scores[i]
+            if model.dim() > 1 and weight.dim() > 0:
+                reshape_shape = [-1] + [1] * (model.dim() - 1)
+                reshaped_weight = weight.reshape(reshape_shape)
+            else:
+                reshaped_weight = weight
 
-            if model.dim() == 0:  # Scalar
-                merged += model * weight.squeeze()
-            elif model.dim() == 1:  # 1D tensor
-                merged += model * weight
-            elif model.dim() == 2:  # 2D tensor (linear layers)
-                # weight has shape [k], model has shape [d, k]
-                # Expand to [1, k] for broadcasting
-                weight_expanded = weight.unsqueeze(0)
-                merged += model * weight_expanded
-            else:  # 4D conv layers
-                # weight has shape [in_channels*H*W], model has shape [out_channels, in_channels, H, W]
-                # Reshape weight to match spatial structure, then add batch dimension
-                in_channels, H, W = model.shape[1], model.shape[2], model.shape[3]
-                weight_reshaped = weight.reshape(1, in_channels, H, W)  # [1, in_channels, H, W]
-                merged += model * weight_reshaped  # Broadcasts to [out_channels, in_channels, H, W]
+            merged_delta += model * reshaped_weight
 
-        return merged
+        return merged_delta
 
     @merge_method
     def pop_lora_seq(
@@ -2585,6 +2637,380 @@ class MergeMethods:
 
         cusolver.destroy(handle)
         return Q_torch, R_torch
+
+    @merge_method
+    def rams(
+            *deltas: Parameter(Tensor, "delta"),
+            outlier_tolerance: Parameter(float) = 2.5,
+            outlier_intensity: Parameter(float) = 1.0,
+            memory_safety_margin: Parameter(float) = 0.85,
+            use_adaptive_tolerance: Parameter(float) = 1.0,
+            use_geometric_median: Parameter(float) = 0.0,
+            **kwargs,
+    ) -> Return(Tensor, "delta"):
+        """
+        Identifies outlier parameters and blends them based on a robust statistical
+        framework, while giving the user a clear, powerful choice for how to handle
+        the most extreme disagreements.
+
+        Args:
+            *deltas (Tensor): A variable number of input tensors (deltas) for the same layer.
+            core_indices (list[int]): A list of indices specifying the 'trusted' models that
+                                      form the statistical baseline for the merge.
+            outlier_tolerance (float): The base sensitivity for outlier detection. Higher values
+                                       are more tolerant, leading to fewer outliers.
+            outlier_intensity (float): Controls the influence of outlier parameters. Higher values
+                                       give outliers more strength in the final blend.
+            memory_safety_margin (float): The percentage of free VRAM to use for processing chunks.
+                                          Prevents CUDA OOM errors automatically.
+            use_adaptive_tolerance (bool): If True, automatically adjusts `outlier_tolerance` based
+                                           on the statistical variance of each layer.
+            use_geometric_median (bool): The primary user control. If False (default), uses a fast,
+                                         weighted influence blend for outliers. If True, uses the
+                                         slower but ultra-robust geometric median for outliers.
+            **kwargs: Catches any unused parameters from the framework.
+
+        Returns:
+            Tensor: The final, merged tensor for the layer.
+        """
+        # A little safety net!
+        if not deltas:
+            raise ValueError("Onii-chan, you have to give me tensors to merge!")
+
+        core_indices = [1, 3, 4, 6, 7, 8, 9, 10]
+        device = deltas[0].device
+        epsilon_tensor = torch.tensor(1e-8, device=device)
+
+        # --- 1. The Correct Architecture: Pre-allocate the Canvas ---
+        final_merged_tensor = torch.zeros_like(deltas[0])
+
+        # --- 2. Dynamic Chunk Size Calculation (No Multiplier!) ---
+        # We go back to the simple calculation because we're cleaning as we go.
+        # The largest single allocation will be the chunk_stack.
+        if device.type == 'cuda':
+            available_vram, _ = torch.cuda.mem_get_info(device)
+            memory_budget = available_vram * memory_safety_margin
+            cost_per_element_in_stack = len(deltas) * deltas[0].element_size()
+            dynamic_chunk_size = max(1, int(memory_budget // cost_per_element_in_stack))
+        else:
+            dynamic_chunk_size = 2 ** 22
+
+        total_elements = deltas[0].numel()
+
+        # --- 3. Main Processing Loop (with Aggressive Cleanup) ---
+        for i in range(0, total_elements, dynamic_chunk_size):
+            end = min(i + dynamic_chunk_size, total_elements)
+            # We operate on slices of the input deltas.
+            chunk_deltas = [d.flatten()[i:end] for d in deltas]
+            chunk_stack = torch.stack(chunk_deltas)
+            del chunk_deltas
+
+            core_chunks = chunk_stack[core_indices]
+            core_median, _ = torch.median(core_chunks, dim=0)
+
+            current_tolerance = outlier_tolerance
+            if use_adaptive_tolerance > 0.0:
+                layer_complexity = torch.std(core_chunks, dim=0)
+                adaptive_factor = torch.clamp(1 + 0.1 * torch.log(layer_complexity + epsilon_tensor), min=0.5, max=3.0)
+                current_tolerance *= adaptive_factor
+                del layer_complexity, adaptive_factor
+
+            q1, q3 = torch.quantile(core_chunks, torch.tensor([0.25, 0.75], device=device), dim=0)
+            iqr_core = q3 - q1
+            del q1, q3
+            mad_core, _ = torch.median(torch.abs(core_chunks - core_median), dim=0)
+
+            lower_bound = core_median - (current_tolerance * iqr_core)
+            upper_bound = core_median + (current_tolerance * iqr_core)
+            mad_bound = current_tolerance * 1.4826 * mad_core
+            del mad_core
+
+            is_outlier_iqr = (chunk_stack < lower_bound) | (chunk_stack > upper_bound)
+            del lower_bound, upper_bound
+            is_outlier_mad = torch.abs(chunk_stack - core_median) > mad_bound.clamp(min=epsilon_tensor)
+            del mad_bound
+            is_outside_bounds = is_outlier_iqr | is_outlier_mad
+            del is_outlier_iqr, is_outlier_mad
+
+            if torch.mean(is_outside_bounds.float()) < 0.01:
+                final_chunk_masked = core_median
+            else:
+                disagreement = chunk_stack - core_median
+                robust_z_score = disagreement.div(iqr_core + epsilon_tensor)
+                del disagreement
+                influence_scores = outlier_intensity * torch.tanh(torch.abs(robust_z_score))
+                del robust_z_score
+                masked_influence_scores = influence_scores * is_outside_bounds.float()
+
+                if use_geometric_median > 0.0:
+                    outlier_mask = torch.any(is_outside_bounds, dim=1)
+                    if torch.any(outlier_mask):
+                        outlier_points = chunk_stack[outlier_mask]
+                        outlier_blend = MergeMethods._rams_geometric_median(outlier_points)
+                        del outlier_points
+                    else:
+                        outlier_blend = core_median
+                    del outlier_mask
+                else:
+                    sum_of_masked_influences = torch.sum(masked_influence_scores, dim=0)
+                    masked_weighted_deltas = chunk_stack * masked_influence_scores
+                    sum_of_masked_contributions = torch.sum(masked_weighted_deltas, dim=0)
+                    outlier_blend = sum_of_masked_contributions / (sum_of_masked_influences + epsilon_tensor)
+                    del sum_of_masked_influences, masked_weighted_deltas, sum_of_masked_contributions
+
+                avg_outlier_influence = torch.sum(masked_influence_scores, dim=0) / (
+                    torch.sum(is_outside_bounds.float(), dim=0).clamp(min=1))
+                del masked_influence_scores, influence_scores
+
+                final_chunk = (1.0 - avg_outlier_influence) * core_median + avg_outlier_influence * outlier_blend
+                del avg_outlier_influence, outlier_blend
+
+                disagreement_mask = torch.any(is_outside_bounds, dim=0)
+                final_chunk_masked = torch.where(disagreement_mask, final_chunk, core_median)
+                del final_chunk, disagreement_mask
+
+            final_merged_tensor.flatten()[i:end] = final_chunk_masked
+
+            # --- Final Manual Cleanup at the end of each chunk iteration ---
+            del chunk_stack, core_chunks, core_median, iqr_core, is_outside_bounds, final_chunk_masked
+            if device.type == 'cuda':
+                torch.cuda.empty_cache()
+
+        return final_merged_tensor.reshape(deltas[0].shape)
+
+    @staticmethod
+    def _rams_geometric_median(
+            points: Tensor, eps: float = 1e-8, maxiter: int = 100, ftol: float = 1e-5, chunk_size: int = 1024
+    ) -> Tensor:
+        """
+        Computes the geometric median for a set of tensors with robust optimizations.
+
+        The geometric median is the point minimizing the sum of Euclidean distances to the
+        sample points. It's a highly robust estimator of central tendency. This implementation
+        is optimized for CUDA environments with chunking and specific edge cases.
+
+        Args:
+            points (Tensor): A tensor of points, where the first dimension is the number of points.
+            eps (float): A small epsilon for numerical stability.
+            maxiter (int): The maximum number of iterations for the Weiszfeld algorithm.
+            ftol (float): The tolerance for convergence.
+            chunk_size (int): The number of points to process in each chunk for memory efficiency.
+
+        Returns:
+            Tensor: The geometric median of the input points.
+        """
+        # --- Edge Case Handling ---
+        n_points, *dims = points.shape
+        if n_points == 0:
+            return torch.empty((0, *dims), device=points.device)
+        if n_points == 1:
+            return points[0]
+        # Pro Optimization: The median of 2 points is their midpoint.
+        if n_points == 2:
+            return torch.mean(points, dim=0)
+
+        device = points.device
+        # Use reshape for safety, as it handles non-contiguous tensors automatically.
+        median = torch.mean(points.reshape(n_points, -1), dim=0)
+
+        # --- Iterative Weiszfeld's Algorithm ---
+        for _ in range(maxiter):
+            prev_median = median.clone()
+            weighted_sum = torch.zeros_like(median)
+            weight_sum = torch.zeros_like(median)
+
+            # Process in chunks to save VRAM
+            for i in range(0, n_points, chunk_size):
+                chunk = points[i:i + chunk_size].reshape(-1, median.shape[0])
+                chunk_dist = torch.norm(chunk - median, dim=1)
+                # Pro Optimization: Improved numerical stability for weights
+                weights = 1.0 / (chunk_dist + eps)
+
+                weighted_sum.add_(torch.sum(chunk * weights[:, None], dim=0))
+                weight_sum.add_(torch.sum(weights))
+
+            median = weighted_sum / weight_sum.clamp(min=eps)
+
+            # Check for convergence
+            if torch.norm(median - prev_median) < ftol:
+                break
+
+        return median.reshape(*dims)
+
+    @merge_method
+    def rams_pro(
+            *deltas: Parameter(Tensor, "delta"),
+            outlier_tolerance: Parameter(float) = 2.5,
+            outlier_intensity: Parameter(float) = 1.0,
+            memory_safety_margin: Parameter(float) = 0.85,
+            use_adaptive_tolerance: Parameter(float) = 1.0,
+            use_geometric_median: Parameter(float) = 1.0,
+            **kwargs,
+    ) -> Return(Tensor, "delta"):
+        """
+        Production-ready RAMS with robust memory management and hanging prevention.
+        Incorporates lessons from enterprise-grade merge methods.
+        """
+        if not deltas:
+            raise ValueError("At least one delta tensor must be provided!")
+
+        if outlier_tolerance == 0.0 and outlier_intensity == 0.0:
+            return torch.zeros_like(deltas[0])
+
+        core_indices = [1, 3, 4, 6, 7, 8, 9, 10]
+        device = deltas[0].device
+        epsilon_tensor = torch.tensor(1e-8, device=device)
+
+        # Memory management (unchanged)
+        if device.type == 'cuda':
+            available_vram, _ = torch.cuda.mem_get_info(device)
+            memory_budget = available_vram * memory_safety_margin
+            cost_per_element_in_stack = len(deltas) * deltas[0].element_size()
+            calculated_chunk_size = max(1, int(memory_budget // cost_per_element_in_stack))
+            min_chunk = max(1024, deltas[0].nelement() // 50000)
+            dynamic_chunk_size = max(min_chunk, calculated_chunk_size)
+        else:
+            dynamic_chunk_size = max(2 ** 20, deltas[0].nelement() // 10000)
+
+        total_elements = deltas[0].numel()
+
+        # Create weights for different deltas (addresses core bias issue)
+        delta_weights = torch.ones(len(deltas), device=device)
+        delta_weights[core_indices] = core_weight
+
+        final_merged_tensor = torch.zeros_like(deltas[0])
+
+        for i in range(0, total_elements, dynamic_chunk_size):
+            end = min(i + dynamic_chunk_size, total_elements)
+
+            chunk_deltas = [d.flatten()[i:end] for d in deltas]
+            chunk_stack = torch.stack(chunk_deltas)
+            del chunk_deltas
+
+            # **MAJOR CHANGE**: Calculate robust center from ALL deltas, not just core
+            if use_geometric_median > 0.0:
+                # Apply weights to the geometric median calculation
+                weighted_chunk_stack = chunk_stack * delta_weights.unsqueeze(1)
+                robust_center = MergeMethods._rams_geometric_median_safe(weighted_chunk_stack)
+            else:
+                # Use weighted median of all deltas
+                weighted_chunk_stack = chunk_stack * delta_weights.unsqueeze(1)
+                robust_center, _ = torch.median(weighted_chunk_stack, dim=0)
+
+            # **MAJOR CHANGE**: Calculate adaptive tolerance from full dataset
+            current_tolerance = outlier_tolerance
+            if use_adaptive_tolerance > 0.0:
+                layer_complexity = torch.std(chunk_stack, dim=0)  # Use full stack, not just core
+                adaptive_factor = torch.clamp(1 + 0.1 * torch.log(layer_complexity + epsilon_tensor), min=0.5, max=3.0)
+                current_tolerance *= adaptive_factor
+                del layer_complexity, adaptive_factor
+
+            # **MAJOR CHANGE**: Calculate outlier bounds from full dataset
+            q1, q3 = torch.quantile(chunk_stack, torch.tensor([0.25, 0.75], device=device), dim=0)
+            iqr_full = q3 - q1
+            del q1, q3
+            mad_full, _ = torch.median(torch.abs(chunk_stack - robust_center), dim=0)
+
+            # Apply outlier detection to full dataset
+            lower_bound = robust_center - (current_tolerance * iqr_full)
+            upper_bound = robust_center + (current_tolerance * iqr_full)
+            mad_bound = current_tolerance * 1.4826 * mad_full
+            del mad_full
+
+            is_outlier_iqr = (chunk_stack < lower_bound) | (chunk_stack > upper_bound)
+            del lower_bound, upper_bound
+            is_outlier_mad = torch.abs(chunk_stack - robust_center) > mad_bound.clamp(min=epsilon_tensor)
+            del mad_bound
+            is_outside_bounds = is_outlier_iqr | is_outlier_mad
+            del is_outlier_iqr, is_outlier_mad
+
+            # **IMPROVED**: Better handling of low-outlier scenarios
+            outlier_ratio = torch.mean(is_outside_bounds.float())
+            if outlier_ratio < 0.01:
+                final_chunk_masked = robust_center
+            else:
+                # **MAJOR CHANGE**: Separate outlier detection from influence calculation
+                disagreement = chunk_stack - robust_center
+                robust_z_score = disagreement.div(iqr_full + epsilon_tensor)
+                del disagreement
+
+                # Calculate influence scores for outliers only
+                influence_scores = torch.zeros_like(robust_z_score)
+                outlier_mask = is_outside_bounds
+                influence_scores[outlier_mask] = outlier_intensity * torch.tanh(torch.abs(robust_z_score[outlier_mask]))
+                del robust_z_score
+
+                # **IMPROVED**: Better outlier blending
+                if torch.any(outlier_mask):
+                    outlier_points = chunk_stack[outlier_mask]
+                    if use_geometric_median > 0.0:
+                        outlier_blend = MergeMethods._rams_geometric_median_safe(outlier_points)
+                    else:
+                        outlier_blend = torch.mean(outlier_points, dim=0)
+                    del outlier_points
+                else:
+                    outlier_blend = robust_center
+
+                # Calculate final blend
+                avg_outlier_influence = torch.sum(influence_scores, dim=0) / (
+                    torch.sum(outlier_mask.float(), dim=0).clamp(min=1))
+                del influence_scores
+
+                final_chunk = (1.0 - avg_outlier_influence) * robust_center + avg_outlier_influence * outlier_blend
+                del avg_outlier_influence, outlier_blend
+
+                # Only apply blending where there are actual disagreements
+                disagreement_mask = torch.any(outlier_mask, dim=0)
+                final_chunk_masked = torch.where(disagreement_mask, final_chunk, robust_center)
+                del final_chunk, disagreement_mask, outlier_mask
+
+            final_merged_tensor.flatten()[i:end] = final_chunk_masked
+
+            # Cleanup
+            del chunk_stack, robust_center, iqr_full, is_outside_bounds, final_chunk_masked
+            if device.type == 'cuda':
+                torch.cuda.empty_cache()
+
+        return final_merged_tensor.reshape(deltas[0].shape)
+
+    @staticmethod
+    def _rams_geometric_median_safe(points: Tensor, eps: float = 1e-8, maxiter: int = 300,
+                                    ftol: float = 1e-5) -> Tensor:
+        """
+        Geometric median with proper convergence checking - no artificial timeout.
+        """
+        n_points, *dims = points.shape
+        if n_points == 0:
+            return torch.empty((0, *dims), device=points.device)
+        if n_points == 1:
+            return points[0]
+        if n_points == 2:
+            return torch.mean(points, dim=0)
+
+        device = points.device
+        median = torch.mean(points.reshape(n_points, -1), dim=0)
+
+        for iteration in range(maxiter):
+            prev_median = median.clone()
+            weighted_sum = torch.zeros_like(median)
+            weight_sum = torch.zeros_like(median)
+
+            chunk_size = min(1024, n_points)
+            for i in range(0, n_points, chunk_size):
+                chunk = points[i:i + chunk_size].reshape(-1, median.shape[0])
+                chunk_dist = torch.norm(chunk - median, dim=1) + eps
+                weights = 1.0 / chunk_dist
+
+                weighted_sum.add_(torch.sum(chunk * weights[:, None], dim=0))
+                weight_sum.add_(torch.sum(weights))
+
+            median = weighted_sum / weight_sum.clamp(min=eps)
+
+            # **FIXED**: Only use ftol for convergence, no arbitrary timeout
+            if torch.norm(median - prev_median) < ftol:
+                break
+
+        return median.reshape(*dims)
 
     # @staticmethod
     # @merge_method
@@ -5068,357 +5494,653 @@ class MergeMethods:
     # #     mask = torch.abs(a) >= k_value
     # #     return a * mask.float()
     #
-    # @staticmethod
-    # @merge_method
-    # def svd_ties_sum_extended(
-    #         *models: Parameter(Tensor, "delta"),
-    #         k: Parameter(Tensor) = 1.0,
-    #         max_singular_values: Parameter(Tensor) = 64,
-    #         energy_threshold: Parameter(Tensor) = 0.9,
-    #         power_iterations: Parameter(Tensor) = 1,
-    #         vote_sgn: Parameter(Tensor) = 1.0,
-    #         apply_stock: Parameter(Tensor) = 0.0,
-    #         cos_eps: Parameter(Tensor) = 1e-6,
-    #         apply_median: Parameter(Tensor) = 1.0,
-    #         eps: Parameter(Tensor) = 1e-6,
-    #         maxiter: Parameter(Tensor) = 150,
-    #         ftol: Parameter(Tensor) = 1e-22,
-    #         weight_decay: Parameter(Tensor) = 0.0218, # .0218,
-    #         min_agreement: Parameter(Tensor) = 0.3,
-    #         chunk_size: int = 4,
-    #         memory_safety_margin: float = 0.9,  # Default to 90% usage
-    #         tensor_chunk_size: Parameter(Tensor) = -1.0,
-    #         **kwargs,
-    # ) -> Return(Tensor, "delta"):
-    #     """
-    #     Memory-efficient TIES with dual-level (model + tensor) chunking.
-    #     Dynamically adapts to use up to 90% of available VRAM by default.
-    #     """
-    #     if not models:
-    #         raise ValueError("At least one model must be provided")
-    #
-    #     # Enable faster math modes if available
-    #     torch.backends.cuda.matmul.allow_tf32 = False
-    #     torch.backends.cudnn.allow_tf32 = False
-    #
-    #     device = models[0].device
-    #     dtype = models[0].dtype
-    #     total_models = len(models)
-    #     tensor_shape = models[0].shape
-    #
-    #     tensor_chunk_size = int(tensor_chunk_size) if tensor_chunk_size > 0 else None
-    #
-    #     def get_optimized_chunks():
-    #         if device.type != 'cuda':
-    #             return chunk_size, tensor_chunk_size or 1024
-    #
-    #         total_mem = torch.cuda.get_device_properties(device).total_memory
-    #         free_mem = total_mem - torch.cuda.memory_allocated(device)
-    #         usable_mem = free_mem * memory_safety_margin
-    #
-    #         # Base memory calculation with LoRA-style approximation
-    #         model_size = models[0].nelement() * models[0].element_size()
-    #
-    #         # LoRA memory (A and B matrices)
-    #         max_dim = max(tensor_shape)
-    #         lora_rank = min(max_singular_values, 64)
-    #         lora_mem = 2 * (max_dim * lora_rank) * models[0].element_size()  # A and B matrices
-    #
-    #         # Batch-friendly calculation
-    #         elements_per_batch = (usable_mem * 0.9) // (model_size + lora_mem)  # Use 90% VRAM
-    #         safe_model_chunk = max(4, min(  # Allow larger batches
-    #             int(elements_per_batch),
-    #             total_models
-    #         ))
-    #
-    #         # Tensor chunk sizing
-    #         if tensor_chunk_size is None or tensor_chunk_size <= 0:
-    #             elements_per_chunk = (usable_mem * 0.8) // (safe_model_chunk * models[0].element_size())
-    #             tensor_chunk = max(512, int(elements_per_chunk ** 0.5))  # Minimum 512 elements
-    #         else:
-    #             tensor_chunk = tensor_chunk_size
-    #
-    #         return (
-    #             safe_model_chunk,
-    #             min(tensor_chunk, max_dim)
-    #         )
-    #
-    #     model_chunk_size, tensor_chunk_size = get_optimized_chunks()
-    #
-    #     def batched_svd(matrices: Tensor) -> Tensor:
-    #         """Handle various parameter types safely"""
-    #         # Add dimensionality check
-    #         if matrices.ndim not in [2, 3]:
-    #             # Return original tensor for non-matrix params
-    #             return matrices.mean(dim=0) if matrices.ndim > 3 else matrices
-    #
-    #         # Ensure 3D shape even for single matrices
-    #         if matrices.ndim == 2:
-    #             matrices = matrices.unsqueeze(0)
-    #
-    #         batch_size, m, n = matrices.shape
-    #         max_rank = min(m, n, max_singular_values)
-    #
-    #         # Power iteration initialized orthogonal basis
-    #         A = torch.empty((batch_size, m, max_rank), device=device, dtype=dtype)
-    #         torch.nn.init.orthogonal_(A)
-    #
-    #         # Initial B computation (guaranteed to happen)
-    #         B = torch.linalg.lstsq(A, matrices).solution
-    #
-    #         # Power iteration refinement loop
-    #         for _ in range(power_iterations):
-    #             B = torch.linalg.lstsq(A, matrices).solution
-    #             A = torch.linalg.lstsq(B.mT, matrices.mT).solution.mT
-    #
-    #         # Approximate SVs via column norms
-    #         sv = torch.linalg.norm(B, dim=2)  # (batch, rank)
-    #         sv_sq_cumsum = torch.cumsum(sv ** 2, dim=-1)
-    #         total_energy = sv_sq_cumsum[:, -1].unsqueeze(1)
-    #
-    #         # Find first index meeting energy threshold per batch
-    #         effective_rank = torch.argmax(
-    #             (sv_sq_cumsum >= energy_threshold * total_energy).float(),  # Convert bool to float
-    #             dim=-1
-    #         ).clamp_min(1)
-    #
-    #         # Use median rank across current batch for consistency
-    #         final_rank = torch.median(effective_rank).int().clamp(1, max_rank)
-    #
-    #         # Truncate to effective rank
-    #         A_trunc = A[..., :final_rank]
-    #         B_trunc = B[..., :final_rank, :]
-    #
-    #         # Reconstruct and align signs
-    #         recon = A_trunc @ B_trunc
-    #         sign_match = torch.sign(recon) * torch.sign(matrices)
-    #
-    #         return recon * sign_match.mean(dim=0, keepdim=True)
-    #
-    #     # Initialize output tensor with page-locked memory
-    #     final_result = torch.zeros_like(models[0], device='cpu', pin_memory=True)
-    #     chunk_dim = 0 if tensor_shape[0] >= tensor_shape[1] else 1
-    #     tensor_len = tensor_shape[chunk_dim]
-    #
-    #     # Main processing loop with memory optimization
-    #     for tensor_start in range(0, tensor_len, tensor_chunk_size):
-    #         tensor_end = min(tensor_start + tensor_chunk_size, tensor_len)
-    #
-    #         # Prepare sliced tensor chunk with async transfer
-    #         model_slices = []
-    #         for model in models:
-    #             slice_args = tuple(
-    #                 slice(tensor_start, tensor_end) if d == chunk_dim else slice(None)
-    #                 for d in range(len(tensor_shape))
-    #             )
-    #             model_slices.append(model[slice_args].to(device, dtype, non_blocking=True))
-    #
-    #         # Process in optimized batches
-    #         chunk_filtered, chunk_signs = [], []
-    #         for batch_start in range(0, total_models, model_chunk_size):
-    #             batch = model_slices[batch_start:batch_start + model_chunk_size]
-    #
-    #             # Original k-based filtering
-    #             filtered, signs = MergeMethods._process_model_chunk(
-    #                 batch,
-    #                 k=k,
-    #                 device=device,
-    #                 dtype=dtype
-    #             )
-    #
-    #             # # Batch-optimized SVD with mixed precision
-    #             # with torch.cuda.amp.autocast(enabled=device.type == 'cuda'):
-    #             #     svd_batch = batched_svd(filtered)
-    #             #     svd_signs = torch.sign(svd_batch)
-    #
-    #             svd_batch = batched_svd(filtered)
-    #             if svd_batch.ndim > 3:  # For non-matrix params
-    #                 svd_batch = svd_batch.mean(dim=0)
-    #             svd_signs = torch.sign(svd_batch)
-    #
-    #             chunk_filtered.append(svd_batch)
-    #             chunk_signs.append(svd_signs)
-    #
-    #         # Aggregate and process results
-    #         filtered_delta = torch.cat(chunk_filtered)
-    #         signs = torch.cat(chunk_signs)
-    #
-    #         # Compute final chunk results
-    #         result_chunk = MergeMethods._compute_final_chunk(
-    #             filtered_delta, signs, vote_sgn, min_agreement, weight_decay,
-    #             apply_stock, cos_eps, apply_median, eps, maxiter, ftol,
-    #             model_chunk_size, tensor_chunk_size, device
-    #         )
-    #
-    #         # Update final tensor with page-locked memory copy
-    #         slice_args = tuple(
-    #             slice(tensor_start, tensor_end) if d == chunk_dim else slice(None)
-    #             for d in range(len(tensor_shape))
-    #         )
-    #         final_result[slice_args] = result_chunk.to("cpu", non_blocking=True)
-    #
-    #         # Managed memory cleanup
-    #         del model_slices, chunk_filtered, chunk_signs, filtered_delta, signs
-    #         if device.type == 'cuda':
-    #             torch.cuda.synchronize()
-    #             torch.cuda.empty_cache()
-    #
-    #     return final_result.to(device).nan_to_num(nan=0.0, posinf=0.0, neginf=0.0)
-    #
-    # @staticmethod
-    # def _process_model_chunk(chunk_models, k, device, dtype):
-    #     """Process a chunk of models with tensor chunking."""
-    #     filtered_chunks = []
-    #     sign_chunks = []
-    #
-    #     for model in chunk_models:
-    #         # Process in tensor chunks
-    #         filtered = MergeMethods.filter_top_k(model, k)
-    #         signs = torch.sign(filtered)
-    #         filtered_chunks.append(filtered)
-    #         sign_chunks.append(signs)
-    #
-    #     return torch.stack(filtered_chunks), torch.stack(sign_chunks)
-    #
-    # @staticmethod
-    # def _compute_final_chunk(filtered_delta, signs, vote_sgn, min_agreement, weight_decay,
-    #                          apply_stock, cos_eps, apply_median, eps, maxiter, ftol,
-    #                          model_chunk_size, tensor_chunk_size, device):
-    #     """Compute final merged values for a tensor chunk."""
-    #     # Compute agreement and filtering
-    #     vote_tensor = filtered_delta if vote_sgn <= 0.0 else signs
-    #     sign_sum = torch.sum(vote_tensor, dim=0)
-    #     agreement_ratio = torch.sum(signs != 0, dim=0).float() / len(signs)
-    #
-    #     final_sign = torch.where(
-    #         agreement_ratio >= min_agreement,
-    #         torch.sign(sign_sum),
-    #         torch.zeros_like(sign_sum)
-    #     )
-    #
-    #     delta_filters = (signs == final_sign).float()
-    #     param_counts = torch.sum(delta_filters, dim=0)
-    #
-    #     if weight_decay > 0.0:
-    #         filtered_delta = filtered_delta * (1.0 - weight_decay)
-    #
-    #     filtered_delta *= delta_filters
-    #
-    #     # Apply merge method
-    #     if apply_median <= 0.0:
-    #         if apply_stock > 0.0:
-    #             t = MergeMethods._compute_model_stock_chunked(
-    #                 filtered_delta,
-    #                 cos_eps=cos_eps,
-    #                 chunk_size=model_chunk_size
-    #             )
-    #         else:
-    #             t = 1.0
-    #
-    #         result = filtered_delta.sum(dim=0) * t / torch.clamp(param_counts, min=eps)
-    #     else:
-    #         result = MergeMethods._compute_geometric_median_chunked(
-    #             filtered_delta,
-    #             eps=eps,
-    #             maxiter=maxiter,
-    #             ftol=ftol,
-    #             chunk_size=tensor_chunk_size
-    #         )
-    #
-    #     return result
-    #
-    # @staticmethod
-    # def _compute_model_stock_chunked(filtered_delta, cos_eps, chunk_size):
-    #     """Memory-efficient cosine similarity calculation."""
-    #     n_models = filtered_delta.shape[0]
-    #     total = 0.0
-    #     count = 0
-    #
-    #     for i in range(0, n_models, chunk_size):
-    #         chunk_i = filtered_delta[i:i + chunk_size].flatten(1)
-    #         norm_i = torch.norm(chunk_i, dim=1, keepdim=True)
-    #
-    #         for j in range(i, n_models, chunk_size):
-    #             chunk_j = filtered_delta[j:j + chunk_size].flatten(1)
-    #             norm_j = torch.norm(chunk_j, dim=1, keepdim=True)
-    #
-    #             chunk_cos = torch.mm(chunk_i, chunk_j.T) / (torch.mm(norm_i, norm_j.T) + cos_eps)
-    #             total += torch.sum(chunk_cos > 0).item()
-    #             count += chunk_cos.numel()
-    #
-    #             del chunk_j, norm_j
-    #             torch.cuda.empty_cache()
-    #
-    #         del chunk_i, norm_i
-    #         torch.cuda.empty_cache()
-    #
-    #     return total / count if count > 0 else 0.0
-    #
-    # @staticmethod
-    # def _compute_geometric_median_chunked(points, eps, maxiter, ftol, chunk_size):
-    #     """Optimized geometric median with full chunking."""
-    #     n_points, *dims = points.shape
-    #     device = points.device
-    #     median = torch.mean(points.view(n_points, -1), dim=0)
-    #
-    #     for _ in range(maxiter):
-    #         weighted_sum = torch.zeros_like(median)
-    #         weight_sum = 0.0
-    #
-    #         # Process distance calculations in chunks
-    #         for i in range(0, n_points, chunk_size):
-    #             chunk = points[i:i + chunk_size].view(-1, median.shape[0])
-    #             chunk_dist = torch.norm(chunk - median, dim=1) + eps
-    #             chunk_weights = 1 / chunk_dist
-    #
-    #             weighted_sum += torch.sum(chunk * chunk_weights[:, None], dim=0)
-    #             weight_sum += torch.sum(chunk_weights)
-    #
-    #             # Prevent memory accumulation
-    #             del chunk, chunk_dist, chunk_weights
-    #             torch.cuda.empty_cache()
-    #
-    #         new_median = weighted_sum / weight_sum.clamp(min=eps)
-    #
-    #         if torch.norm(new_median - median) < ftol:
-    #             break
-    #         median = new_median.clone()
-    #
-    #     return median.view(*dims)
-    #
-    # @staticmethod
-    # def filter_top_k(a: Tensor, k: float) -> torch.Tensor:
-    #     """Memory-optimized top-k filtering with safe kthvalue handling."""
-    #     total_elements = a.numel()
-    #     k_val = max(int((1 - k) * total_elements), 1)
-    #
-    #     if k_val >= total_elements:
-    #         return torch.zeros_like(a)
-    #
-    #     # Find threshold with chunked processing
-    #     chunk_size = 1_000_000
-    #     threshold = torch.tensor(float('inf'), device=a.device)
-    #     remaining_k = k_val
-    #
-    #     for i in range(0, total_elements, chunk_size):
-    #         chunk = a.flatten()[i:i + chunk_size].abs()
-    #         chunk_elements = chunk.numel()
-    #
-    #         if remaining_k <= 0:
-    #             break
-    #
-    #         # Calculate how many elements we need from this chunk
-    #         current_k = min(max(remaining_k, 1), chunk_elements)  # Clamp between 1 and chunk size
-    #         chunk_thresh = torch.kthvalue(chunk, current_k).values
-    #
-    #         # Update threshold and remaining elements to find
-    #         threshold = torch.minimum(threshold, chunk_thresh)
-    #         remaining_k -= current_k
-    #
-    #     # Final safety check
-    #     valid_threshold = threshold if not torch.isinf(threshold) else torch.tensor(0.0, device=a.device)
-    #     return a * (a.abs() >= valid_threshold).to(a.dtype)
-    #
+
+    @merge_method
+    def svd_ties_sum_extended(
+            *models: Parameter(Tensor, "delta"),
+            k: Parameter(float) = 1.0,
+            max_singular_values: Parameter(int) = 64,
+            energy_threshold: Parameter(float) = 0.9,
+            power_iterations: Parameter(int) = 1,
+            vote_sgn: Parameter(float) = 1.0,
+            apply_stock: Parameter(float) = 0.0,
+            cos_eps: Parameter(float) = 1e-6,
+            apply_median: Parameter(float) = 1.0,
+            eps: Parameter(float) = 1e-6,
+            maxiter: Parameter(int) = 150,
+            ftol: Parameter(float) = 1e-22,
+            weight_decay: Parameter(float) = 0.0218, # .0218,
+            min_agreement: Parameter(float) = 0.3,
+            chunk_size: Parameter(int) = 4,
+            memory_safety_margin: Parameter(float) = 0.9,  # Default to 90% usage
+            tensor_chunk_size: Parameter(float) = -1.0,
+            **kwargs,
+    ) -> Return(Tensor, "delta"):
+        """
+        Memory-efficient TIES with dual-level (model + tensor) chunking.
+        Dynamically adapts to use up to 90% of available VRAM by default.
+        """
+        if not models:
+            raise ValueError("At least one model must be provided")
+
+        # Enable faster math modes if available
+        torch.backends.cuda.matmul.allow_tf32 = False
+        torch.backends.cudnn.allow_tf32 = False
+
+        device = models[0].device
+        dtype = models[0].dtype
+        total_models = len(models)
+        tensor_shape = models[0].shape
+
+        tensor_chunk_size = int(tensor_chunk_size) if tensor_chunk_size > 0 else None
+
+        def get_optimized_chunks():
+            if device.type != 'cuda':
+                return chunk_size, tensor_chunk_size or 1024
+
+            total_mem = torch.cuda.get_device_properties(device).total_memory
+            free_mem = total_mem - torch.cuda.memory_allocated(device)
+            usable_mem = free_mem * memory_safety_margin
+
+            # Base memory calculation with LoRA-style approximation
+            model_size = models[0].nelement() * models[0].element_size()
+
+            # LoRA memory (A and B matrices)
+            max_dim = max(tensor_shape)
+            lora_rank = min(max_singular_values, 64)
+            lora_mem = 2 * (max_dim * lora_rank) * models[0].element_size()  # A and B matrices
+
+            # Batch-friendly calculation
+            elements_per_batch = (usable_mem * 0.9) // (model_size + lora_mem)  # Use 90% VRAM
+            safe_model_chunk = max(4, min(  # Allow larger batches
+                int(elements_per_batch),
+                total_models
+            ))
+
+            # Tensor chunk sizing
+            if tensor_chunk_size is None or tensor_chunk_size <= 0:
+                elements_per_chunk = (usable_mem * 0.8) // (safe_model_chunk * models[0].element_size())
+                tensor_chunk = max(512, int(elements_per_chunk ** 0.5))  # Minimum 512 elements
+            else:
+                tensor_chunk = tensor_chunk_size
+
+            return (
+                safe_model_chunk,
+                min(tensor_chunk, max_dim)
+            )
+
+        model_chunk_size, tensor_chunk_size = get_optimized_chunks()
+
+        def batched_svd(matrices: Tensor) -> Tensor:
+            """Handle various parameter types safely"""
+            # Add dimensionality check
+            if matrices.ndim not in [2, 3]:
+                # Return original tensor for non-matrix params
+                return matrices.mean(dim=0) if matrices.ndim > 3 else matrices
+
+            # Ensure 3D shape even for single matrices
+            if matrices.ndim == 2:
+                matrices = matrices.unsqueeze(0)
+
+            batch_size, m, n = matrices.shape
+            max_rank = min(m, n, max_singular_values)
+
+            # Power iteration initialized orthogonal basis
+            A = torch.empty((batch_size, m, max_rank), device=device, dtype=dtype)
+            torch.nn.init.orthogonal_(A)
+
+            # Initial B computation (guaranteed to happen)
+            B = torch.linalg.lstsq(A, matrices).solution
+
+            # Power iteration refinement loop
+            for _ in range(power_iterations):
+                B = torch.linalg.lstsq(A, matrices).solution
+                A = torch.linalg.lstsq(B.mT, matrices.mT).solution.mT
+
+            # Approximate SVs via column norms
+            sv = torch.linalg.norm(B, dim=2)  # (batch, rank)
+            sv_sq_cumsum = torch.cumsum(sv ** 2, dim=-1)
+            total_energy = sv_sq_cumsum[:, -1].unsqueeze(1)
+
+            # Find first index meeting energy threshold per batch
+            effective_rank = torch.argmax(
+                (sv_sq_cumsum >= energy_threshold * total_energy).float(),  # Convert bool to float
+                dim=-1
+            ).clamp_min(1)
+
+            # Use median rank across current batch for consistency
+            final_rank = torch.median(effective_rank).int().clamp(1, max_rank)
+
+            # Truncate to effective rank
+            A_trunc = A[..., :final_rank]
+            B_trunc = B[..., :final_rank, :]
+
+            # Reconstruct and align signs
+            recon = A_trunc @ B_trunc
+            sign_match = torch.sign(recon) * torch.sign(matrices)
+
+            return recon * sign_match.mean(dim=0, keepdim=True)
+
+        # Initialize output tensor with page-locked memory
+        final_result = torch.zeros_like(models[0], device='cpu', pin_memory=True)
+        chunk_dim = 0 if tensor_shape[0] >= tensor_shape[1] else 1
+        tensor_len = tensor_shape[chunk_dim]
+
+        # Main processing loop with memory optimization
+        for tensor_start in range(0, tensor_len, tensor_chunk_size):
+            tensor_end = min(tensor_start + tensor_chunk_size, tensor_len)
+
+            # Prepare sliced tensor chunk with async transfer
+            model_slices = []
+            for model in models:
+                slice_args = tuple(
+                    slice(tensor_start, tensor_end) if d == chunk_dim else slice(None)
+                    for d in range(len(tensor_shape))
+                )
+                model_slices.append(model[slice_args].to(device, dtype, non_blocking=True))
+
+            # Process in optimized batches
+            chunk_filtered, chunk_signs = [], []
+            for batch_start in range(0, total_models, model_chunk_size):
+                batch = model_slices[batch_start:batch_start + model_chunk_size]
+
+                # Original k-based filtering
+                filtered, signs = MergeMethods._process_model_chunk(
+                    batch,
+                    k=k,
+                    device=device,
+                    dtype=dtype
+                )
+
+                # # Batch-optimized SVD with mixed precision
+                # with torch.cuda.amp.autocast(enabled=device.type == 'cuda'):
+                #     svd_batch = batched_svd(filtered)
+                #     svd_signs = torch.sign(svd_batch)
+
+                svd_batch = batched_svd(filtered)
+                if svd_batch.ndim > 3:  # For non-matrix params
+                    svd_batch = svd_batch.mean(dim=0)
+                svd_signs = torch.sign(svd_batch)
+
+                chunk_filtered.append(svd_batch)
+                chunk_signs.append(svd_signs)
+
+            # Aggregate and process results
+            filtered_delta = torch.cat(chunk_filtered)
+            signs = torch.cat(chunk_signs)
+
+            # Compute final chunk results
+            result_chunk = MergeMethods._compute_final_chunk(
+                filtered_delta, signs, vote_sgn, min_agreement, weight_decay,
+                apply_stock, cos_eps, apply_median, eps, maxiter, ftol,
+                model_chunk_size, tensor_chunk_size, device
+            )
+
+            # Update final tensor with page-locked memory copy
+            slice_args = tuple(
+                slice(tensor_start, tensor_end) if d == chunk_dim else slice(None)
+                for d in range(len(tensor_shape))
+            )
+            final_result[slice_args] = result_chunk.to("cpu", non_blocking=True)
+
+            # Managed memory cleanup
+            del model_slices, chunk_filtered, chunk_signs, filtered_delta, signs
+            if device.type == 'cuda':
+                torch.cuda.synchronize()
+                torch.cuda.empty_cache()
+
+        return final_result.to(device).nan_to_num(nan=0.0, posinf=0.0, neginf=0.0)
+
+    @staticmethod
+    def _process_model_chunk(chunk_models, k, device, dtype):
+        """Process a chunk of models with tensor chunking."""
+        filtered_chunks = []
+        sign_chunks = []
+
+        for model in chunk_models:
+            # Process in tensor chunks
+            filtered = MergeMethods.filter_top_k(model, k)
+            signs = torch.sign(filtered)
+            filtered_chunks.append(filtered)
+            sign_chunks.append(signs)
+
+        return torch.stack(filtered_chunks), torch.stack(sign_chunks)
+
+    @staticmethod
+    def _compute_final_chunk(filtered_delta, signs, vote_sgn, min_agreement, weight_decay,
+                             apply_stock, cos_eps, apply_median, eps, maxiter, ftol,
+                             model_chunk_size, tensor_chunk_size, device):
+        """Compute final merged values for a tensor chunk."""
+        # Compute agreement and filtering
+        vote_tensor = filtered_delta if vote_sgn <= 0.0 else signs
+        sign_sum = torch.sum(vote_tensor, dim=0)
+        agreement_ratio = torch.sum(signs != 0, dim=0).float() / len(signs)
+
+        final_sign = torch.where(
+            agreement_ratio >= min_agreement,
+            torch.sign(sign_sum),
+            torch.zeros_like(sign_sum)
+        )
+
+        delta_filters = (signs == final_sign).float()
+        param_counts = torch.sum(delta_filters, dim=0)
+
+        if weight_decay > 0.0:
+            filtered_delta = filtered_delta * (1.0 - weight_decay)
+
+        filtered_delta *= delta_filters
+
+        # Apply merge method
+        if apply_median <= 0.0:
+            if apply_stock > 0.0:
+                t = MergeMethods._compute_model_stock_chunked(
+                    filtered_delta,
+                    cos_eps=cos_eps,
+                    chunk_size=model_chunk_size
+                )
+            else:
+                t = 1.0
+
+            result = filtered_delta.sum(dim=0) * t / torch.clamp(param_counts, min=eps)
+        else:
+            result = MergeMethods._compute_geometric_median_chunked(
+                filtered_delta,
+                eps=eps,
+                maxiter=maxiter,
+                ftol=ftol,
+                chunk_size=tensor_chunk_size
+            )
+
+        return result
+
+    @staticmethod
+    def _compute_model_stock_chunked(filtered_delta, cos_eps, chunk_size):
+        """Memory-efficient cosine similarity calculation."""
+        n_models = filtered_delta.shape[0]
+        total = 0.0
+        count = 0
+
+        for i in range(0, n_models, chunk_size):
+            chunk_i = filtered_delta[i:i + chunk_size].flatten(1)
+            norm_i = torch.norm(chunk_i, dim=1, keepdim=True)
+
+            for j in range(i, n_models, chunk_size):
+                chunk_j = filtered_delta[j:j + chunk_size].flatten(1)
+                norm_j = torch.norm(chunk_j, dim=1, keepdim=True)
+
+                chunk_cos = torch.mm(chunk_i, chunk_j.T) / (torch.mm(norm_i, norm_j.T) + cos_eps)
+                total += torch.sum(chunk_cos > 0).item()
+                count += chunk_cos.numel()
+
+                del chunk_j, norm_j
+                torch.cuda.empty_cache()
+
+            del chunk_i, norm_i
+            torch.cuda.empty_cache()
+
+        return total / count if count > 0 else 0.0
+
+    @staticmethod
+    def _compute_geometric_median_chunked(points, eps, maxiter, ftol, chunk_size):
+        """Optimized geometric median with full chunking."""
+        n_points, *dims = points.shape
+        device = points.device
+        median = torch.mean(points.view(n_points, -1), dim=0)
+
+        for _ in range(maxiter):
+            weighted_sum = torch.zeros_like(median)
+            weight_sum = 0.0
+
+            # Process distance calculations in chunks
+            for i in range(0, n_points, chunk_size):
+                chunk = points[i:i + chunk_size].view(-1, median.shape[0])
+                chunk_dist = torch.norm(chunk - median, dim=1) + eps
+                chunk_weights = 1 / chunk_dist
+
+                weighted_sum += torch.sum(chunk * chunk_weights[:, None], dim=0)
+                weight_sum += torch.sum(chunk_weights)
+
+                # Prevent memory accumulation
+                del chunk, chunk_dist, chunk_weights
+                torch.cuda.empty_cache()
+
+            new_median = weighted_sum / weight_sum.clamp(min=eps)
+
+            if torch.norm(new_median - median) < ftol:
+                break
+            median = new_median.clone()
+
+        return median.view(*dims)
+
+    @staticmethod
+    def filter_top_k(a: Tensor, k: float) -> torch.Tensor:
+        """Memory-optimized top-k filtering with safe kthvalue handling."""
+        total_elements = a.numel()
+        k_val = max(int((1 - k) * total_elements), 1)
+
+        if k_val >= total_elements:
+            return torch.zeros_like(a)
+
+        # Find threshold with chunked processing
+        chunk_size = 1_000_000
+        threshold = torch.tensor(float('inf'), device=a.device)
+        remaining_k = k_val
+
+        for i in range(0, total_elements, chunk_size):
+            chunk = a.flatten()[i:i + chunk_size].abs()
+            chunk_elements = chunk.numel()
+
+            if remaining_k <= 0:
+                break
+
+            # Calculate how many elements we need from this chunk
+            current_k = min(max(remaining_k, 1), chunk_elements)  # Clamp between 1 and chunk size
+            chunk_thresh = torch.kthvalue(chunk, current_k).values
+
+            # Update threshold and remaining elements to find
+            threshold = torch.minimum(threshold, chunk_thresh)
+            remaining_k -= current_k
+
+        # Final safety check
+        valid_threshold = threshold if not torch.isinf(threshold) else torch.tensor(0.0, device=a.device)
+        return a * (a.abs() >= valid_threshold).to(a.dtype)
+
+    @merge_method
+    def svd_ties_sum_extended_v13(
+            *models: Parameter(Tensor, "delta"),
+            passthrough_index: Parameter(int) = 0,
+            k: Parameter(float) = 1.0,
+            max_singular_values: Parameter(int) = 64,
+            energy_threshold: Parameter(float) = 0.9,
+            power_iterations: Parameter(int) = 1,
+            vote_sgn: Parameter(float) = 1.0,
+            apply_stock: Parameter(float) = 0.0,
+            cos_eps: Parameter(float) = 1e-6,
+            apply_median: Parameter(float) = 1.0,
+            eps: Parameter(float) = 1e-6,
+            maxiter: Parameter(int) = 150,
+            ftol: Parameter(float) = 1e-22,
+            weight_decay: Parameter(float) = 0.0218,
+            min_agreement: Parameter(float) = 0.3,
+            memory_safety_margin: Parameter(float) = 0.8,
+            **kwargs,
+    ) -> Return(Tensor, "delta"):
+        """
+        Correctly implements hybrid chunking for massive tensors in concurrent environments.
+        - Outer loop performs SPATIAL chunking (slicing large tensors).
+        - Inner loop performs BATCH chunking (processing a few tensors at a time).
+        - This robustly handles scenarios with many, very large input tensors.
+        """
+        if not models:
+            raise ValueError("Onii-chan, you have to give me at least one model tensor!")
+
+        if k == 0.0 and min_agreement == 0.0 and energy_threshold == 0.0:
+            if 0 <= passthrough_index < len(models):
+                return models[passthrough_index].clone()
+            else:
+                return torch.zeros_like(models[0])
+
+        tensor_template = models[0]
+        original_shape = tensor_template.shape
+        original_ndim = tensor_template.ndim
+
+        if original_ndim <= 1:
+            with torch.no_grad():
+                stacked = torch.stack([m.to(torch.float32) for m in models])
+                average_tensor = torch.mean(stacked, dim=0)
+                return average_tensor.to(dtype=tensor_template.dtype)
+
+        if original_ndim == 4:
+            # We must keep the output channels (dim 0) separate!
+            # Reshape [out, in, h, w] -> [out, in*h*w]
+            reshaped_models = [m.reshape(m.shape[0], -1) for m in models]
+            models = tuple(reshaped_models)
+
+        device = models[0].device
+        dtype = models[0].dtype
+        total_tensors = len(models)
+
+        tensor_batch_size, spatial_chunk_size = MergeMethods._get_optimized_chunks_v12(
+            models[0], total_tensors, memory_safety_margin, dtype, max_singular_values
+        )
+
+        final_result_2d = torch.zeros_like(models[0], device='cpu', pin_memory=True)
+
+        with torch.no_grad():
+            filtered_tensors = [MergeMethods.filter_top_k_v2(m, k) for m in models]
+
+            tensor_shape = models[0].shape
+            chunk_dim = 0 if tensor_shape[0] >= tensor_shape[1] else 1
+            tensor_len = tensor_shape[chunk_dim]
+
+            for tensor_start in range(0, tensor_len, spatial_chunk_size):
+                tensor_end = min(tensor_start + spatial_chunk_size, tensor_len)
+                slice_obj = tuple(
+                    slice(tensor_start, tensor_end) if d == chunk_dim else slice(None)
+                    for d in range(len(tensor_shape))
+                )
+
+                collected_deltas = []
+                for i in range(0, total_tensors, tensor_batch_size):
+                    batch_tensors_cpu = filtered_tensors[i:i + tensor_batch_size]
+                    batch_slices_gpu = torch.stack(
+                        [t[slice_obj].to(device, non_blocking=True) for t in batch_tensors_cpu]
+                    )
+
+                    reconstructed_batch = MergeMethods._approximate_svd_v2(
+                        batch_slices_gpu,
+                        max_rank=max_singular_values, power_iterations=power_iterations,
+                        energy_threshold=energy_threshold
+                    )
+
+                    collected_deltas.append(reconstructed_batch)
+                    del batch_slices_gpu
+                    if device.type == 'cuda': torch.cuda.empty_cache()
+
+                filtered_delta = torch.cat(collected_deltas)
+                signs = torch.sign(filtered_delta)
+
+                result_chunk = MergeMethods._compute_final_chunk_v2(
+                    filtered_delta, signs,
+                    vote_sgn, min_agreement, weight_decay, apply_stock, cos_eps,
+                    apply_median, eps, maxiter, ftol, total_tensors
+                )
+
+                final_result_2d[slice_obj] = result_chunk.to('cpu', non_blocking=True)
+
+                del collected_deltas, filtered_delta, signs, result_chunk
+                if device.type == 'cuda': torch.cuda.empty_cache()
+
+        final_result = final_result_2d.to(device)
+        if original_ndim == 4:
+            final_result = final_result.reshape(original_shape)
+
+        return final_result.nan_to_num(0.0)
+
+    @staticmethod
+    def _get_optimized_chunks_v12(tensor_template: Tensor, total_tensors: int, margin: float, dtype: torch.dtype,
+                                  max_rank: int) -> (int, int):
+        """
+        An aggressive and more precise memory calculator.
+        - It correctly identifies the single largest memory allocation.
+        - It uses more precise formulas for memory costs.
+        - Goal: Maximize VRAM utilization without crashing.
+        """
+        if tensor_template.device.type != 'cuda':
+            return total_tensors, max(tensor_template.shape)
+
+        total_mem = torch.cuda.get_device_properties(tensor_template.device).total_memory
+        free_mem = total_mem - torch.cuda.memory_allocated(tensor_template.device)
+        usable_mem = free_mem * margin
+
+        m, n = tensor_template.shape
+        element_size = torch.tensor([], dtype=dtype).element_size()
+        rank = min(m, n, max_rank)
+
+        # --- Let's calculate the memory cost PER ROW for our two main operations ---
+
+        # 1. Cost per row for the SVD step (for a single tensor in a batch)
+        #    Cost is: (base_slice + A_matrix + B_matrix)
+        #    For one row: (n_cols + rank_cols + n_cols)
+        mem_per_row_svd = (n + rank + n) * element_size
+
+        # 2. Cost per row for the final concatenated tensor (`filtered_delta` + `signs`)
+        #    For one row: (n_cols * total_tensors * 2) because we hold both tensors.
+        mem_per_row_final = (n * total_tensors * 2) * element_size
+
+        # The LARGEST of these two determines our memory bottleneck.
+        dominant_mem_per_row = max(mem_per_row_svd, mem_per_row_final)
+
+        if dominant_mem_per_row == 0:
+            safe_spatial_chunk = m
+        else:
+            # How many rows can we afford, based on the most expensive operation?
+            num_rows_can_fit = math.floor(usable_mem / dominant_mem_per_row)
+            safe_spatial_chunk = max(256, int(num_rows_can_fit))
+
+        # With our new, aggressive spatial chunk, let's find the batch size.
+        # We can now calculate the exact memory needed for SVD on one slice.
+        current_m = min(safe_spatial_chunk, m)
+        mem_for_one_svd_slice = (
+                                        (current_m * n) +  # Base slice
+                                        (current_m * rank) +  # Matrix A
+                                        (n * rank)  # Matrix B
+                                ) * element_size
+
+        if mem_for_one_svd_slice == 0:
+            safe_batch_size = total_tensors
+        else:
+            # How many SVD operations can we stack in our memory budget?
+            num_batches_can_fit = math.floor(usable_mem / mem_for_one_svd_slice)
+            safe_batch_size = max(1, int(num_batches_can_fit))
+
+        return safe_batch_size, min(safe_spatial_chunk, m)
+
+    # --- Helper methods from v2/v3 can be reused as they are clean ---
+    @staticmethod
+    def filter_top_k_v2(a: Tensor, k: float) -> Tensor:
+        if k >= 1.0: return a
+        if k <= 0.0: return torch.zeros_like(a)
+        flat_abs = a.abs().flatten()
+        k_val = max(1, int((1.0 - k) * flat_abs.numel()))
+        if k_val >= flat_abs.numel(): return torch.zeros_like(a)
+        threshold = torch.kthvalue(flat_abs, k_val).values
+        return a * (a.abs() >= threshold)
+
+    @staticmethod
+    def _approximate_svd_v2(matrices: Tensor, max_rank: int, power_iterations: int,
+                            energy_threshold: float) -> Tensor:
+        if matrices.ndim < 2: return matrices
+        if matrices.ndim == 2: matrices = matrices.unsqueeze(0)
+
+        batch_size, m, n = matrices.shape
+        rank = min(m, n, max_rank)
+
+        A = torch.empty(batch_size, m, rank, device=matrices.device, dtype=matrices.dtype)
+        torch.nn.init.orthogonal_(A)
+
+        for _ in range(power_iterations):
+            B = torch.linalg.lstsq(A, matrices).solution
+            A = torch.linalg.lstsq(B.mT, matrices.mT).solution.mT
+
+        singular_values_sq = torch.sum(B ** 2, dim=2)
+        total_energy = torch.sum(singular_values_sq, dim=-1, keepdim=True)
+        energy_cumsum = torch.cumsum(singular_values_sq, dim=-1)
+        rank_indices = torch.argmax((energy_cumsum >= energy_threshold * total_energy).float(), dim=-1)
+        final_rank = torch.median(rank_indices).int().clamp(min=1, max=rank).item()
+
+        A_trunc, B_trunc = A[..., :final_rank], B[..., :final_rank, :]
+        reconstructed = A_trunc @ B_trunc
+
+        # --- THE CORRECTED SIGN ALIGNMENT LOGIC ---
+        # We calculate the dot product for each matrix in the batch.
+        # This is much more robust than my old, buggy method.
+        dot_products = torch.sum(reconstructed * matrices, dim=(-1, -2), keepdim=True)
+        signs = torch.sign(dot_products)
+
+        # We use .detach() on the signs to ensure no weird gradients flow back, just in case.
+        return reconstructed * signs.detach()
+
+    @staticmethod
+    def _compute_final_chunk_v2(
+            filtered_delta, signs, vote_sgn, min_agreement, weight_decay,
+            apply_stock, cos_eps, apply_median, eps, maxiter, ftol,
+            processing_batch_size
+    ):
+        vote_tensor = signs if vote_sgn > 0.0 else filtered_delta
+        sign_sum = torch.sum(vote_tensor, dim=0)
+        agreement_mask = signs != 0
+        agreement_ratio = agreement_mask.float().sum(dim=0) / signs.shape[0]
+        final_sign = torch.sign(sign_sum)
+        final_sign[agreement_ratio < min_agreement] = 0
+        delta_filters = (signs == final_sign).float()
+        param_counts = torch.sum(delta_filters, dim=0)
+        if weight_decay > 0.0:
+            filtered_delta = filtered_delta * (1.0 - weight_decay)
+        filtered_delta *= delta_filters
+        if apply_median > 0.0:
+            return MergeMethods._compute_geometric_median_chunked_v2(
+                filtered_delta, eps, maxiter, ftol, processing_batch_size
+            )
+        else:
+            t = 1.0
+            if apply_stock > 0.0:
+                t = MergeMethods._compute_model_stock_chunked_v2(
+                    filtered_delta, cos_eps, processing_batch_size
+                )
+            return (filtered_delta.sum(dim=0) * t) / param_counts.clamp(min=eps)
+
+    # Note: The chunked median and stock methods are still useful for memory,
+    # so I just cleaned them up and renamed them to _v2.
+    @staticmethod
+    def _compute_geometric_median_chunked_v2(points, eps, maxiter, ftol, chunk_size):
+        """Optimized geometric median with chunking."""
+        n_points, *dims = points.shape
+        points_flat = points.view(n_points, -1)
+        median = torch.mean(points_flat, dim=0)
+
+        for _ in range(maxiter):
+            prev_median = median.clone()
+
+            weighted_sum = torch.zeros_like(median)
+            weight_sum = torch.zeros(1, device=median.device)
+
+            for i in range(0, n_points, chunk_size):
+                chunk = points_flat[i:i + chunk_size]
+                dist = torch.norm(chunk - median, dim=1)
+                inv_dist = 1.0 / dist.clamp(min=eps)
+
+                weighted_sum += torch.sum(chunk * inv_dist[:, None], dim=0)
+                weight_sum += torch.sum(inv_dist)
+
+            median = weighted_sum / weight_sum.clamp(min=eps)
+            if torch.norm(median - prev_median) < ftol:
+                break
+
+        return median.view(*dims)
+
+    @staticmethod
+    def _compute_model_stock_chunked_v2(filtered_delta, cos_eps, chunk_size):
+        """Memory-efficient cosine similarity calculation."""
+        n_models = filtered_delta.shape[0]
+        flat_delta = filtered_delta.flatten(1)
+        total_sum = 0.0
+
+        for i in range(0, n_models, chunk_size):
+            chunk_i = flat_delta[i:i + chunk_size]
+            norm_i = torch.norm(chunk_i, p=2, dim=1, keepdim=True)
+            for j in range(i, n_models, chunk_size):
+                chunk_j = flat_delta[j:j + chunk_size]
+                norm_j = torch.norm(chunk_j, p=2, dim=1, keepdim=True)
+
+                # Cosine similarity
+                cos_sim = (chunk_i @ chunk_j.T) / ((norm_i @ norm_j.T) + cos_eps)
+
+                # In the original, it seems you just wanted the positive ratio
+                total_sum += torch.sum(cos_sim > 0).item()
+
+        return total_sum / (n_models * n_models) if n_models > 0 else 0.0
+
     # @staticmethod
     # @merge_method
     # def ties_sum_with_dropout(

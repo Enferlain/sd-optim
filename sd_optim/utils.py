@@ -371,8 +371,15 @@ def save_merge_artifacts(
         scripts_dir.mkdir(parents=True, exist_ok=True)
         script_file_path = scripts_dir / f"{model_path.stem}_run.py"
 
-        # --- Step 1: Get the Main Merge Method & Its Code ---
-        main_method_name = get_main_method_name(cfg, final_recipe_node)
+        # Step 0: Get original recipe text
+        original_recipe_text = ""
+        if cfg.optimization_mode == "recipe":
+            recipe_path = Path(cfg.recipe_optimization.recipe_path)
+            if recipe_path.exists():
+                original_recipe_text = recipe_path.read_text(encoding="utf-8")
+
+        # Step 1: Get the Main Merge Method & Its Code
+        main_method_name = get_method_names(cfg, original_recipe_text)
         method_imports, methods_code = get_source_code_for_methods({main_method_name})
 
         # --- Step 2: Find All Converters Used in the Recipe ---
@@ -413,18 +420,43 @@ def save_merge_artifacts(
         logger.error(f"Failed to save runnable script: {e}", exc_info=True)
 
 
-def get_main_method_name(cfg: DictConfig, root_node: recipe_nodes.RecipeNode) -> str:
-    """Gets the name of the primary merge method being optimized."""
+def get_method_names(cfg: DictConfig, original_recipe_text: str) -> str:
+    """
+    Gets the name of the method in the merge nodes being optimized by correctly
+    analyzing the recipe text for recipe mode.
+    """
     if cfg.optimization_mode == "merge":
         return cfg.merge_method
+
     elif cfg.optimization_mode == "recipe":
-        # Find the node targeted by the optimizer and get its method name
         target_ref = cfg.recipe_optimization.get("target_nodes")
-        if target_ref:
-            # This helper finds the node in the graph and returns its method identifier
-            info = get_info_from_target_node(root_node, target_ref)
-            return info.get("method_name", "unknown_recipe_method")
-    return "unknown" # Default for layer_adjust or other modes
+        if not target_ref:
+            logger.warning("Recipe mode selected but no target_nodes defined.")
+            return "unknown_recipe_method_no_target"
+
+        try:
+            # We deserialize just enough of the original recipe to inspect our target node.
+            # This is the most reliable way to get the method name.
+            all_lines = original_recipe_text.strip().split('\n')
+            target_node_idx = int(target_ref.strip('&'))
+
+            # Deserialize up to and including the target line's context
+            recipe_slice_to_parse = all_lines[:target_node_idx + 2]  # +1 for 0-index, +1 for version header
+            target_node = sd_mecha.deserialize(recipe_slice_to_parse)
+
+            # The last node in this slice is our target
+            if isinstance(target_node, sd_mecha.recipe_nodes.MergeRecipeNode):
+                return target_node.merge_method.identifier
+            else:
+                logger.error(f"Target node {target_ref} is not a merge method.")
+                return "unknown_recipe_method_not_merge"
+
+        except Exception as e:
+            logger.error(f"Failed to parse recipe to get main method name: {e}")
+            return "unknown_recipe_method_parse_fail"
+
+    # Default for other modes like layer_adjust or if something fails
+    return "unknown_recipe_method_other_mode"
 
 
 class ConverterFinder(recipe_nodes.RecipeVisitor):

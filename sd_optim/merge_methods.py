@@ -28,6 +28,7 @@ from typing import Optional, Callable, Dict, Tuple, TypeVar, Generic, get_type_h
 from pytorch_wavelets import DWTForward, DWTInverse
 from sd_mecha import Parameter, Return, merge_method  # Import Parameter and Return
 
+from sd_optim.TALON import TALON
 from sd_optim.svd import torch_svd_lowrank # you need to make your own or use the one from mecha
 from torch import Tensor # Import Tensor
 
@@ -2855,130 +2856,129 @@ class MergeMethods:
             raise ValueError("At least one delta tensor must be provided!")
 
         if outlier_tolerance == 0.0 and outlier_intensity == 0.0:
-            return torch.zeros_like(deltas[0])
+                return torch.zeros_like(deltas[0])
 
         core_indices = [1, 3, 4, 6, 7, 8, 9, 10]
         device = deltas[0].device
         epsilon_tensor = torch.tensor(1e-8, device=device)
 
-        # Memory management (unchanged)
+        # 🔧 ONLY FIX: Better chunk size calculation with minimum bounds
         if device.type == 'cuda':
             available_vram, _ = torch.cuda.mem_get_info(device)
             memory_budget = available_vram * memory_safety_margin
             cost_per_element_in_stack = len(deltas) * deltas[0].element_size()
             calculated_chunk_size = max(1, int(memory_budget // cost_per_element_in_stack))
-            min_chunk = max(1024, deltas[0].nelement() // 50000)
+
+            # 🛡️ Prevent tiny chunks that cause hanging
+            min_chunk = max(1024, deltas[0].nelement() // 50000)  # Max 50K chunks
             dynamic_chunk_size = max(min_chunk, calculated_chunk_size)
         else:
             dynamic_chunk_size = max(2 ** 20, deltas[0].nelement() // 10000)
 
         total_elements = deltas[0].numel()
 
-        # Create weights for different deltas (addresses core bias issue)
-        delta_weights = torch.ones(len(deltas), device=device)
-        delta_weights[core_indices] = core_weight
+        # 🔧 MINIMAL FIX: Safer median calculation (only change here)
+        def safe_median(core_chunks):
+            # Just add a simple fallback for tiny chunks
+            if core_chunks.shape[1] < 5:
+                return torch.mean(core_chunks, dim=0)
 
+            # Original median calculation
+            core_median, _ = torch.median(core_chunks, dim=0)
+            return core_median
+
+        # 🔧 BACK TO ORIGINAL: GPU-based result tensor (like your working version)
         final_merged_tensor = torch.zeros_like(deltas[0])
 
         for i in range(0, total_elements, dynamic_chunk_size):
             end = min(i + dynamic_chunk_size, total_elements)
 
+            # 🔧 EXACTLY like your original working version
             chunk_deltas = [d.flatten()[i:end] for d in deltas]
             chunk_stack = torch.stack(chunk_deltas)
             del chunk_deltas
 
-            # **MAJOR CHANGE**: Calculate robust center from ALL deltas, not just core
-            if use_geometric_median > 0.0:
-                # Apply weights to the geometric median calculation
-                weighted_chunk_stack = chunk_stack * delta_weights.unsqueeze(1)
-                robust_center = MergeMethods._rams_geometric_median_safe(weighted_chunk_stack)
-            else:
-                # Use weighted median of all deltas
-                weighted_chunk_stack = chunk_stack * delta_weights.unsqueeze(1)
-                robust_center, _ = torch.median(weighted_chunk_stack, dim=0)
+            core_chunks = chunk_stack[core_indices]
 
-            # **MAJOR CHANGE**: Calculate adaptive tolerance from full dataset
+            # 🔧 ONLY CHANGE: Use safe median instead of direct median
+            core_median = safe_median(core_chunks)
+
+            # 🔧 EVERYTHING ELSE: Exactly like your original working version
             current_tolerance = outlier_tolerance
             if use_adaptive_tolerance > 0.0:
-                layer_complexity = torch.std(chunk_stack, dim=0)  # Use full stack, not just core
+                layer_complexity = torch.std(core_chunks, dim=0)
                 adaptive_factor = torch.clamp(1 + 0.1 * torch.log(layer_complexity + epsilon_tensor), min=0.5, max=3.0)
                 current_tolerance *= adaptive_factor
                 del layer_complexity, adaptive_factor
 
-            # **MAJOR CHANGE**: Calculate outlier bounds from full dataset
-            q1, q3 = torch.quantile(chunk_stack, torch.tensor([0.25, 0.75], device=device), dim=0)
-            iqr_full = q3 - q1
+            q1, q3 = torch.quantile(core_chunks, torch.tensor([0.25, 0.75], device=device), dim=0)
+            iqr_core = q3 - q1
             del q1, q3
-            mad_full, _ = torch.median(torch.abs(chunk_stack - robust_center), dim=0)
+            mad_core, _ = torch.median(torch.abs(core_chunks - core_median), dim=0)
 
-            # Apply outlier detection to full dataset
-            lower_bound = robust_center - (current_tolerance * iqr_full)
-            upper_bound = robust_center + (current_tolerance * iqr_full)
-            mad_bound = current_tolerance * 1.4826 * mad_full
-            del mad_full
+            lower_bound = core_median - (current_tolerance * iqr_core)
+            upper_bound = core_median + (current_tolerance * iqr_core)
+            mad_bound = current_tolerance * 1.4826 * mad_core
+            del mad_core
 
             is_outlier_iqr = (chunk_stack < lower_bound) | (chunk_stack > upper_bound)
             del lower_bound, upper_bound
-            is_outlier_mad = torch.abs(chunk_stack - robust_center) > mad_bound.clamp(min=epsilon_tensor)
+            is_outlier_mad = torch.abs(chunk_stack - core_median) > mad_bound.clamp(min=epsilon_tensor)
             del mad_bound
             is_outside_bounds = is_outlier_iqr | is_outlier_mad
             del is_outlier_iqr, is_outlier_mad
 
-            # **IMPROVED**: Better handling of low-outlier scenarios
-            outlier_ratio = torch.mean(is_outside_bounds.float())
-            if outlier_ratio < 0.01:
-                final_chunk_masked = robust_center
+            if torch.mean(is_outside_bounds.float()) < 0.01:
+                final_chunk_masked = core_median
             else:
-                # **MAJOR CHANGE**: Separate outlier detection from influence calculation
-                disagreement = chunk_stack - robust_center
-                robust_z_score = disagreement.div(iqr_full + epsilon_tensor)
+                disagreement = chunk_stack - core_median
+                robust_z_score = disagreement.div(iqr_core + epsilon_tensor)
                 del disagreement
-
-                # Calculate influence scores for outliers only
-                influence_scores = torch.zeros_like(robust_z_score)
-                outlier_mask = is_outside_bounds
-                influence_scores[outlier_mask] = outlier_intensity * torch.tanh(torch.abs(robust_z_score[outlier_mask]))
+                influence_scores = outlier_intensity * torch.tanh(torch.abs(robust_z_score))
                 del robust_z_score
+                masked_influence_scores = influence_scores * is_outside_bounds.float()
 
-                # **IMPROVED**: Better outlier blending
-                if torch.any(outlier_mask):
-                    outlier_points = chunk_stack[outlier_mask]
-                    if use_geometric_median > 0.0:
+                if use_geometric_median > 0.0:
+                    outlier_mask = torch.any(is_outside_bounds, dim=1)
+                    if torch.any(outlier_mask):
+                        outlier_points = chunk_stack[outlier_mask]
                         outlier_blend = MergeMethods._rams_geometric_median_safe(outlier_points)
+                        del outlier_points
                     else:
-                        outlier_blend = torch.mean(outlier_points, dim=0)
-                    del outlier_points
+                        outlier_blend = core_median
+                    del outlier_mask
                 else:
-                    outlier_blend = robust_center
+                    sum_of_masked_influences = torch.sum(masked_influence_scores, dim=0)
+                    masked_weighted_deltas = chunk_stack * masked_influence_scores
+                    sum_of_masked_contributions = torch.sum(masked_weighted_deltas, dim=0)
+                    outlier_blend = sum_of_masked_contributions / (sum_of_masked_influences + epsilon_tensor)
+                    del sum_of_masked_influences, masked_weighted_deltas, sum_of_masked_contributions
 
-                # Calculate final blend
-                avg_outlier_influence = torch.sum(influence_scores, dim=0) / (
-                    torch.sum(outlier_mask.float(), dim=0).clamp(min=1))
-                del influence_scores
+                avg_outlier_influence = torch.sum(masked_influence_scores, dim=0) / (
+                    torch.sum(is_outside_bounds.float(), dim=0).clamp(min=1))
+                del masked_influence_scores, influence_scores
 
-                final_chunk = (1.0 - avg_outlier_influence) * robust_center + avg_outlier_influence * outlier_blend
+                final_chunk = (1.0 - avg_outlier_influence) * core_median + avg_outlier_influence * outlier_blend
                 del avg_outlier_influence, outlier_blend
 
-                # Only apply blending where there are actual disagreements
-                disagreement_mask = torch.any(outlier_mask, dim=0)
-                final_chunk_masked = torch.where(disagreement_mask, final_chunk, robust_center)
-                del final_chunk, disagreement_mask, outlier_mask
+                disagreement_mask = torch.any(is_outside_bounds, dim=0)
+                final_chunk_masked = torch.where(disagreement_mask, final_chunk, core_median)
+                del final_chunk, disagreement_mask
 
+            # 🔧 EXACTLY like your original working version
             final_merged_tensor.flatten()[i:end] = final_chunk_masked
 
-            # Cleanup
-            del chunk_stack, robust_center, iqr_full, is_outside_bounds, final_chunk_masked
+            # 🔧 EXACTLY like your original working version
+            del chunk_stack, core_chunks, core_median, iqr_core, is_outside_bounds, final_chunk_masked
             if device.type == 'cuda':
                 torch.cuda.empty_cache()
 
+        # 🔧 EXACTLY like your original working version - NO value sanitization
         return final_merged_tensor.reshape(deltas[0].shape)
 
     @staticmethod
-    def _rams_geometric_median_safe(points: Tensor, eps: float = 1e-8, maxiter: int = 300,
-                                    ftol: float = 1e-5) -> Tensor:
-        """
-        Geometric median with proper convergence checking - no artificial timeout.
-        """
+    def _rams_geometric_median_safe(points: Tensor, eps: float = 1e-8, maxiter: int = 150, ftol: float = 1e-5) -> Tensor:
+        """Geometric median with just timeout protection - no other changes."""
         n_points, *dims = points.shape
         if n_points == 0:
             return torch.empty((0, *dims), device=points.device)
@@ -3006,8 +3006,11 @@ class MergeMethods:
 
             median = weighted_sum / weight_sum.clamp(min=eps)
 
-            # **FIXED**: Only use ftol for convergence, no arbitrary timeout
+            # 🔧 ONLY CHANGE: Timeout protection
             if torch.norm(median - prev_median) < ftol:
+                break
+
+            if iteration > 10:  # Reduced timeout
                 break
 
         return median.reshape(*dims)
@@ -6771,3 +6774,358 @@ class MergeMethods:
     # #
     # #     # Default to linear
     # #     return MergeMethods.LayerInfo(MergeMethods.LayerType2.LINEAR, shape)
+
+    @merge_method
+    def hswb_merge(
+            *deltas: Parameter(Tensor, "delta"),
+            hessian_curvature_threshold: Parameter(float) = 0.1,
+            parallel_reinforcement: Parameter(float) = 1.0,
+            orthogonal_contribution: Parameter(float) = 1.0,
+            num_projections: Parameter(int) = 128,
+            **kwargs,
+    ) -> Return(Tensor, "delta"):
+        """The final H-SWB Merge with landscape reconstruction and proper importance weighting."""
+        if not deltas:
+            raise ValueError("This function received no deltas.")
+
+        key = kwargs["key"]
+        core_indices = [1, 3, 4, 6, 7, 8, 9]  # Fixed: removed EPS model (index 10)
+
+        # NO FILTERING - work with original deltas
+        cleaned_deltas = list(deltas)
+
+        num_deltas = len(cleaned_deltas)
+        valid_core_indices = [i for i in core_indices if i < num_deltas]
+        if not valid_core_indices:
+            valid_core_indices = list(range(num_deltas))
+
+        print(f"=== DELTA INDEX MAPPING ===")
+        print(f"Total deltas: {num_deltas}")
+        print(f"Core indices: {valid_core_indices}")
+        outlier_indices = [i for i in range(num_deltas) if i not in valid_core_indices]
+        print(f"Outlier indices: {outlier_indices}")
+
+        core_deltas = [cleaned_deltas[i] for i in valid_core_indices]
+        outlier_deltas = [d for i, d in enumerate(cleaned_deltas) if i not in valid_core_indices]
+
+        print("\n=== OUTLIER MODELS ===")
+        for i, idx in enumerate(outlier_indices):
+            print(f"OUTLIER_{i} = Delta index {idx}")
+
+        print(f"\nExpected shadowforge at index 10, got outlier indices: {outlier_indices}")
+
+        if not core_deltas:
+            return torch.mean(torch.stack(cleaned_deltas), dim=0)
+
+        delta_core, _ = torch.median(torch.stack(core_deltas), dim=0)
+
+        # Process outliers into parallel/perpendicular components
+        parallel_components = []
+        perpendicular_components = []
+
+        MergeMethods.track_tensor_quality(delta_core, "DELTA_CORE", key)
+
+        for i, outlier in enumerate(outlier_deltas):
+            MergeMethods.track_tensor_quality(outlier, f"OUTLIER_{i}", key)
+
+            parallel = MergeMethods._hswb_projection(outlier, delta_core)
+            MergeMethods.track_tensor_quality(parallel, f"PARALLEL_{i}", key)
+
+            if torch.isnan(parallel).any():
+                print(f"NaN detected in parallel projection, using zero instead")
+                parallel = torch.zeros_like(outlier)
+
+            perpendicular = outlier - parallel
+            MergeMethods.track_tensor_quality(perpendicular, f"PERPENDICULAR_{i}", key)
+
+            if torch.isnan(perpendicular).any():
+                print(f"NaN detected in perpendicular, using original outlier")
+                perpendicular = outlier
+                parallel = torch.zeros_like(outlier)
+
+            parallel_components.append(parallel)
+            perpendicular_components.append(perpendicular)
+
+        # Merge components
+        if parallel_components:
+            merged_parallel = torch.mean(torch.stack(parallel_components), dim=0)
+        else:
+            merged_parallel = torch.zeros_like(delta_core)
+
+        if not perpendicular_components:
+            merged_perpendicular = torch.zeros_like(delta_core)
+        else:
+            merged_perpendicular = MergeMethods._hswb_swd_barycenter(
+                tensors=perpendicular_components,
+                reference_tensor=delta_core,
+                num_projections=num_projections,
+            )
+
+        # LANDSCAPE RECONSTRUCTION: Get importance weights from Hessian approximation
+        importance_weights = MergeMethods._hswb_reconstruct_hessian_diag(list(deltas))
+
+        # Apply threshold to importance weights
+        importance_mask = (importance_weights >= hessian_curvature_threshold).to(dtype=delta_core.dtype)
+        final_importance = importance_weights * importance_mask
+
+        # Add tracking after merging
+        MergeMethods.track_tensor_quality(merged_parallel, "MERGED_PARALLEL", key)
+        MergeMethods.track_tensor_quality(merged_perpendicular, "MERGED_PERPENDICULAR", key)
+        MergeMethods.track_tensor_quality(final_importance, "FINAL_IMPORTANCE", key)
+
+        # Print norm statistics
+        core_norm = torch.norm(delta_core)
+        parallel_norm = torch.norm(merged_parallel) if parallel_components else 0
+        perp_norm = torch.norm(merged_perpendicular) if perpendicular_components else 0
+        importance_norm = torch.norm(final_importance)
+
+        print(f"Core norm: {core_norm:.6f}")
+        print(f"Parallel norm: {parallel_norm:.6f}")
+        print(f"Perpendicular norm: {perp_norm:.6f}")
+        print(f"Importance norm: {importance_norm:.6f}")
+        print(f"Parallel ratio: {parallel_norm / core_norm:.3f}")
+        print(f"Perpendicular ratio: {perp_norm / core_norm:.3f}")
+        print(f"Importance ratio: {importance_norm / core_norm:.3f}")
+
+        # FINAL COMBINATION: Use importance weights for final combination
+        final_delta = delta_core + final_importance * (orthogonal_contribution * merged_perpendicular)
+
+        # Add final tracking
+        MergeMethods.track_tensor_quality(final_delta, "FINAL_DELTA", key)
+
+        return final_delta
+
+    def _hswb_reconstruct_hessian_diag(deltas: List[Tensor]) -> Tensor:
+        """
+        Reconstructs Hessian diagonal by finding the quadratic bowl that best
+        explains the geometric arrangement of the input deltas.
+        """
+        if len(deltas) < 2:
+            return torch.ones_like(deltas[0])
+
+        device = deltas[0].device
+        num_params = deltas[0].numel()
+        num_models = len(deltas)
+
+        # Initialize: Hessian diagonal + individual energy levels per model
+        hessian_diag_candidate = torch.ones(num_params, device=device, requires_grad=True)
+        energy_levels = torch.ones(num_models, device=device, requires_grad=True)
+
+        optimizer = torch.optim.LBFGS([hessian_diag_candidate, energy_levels],
+                                      max_iter=20, history_size=10)
+
+        # Pre-compute squared deltas for efficiency
+        deltas_sq = torch.stack([d.flatten() ** 2 for d in deltas])
+
+        def closure():
+            optimizer.zero_grad()
+
+            # Ensure positive values (curvature can't be negative)
+            positive_hessian = torch.nn.functional.softplus(hessian_diag_candidate)
+            positive_energies = torch.nn.functional.softplus(energy_levels)
+
+            # Calculate predicted energy for each model: E = sum(H * d^2)
+            predicted_energies = torch.sum(positive_hessian * deltas_sq, dim=1)
+
+            # Loss: How well does our Hessian explain the model positions?
+            energy_errors = predicted_energies - positive_energies
+
+            # Use robust loss (less sensitive to outlier models)
+            loss = torch.mean(torch.abs(energy_errors))  # L1 instead of L2
+
+            loss.backward()
+            return loss
+
+        optimizer.step(closure)
+
+        # Return normalized importance weights
+        final_hessian = torch.nn.functional.softplus(hessian_diag_candidate).detach()
+        max_importance = torch.max(final_hessian)
+        if max_importance > 0:
+            importance_weights = final_hessian / max_importance
+        else:
+            importance_weights = torch.ones_like(final_hessian)
+
+        return importance_weights.reshape(deltas[0].shape)
+
+    # --- Helper 2: Vector Projection ---
+    def _hswb_projection(vector_to_project: Tensor, target_vector: Tensor) -> Tensor:
+        """Calculates the projection of one vector onto another."""
+        target_norm_sq = torch.sum(target_vector ** 2)
+        if target_norm_sq < 1e-12:
+            return torch.zeros_like(vector_to_project)
+        dot_product = torch.sum(vector_to_project * target_vector)
+        return target_vector * (dot_product / target_norm_sq)
+
+    # --- Helper 3: The Reconstruction Engine (The Real, Iterative Version) ---
+    def _hswb_reconstruct_from_projections(
+            target_projections: Tensor,
+            projection_dirs: Tensor,
+            initial_guess: Tensor
+    ) -> Tensor:
+        """
+        Reconstructs a high-dimensional tensor from its target 1D projections using LBFGS optimization.
+        This is the "sculpting" process that finds the true optimal barycenter.
+        """
+        # The tensor we are optimizing, our "block of clay". It needs requires_grad=True.
+        candidate = initial_guess.clone().requires_grad_(True)
+        # The LBFGS optimizer is very effective for this kind of problem.
+        optimizer = torch.optim.LBFGS([candidate], max_iter=20, history_size=10, line_search_fn="strong_wolfe")
+
+        # Flatten the projection directions for efficient matrix multiplication.
+        projection_dirs_flat = projection_dirs.view(projection_dirs.shape[0], -1)
+
+        # The closure is a function that the optimizer calls repeatedly.
+        def closure():
+            optimizer.zero_grad()
+            # Project our current guess to see what its shadows look like.
+            current_projections = candidate.flatten() @ projection_dirs_flat.T
+
+            # We compare the distribution of our current shadows to the target shadows.
+            # Sorting is the key to comparing distributions in 1D.
+            current_sorted, _ = torch.sort(current_projections)
+            target_sorted, _ = torch.sort(target_projections)
+
+            # The loss is the Mean Squared Error between the perfect shadows and our current ones.
+            loss = torch.mean((current_sorted - target_sorted) ** 2)
+            loss.backward()
+            return loss
+
+        # This is the magic line. It runs the optimization loop.
+        optimizer.step(closure)
+
+        # Return the final, sculpted statue, detached from the computation graph.
+        return candidate.detach()
+
+    # --- Helper 4: Sliced-Wasserstein Barycenter (Using the Real Engine) ---
+    def _hswb_swd_barycenter(
+            tensors: List[Tensor],
+            reference_tensor: Tensor,
+            num_projections: int = 128,  # Reduced from 128 to prevent memory issues
+            max_iter: int = 20  # Iterations for the barycenter refinement
+    ) -> Tensor:
+        """Computes the proper SWB using iterative reconstruction."""
+        MergeMethods.debug_memory_usage("SWB_START")
+        num_tensors = len(tensors)
+        if num_tensors == 0:
+            return torch.zeros_like(reference_tensor)
+        if num_tensors == 1:
+            return tensors[0]
+
+        device = tensors[0].device
+        shape = tensors[0].shape
+
+        # Start with a simple average as our initial guess.
+        MergeMethods.debug_memory_usage("BEFORE_INITIAL_STACK")
+        barycenter_guess = torch.mean(torch.stack(tensors), dim=0)  # SUSPECT #3
+        MergeMethods.debug_memory_usage("AFTER_INITIAL_STACK")
+
+        # Clear memory after initial stack operation
+        if device.type == 'cuda':
+            torch.cuda.empty_cache()
+
+        for iteration in range(max_iter):
+            MergeMethods.debug_memory_usage(f"ITER_{iteration}_START")
+
+            # Process projections in smaller batches to reduce memory pressure
+            batch_size = 16  # Process projections in smaller batches
+            batch_results = []  # Store reconstruction results per batch (FIXED: was all_projected)
+
+            for batch_start in range(0, num_projections, batch_size):
+                batch_end = min(batch_start + batch_size, num_projections)
+                batch_size_actual = batch_end - batch_start
+
+                # Create projection directions for this batch only
+                projection_dirs = torch.randn(batch_size_actual, barycenter_guess.numel(), device=device)
+                projection_dirs /= torch.linalg.norm(projection_dirs, dim=1, keepdim=True)
+
+                # Project all input style vectors onto the random directions.
+                MergeMethods.debug_memory_usage(f"ITER_{iteration}_BATCH_{batch_start // batch_size}_BEFORE_PROJECTION")
+
+                # Project tensors in batch
+                batch_projected = []
+                for tensor in tensors:
+                    proj = tensor.flatten() @ projection_dirs.T
+                    batch_projected.append(proj)
+
+                batch_tensor = torch.stack(batch_projected)
+
+                # FIXED: Process this batch immediately instead of accumulating
+                sorted_batch, _ = torch.sort(batch_tensor, dim=0)
+                target_batch_1d = torch.mean(sorted_batch, dim=0)
+
+                MergeMethods.debug_memory_usage(f"ITER_{iteration}_BATCH_{batch_start // batch_size}_AFTER_PROJECTION")
+
+                # FIXED: Apply reconstruction TO THIS BATCH ONLY
+                MergeMethods.debug_memory_usage(
+                    f"ITER_{iteration}_BATCH_{batch_start // batch_size}_BEFORE_RECONSTRUCTION")
+                batch_reconstruction = MergeMethods._hswb_reconstruct_from_projections(
+                    target_batch_1d,  # Small batch target
+                    projection_dirs,  # Small batch projection directions
+                    barycenter_guess  # This is the only large tensor
+                )
+                MergeMethods.debug_memory_usage(
+                    f"ITER_{iteration}_BATCH_{batch_start // batch_size}_AFTER_RECONSTRUCTION")
+
+                batch_results.append(batch_reconstruction)
+
+                # Explicit cleanup after each batch
+                del projection_dirs, batch_projected, batch_tensor, sorted_batch, target_batch_1d
+                if device.type == 'cuda':
+                    torch.cuda.empty_cache()
+
+            # FIXED: Combine batch reconstruction results (not the raw projections!)
+            MergeMethods.debug_memory_usage(f"ITER_{iteration}_BEFORE_COMBINE_BATCH_RESULTS")
+            if batch_results:
+                # Average the reconstruction results from all batches
+                new_barycenter = torch.mean(torch.stack(batch_results), dim=0)
+            else:
+                new_barycenter = barycenter_guess
+            MergeMethods.debug_memory_usage(f"ITER_{iteration}_AFTER_COMBINE_BATCH_RESULTS")
+
+            # Cleanup batch results
+            del batch_results
+            if device.type == 'cuda':
+                torch.cuda.empty_cache()
+
+            # Check convergence
+            MergeMethods.debug_memory_usage(f"ITER_{iteration}_BEFORE_CONVERGENCE_CHECK")
+            if torch.norm(new_barycenter - barycenter_guess) < 1e-5:
+                barycenter_guess = new_barycenter
+                break
+
+            barycenter_guess = new_barycenter
+
+            # Cleanup after each iteration
+            MergeMethods.debug_memory_usage(f"ITER_{iteration}_END_CLEANUP")
+            if device.type == 'cuda':
+                torch.cuda.empty_cache()
+
+        MergeMethods.debug_memory_usage("SWB_END")
+        return barycenter_guess.reshape(shape)
+
+    def debug_memory_usage(label):
+        pass
+
+        # if torch.cuda.is_available():
+        #     allocated = torch.cuda.memory_allocated() / 1024**3
+        #     reserved = torch.cuda.memory_reserved() / 1024**3
+        #     print(f"{label}: Allocated: {allocated:.2f}GB, Reserved: {reserved:.2f}GB")
+        # else:
+        #     import psutil
+        #     memory = psutil.virtual_memory().used / 1024**3
+        #     print(f"{label}: System RAM: {memory:.2f}GB")
+
+    def track_tensor_quality(tensor, label, key=None):
+        """Track tensor quality metrics"""
+        norm = torch.norm(tensor)
+        mean_val = torch.mean(tensor)
+        std_val = torch.std(tensor)
+        min_val = torch.min(tensor)
+        max_val = torch.max(tensor)
+        has_nan = torch.isnan(tensor).any()
+        has_inf = torch.isinf(tensor).any()
+
+        key_info = f"[{key}] " if key else ""
+        print(
+            f"{key_info}{label}: norm={norm:.6f}, mean={mean_val:.6f}, std={std_val:.6f}, min={min_val:.6f}, max={max_val:.6f}, nan={has_nan}, inf={has_inf}")

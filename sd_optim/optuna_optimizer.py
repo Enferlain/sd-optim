@@ -13,7 +13,7 @@ import optuna
 import asyncio
 
 from pathlib import Path
-from typing import Dict, List, Optional, Any
+from typing import Dict, List, Optional, Any, Tuple
 
 from hydra.core.hydra_config import HydraConfig
 from omegaconf import ListConfig
@@ -270,196 +270,114 @@ class OptunaOptimizer(Optimizer):
         return sampler
 
     async def optimize(self) -> None:
-        """Run Optuna optimization process."""
+        """Run Optuna optimization process with explicit resume/fork controls."""
         self.optimization_start_time = time.time()
-        logger.debug(f"Initial Parameter Bounds: {self.optimizer_pbounds}")  # Use the attribute directly
+        logger.debug(f"Initial Parameter Bounds: {self.optimizer_pbounds}")
 
-        # Configure sampler
-        sampler = self._configure_sampler()  # Call the new function
-
-        # Configure pruner if enabled
-        pruner = None
-        if self.cfg.optimizer.get("use_pruning", False):
-            pruner_type = self.cfg.optimizer.get("pruner_type", "median")
+        # Configure sampler and pruner
+        sampler = self._configure_sampler()
+        pruner = None  # Define pruner here, inside the if block
+        if self.cfg.optimizer.optuna_config.get("use_pruning", False):
+            pruner_type = self.cfg.optimizer.optuna_config.get("pruner_type", "median")
             if pruner_type == "median":
-                pruner = MedianPruner(n_startup_trials=self.cfg.optimizer.init_points)
-                logger.info("Using Median Pruner")
+                pruner = optuna.pruners.MedianPruner(n_startup_trials=self.cfg.optimizer.init_points)
             elif pruner_type == "successive_halving":
-                pruner = SuccessiveHalvingPruner()
-                logger.info("Using Successive Halving Pruner")
+                pruner = optuna.pruners.SuccessiveHalvingPruner()
+            if pruner: logger.info(f"Using {pruner_type.capitalize()} Pruner")
 
-        # --- Determine Shared DB Name and Path ---
-        storage_path: Path = None
-        storage: str = None
-        db_filename: str = "optuna_fallback.db"
-        try:
-            opt_mode = self.cfg.get("optimization_mode", "unknown_mode")
-            merge_method_name = "N/A"  # Default for non-merge modes
-            if opt_mode == "merge":
-                merge_method_name = self.cfg.get("merge_method", "unknown_method")
-            elif opt_mode == "recipe":
-                # Maybe use recipe filename base?
-                recipe_path = self.cfg.recipe_optimization.get("recipe_path")
-                merge_method_name = f"recipe_{Path(recipe_path).stem}" if recipe_path else "recipe"
-            elif opt_mode == "layer_adjust":
-                merge_method_name = "layer_adjust"
+        # --- Start of New Logic Integration ---
+        optuna_cfg = self.cfg.optimizer.optuna_config
+        parent_study_name_to_load = optuna_cfg.get("resume_from_study")
+        should_fork_study = optuna_cfg.get("fork_study", False)
 
-            scorers = self.cfg.get("scorer_method", ["unknown_scorer"])
-            # Ensure scorers is a list even if single string is given
-            if isinstance(scorers, str): scorers = [scorers]
-            # Sort scorers for consistent naming if list order changes
-            scorer_name_part = "_".join(sorted(scorers))
+        # PATH A: Starting a brand-new study
+        if not parent_study_name_to_load:
+            logger.info("No 'resume_from_study' specified. Creating a brand-new study.")
+            storage_uri, db_filename = self._get_storage_uri_for_new_study()
+            timestamp = time.strftime("%Y%m%d_%H%M%S")
+            sampler_name = self.cfg.optimizer.optuna_config.get("sampler", {}).get("type", "tpe")
+            self.study_name = f"run_{timestamp}_{sampler_name}"
 
-            # 2. Sanitize names (simple example, might need more robust)
-            def sanitize(name):
-                return "".join(c if c.isalnum() or c in ('_', '-') else '_' for c in str(name))
+            self.study = optuna.create_study(
+                study_name=self.study_name, storage=storage_uri, sampler=sampler, pruner=pruner, direction="maximize",
+                load_if_exists=False
+            )
+            logger.info(f"Successfully created new study '{self.study_name}' in '{db_filename}'.")
+            self._set_initial_study_attributes()
 
-            db_filename_base = f"optuna_{sanitize(opt_mode)}_{sanitize(merge_method_name)}_{sanitize(scorer_name_part)}"
-            db_filename = f"{db_filename_base}.db"
+        # PATH B: Resuming or Forking
+        else:
+            logger.info(f"Attempting to load parent study '{parent_study_name_to_load}'.")
+            parent_storage_uri, parent_db_filename = self._find_db_for_study(parent_study_name_to_load)
+            if not parent_storage_uri:
+                raise ValueError(f"Could not find study '{parent_study_name_to_load}' to resume/fork.")
 
-            # 3. Define storage path using the derived filename
-            if not hasattr(self, 'optuna_storage_dir') or not self.optuna_storage_dir.is_dir():
-                raise ValueError("Optuna storage directory not initialized correctly.")
+            parent_study = optuna.load_study(study_name=parent_study_name_to_load, storage=parent_storage_uri)
 
-            storage_path = self.optuna_storage_dir / db_filename  # <<< Use correct storage dir
-
-            storage = f"sqlite:///{storage_path.resolve()}"
-            logger.info(f"Using Optuna storage file: {storage_path.name}")
-            logger.info(f"Full storage URI: {storage}")
-
-        except Exception as e_name:
-            logger.error(f"Failed to determine Optuna DB name from config: {e_name}. Falling back to default.")
-            # Fallback to a simple default if naming fails
-            db_filename = "optuna_fallback.db"
-            storage_path = self.optuna_storage_dir / db_filename
-            storage = f"sqlite:///{storage_path.resolve()}"
-
-        # --- Check if resuming a specific study ---
-        study_to_resume = self.cfg.optimizer.optuna_config.get("resume_study_name", None)
-
-        try:
-            if study_to_resume:
-                logger.info(f"Attempting to load and resume study '{study_to_resume}' from DB '{storage_path.name}'...")
-                self.study = optuna.load_study(
-                    study_name=study_to_resume,
-                    storage=storage,
-                    sampler=sampler,
-                    # Pass sampler/pruner in case they need setup? Or load study first? Check Optuna docs.
-                    pruner=pruner
-                )
-                logger.info(
-                    f"Successfully loaded study '{study_to_resume}' with {len(self.study.trials)} existing trials.")
-                # Set self.study_name to the resumed name for consistency elsewhere (e.g., dashboard launch)
-                self.study_name = study_to_resume
-            else:
-                # --- Create a NEW, unique study for this run ---
+            # Sub-path B1: FORKING
+            if should_fork_study:
+                logger.info(f"Forking study '{parent_study_name_to_load}' into a new study.")
+                new_storage_uri, new_db_filename = self._get_storage_uri_for_new_study(is_fork=True)
                 timestamp = time.strftime("%Y%m%d_%H%M%S")
-                sampler_type = self.cfg.optimizer.get("sampler", {}).get("type", "tpe").lower()
-                self.study_name = f"run_{timestamp}_{sampler_type}"  # Generate NEW name
+                self.study_name = f"fork_{parent_study_name_to_load}_{timestamp}"
 
-                logger.info(f"Creating new study '{self.study_name}' in DB '{storage_path.name}'.")
                 self.study = optuna.create_study(
-                    study_name=self.study_name,  # Use the NEW unique name
-                    storage=storage,
-                    sampler=sampler,
-                    pruner=pruner,
-                    direction="maximize",
-                    load_if_exists=False  # <<< Explicitly FALSE: Do not load even if name conflicts (unlikely)
+                    study_name=self.study_name, storage=new_storage_uri, sampler=sampler, pruner=pruner,
+                    direction="maximize"
                 )
-                logger.info(f"Successfully created new study '{self.study_name}'.")
 
-                # --- V-- ADDITION START: Set user attributes only for NEW studies --V ---
-                # Only set these when the study is definitely new to avoid overwriting
-                # attributes from a potentially loaded study if resuming logic changes later.
-                try:
-                    # Get model paths safely, default to empty list
-                    model_paths_list = self.cfg.get("model_paths", [])
-                    # Convert Path objects to strings if they exist
-                    input_model_paths_str = [str(p) for p in model_paths_list]
+                completed_trials = [t for t in parent_study.trials if t.state == optuna.trial.TrialState.COMPLETE]
+                for trial in completed_trials: self.study.enqueue_trial(trial.params)
 
-                    self.study.set_user_attr('config_input_models', str(input_model_paths_str))
-                    self.study.set_user_attr('config_base_model_index', self.cfg.get('base_model_index', -1))
-                    # Store the merge method used ONLY if mode is 'merge'
-                    if self.cfg.get("optimization_mode") == "merge":
-                        self.study.set_user_attr('config_merge_method', self.cfg.get('merge_method', 'N/A'))
-                    else:
-                        self.study.set_user_attr('config_merge_method', 'N/A')  # Indicate not applicable
-                    # Add other relevant top-level config for context?
-                    self.study.set_user_attr('config_optimization_mode', self.cfg.get('optimization_mode', 'N/A'))
-                    self.study.set_user_attr('config_scorers', str(self.cfg.get('scorer_method', [])))
+                logger.info(
+                    f"Created fork '{self.study_name}' in '{new_db_filename}' and enqueued {len(completed_trials)} parent trials.")
+                self._set_initial_study_attributes(parent_name=parent_study_name_to_load)
 
-                    logger.info(f"Stored initial configuration as user attributes for new study '{self.study_name}'.")
-                except Exception as e_attr:
-                    logger.warning(f"Could not store initial config as study attribute: {e_attr}")
-                # --- V-- ADDITION END --V ---
+            # Sub-path B2: RESUMING
+            else:
+                logger.info(f"Resuming study '{parent_study_name_to_load}' directly.")
+                parent_scorers = set(parent_study.user_attrs.get("config_scorers", []))
+                current_scorers_raw = self.cfg.get("scorer_method", [])
+                current_scorers = set(
+                    current_scorers_raw if isinstance(current_scorers_raw, list) else [current_scorers_raw])
 
-            # --- V-- MOVED Logger Path Setup Here --V ---
-            # Now self.study_name is guaranteed to be set (either loaded or created)
-            # And os.getcwd() is the correct Hydra run directory
-            try:
-                hydra_run_path = Path(HydraConfig.get().runtime.output_dir)  # Get correct run dir
-                trials_log_filename = f"{self.study_name}_trials.jsonl"  # Use the unique study name
-                trials_log_path = hydra_run_path / trials_log_filename
-                self.logger.set_path(trials_log_path)  # Set the path on the logger instance
-            except Exception as e_log_path:
-                logger.error(f"Failed to set trial logger path: {e_log_path}")
-                # Continue without jsonl logging if path fails?
-            # --- V-- END Logger Path Setup --V ---
+                if parent_scorers != current_scorers:
+                    raise ValueError(
+                        f"FATAL: Cannot resume study '{parent_study_name_to_load}' because scorers have changed. "
+                        f"(Study used {sorted(list(parent_scorers))}, config has {sorted(list(current_scorers))}). "
+                        "To proceed, set 'fork_study: true'."
+                    )
 
-        except KeyError:  # Optuna raises KeyError if study_name not found during load_study
-            logger.error(
-                f"Study name '{study_to_resume}' not found in the database '{storage_path.name}'. Cannot resume.")
-            # Decide behaviour: stop execution or create a new study anyway? Stopping is safer.
-            print(f"ERROR: Could not find the study '{study_to_resume}' to resume in {storage_path.name}.")
-            raise ValueError(f"Failed to resume study '{study_to_resume}'.")  # Stop execution
-        except Exception as e_study:
-            # Handle other DB connection/creation errors
-            logger.error(f"Failed to create/load study using DB: {e_study}. Check DB path/permissions.")
-            logger.info("Attempting fallback to in-memory storage.")
-            self.study = optuna.create_study(study_name=self.study_name, sampler=sampler, pruner=pruner,
-                                             direction="maximize")
-            self._restore_from_trials_log()  # Attempt restore if using in-memory
+                self.study = parent_study
+                self.study.sampler = sampler
+                self.study.pruner = pruner
+                self.study_name = parent_study_name_to_load
 
-        # --- Calculate remaining trials ---
-        completed_trials = len(self.study.trials)  # Count trials loaded/existing
+        # --- Common logic from here ---
+        self._setup_logger_path()
+
+        completed_trials = len(self.study.trials)
         total_trials_planned = self.cfg.optimizer.init_points + self.cfg.optimizer.n_iters
         remaining_trials = max(0, total_trials_planned - completed_trials)
 
-        if self.study and completed_trials > 0:  # Check if study is loaded and has trials
-            logger.info(f"Found {completed_trials} completed trials. {remaining_trials} trials remaining.")
+        if completed_trials > 0:
+            logger.info(f"Study has {completed_trials} existing trials. {remaining_trials} new trials to run.")
+            if self.study.best_trial: self.best_rolling_score = max(self.best_rolling_score, self.study.best_value)
 
-            # Update best_rolling_score from existing trials
-            if self.study.best_trial and self.study.best_trial.value is not None:
-                self.best_rolling_score = max(self.best_rolling_score, self.study.best_value)
-                logger.info(f"Best score from previous runs: {self.best_rolling_score}")
-
-        # Run optimization if there are trials remaining
         if remaining_trials > 0:
+            logger.info(f"Starting optimization for {remaining_trials} new trials.")
             try:
-                import asyncio
                 await asyncio.to_thread(
-                    self.study.optimize,
-                    func=self._objective,
-                    n_trials=remaining_trials,
-                    n_jobs=self.cfg.optimizer.optuna_config.get("n_jobs", 1),
-                    show_progress_bar=True,
-                    # --- VVV REMOVED _checkpoint_callback VVV ---
-                    callbacks=[self._trial_callback]  # Only log trial info
+                    self.study.optimize, func=self._objective, n_trials=remaining_trials,
+                    n_jobs=optuna_cfg.get("n_jobs", 1), show_progress_bar=True, callbacks=[self._trial_callback]
                 )
-
-            except KeyboardInterrupt:
-                logger.info("Optimization interrupted by user.")
-                # --- VVV REMOVED self.save_checkpoint() VVV ---
-            except Exception as e:
-                logger.error(f"Optimization failed: {e}", exc_info=True)  # Log full traceback
-                # --- VVV REMOVED self.save_checkpoint() VVV ---
-                raise  # Re-raise the exception
+            except (KeyboardInterrupt, Exception) as e:
+                logger.error(f"Optimization loop stopped: {e}",
+                             exc_info=True if not isinstance(e, KeyboardInterrupt) else False)
+                if not isinstance(e, KeyboardInterrupt): raise
         else:
-            logger.info("All trials already completed. Skipping optimization.")
+            logger.info("All planned trials already completed. Skipping optimization.")
 
-        # --- VVV REMOVED final self.save_checkpoint() VVV ---
-
-        # Analyze parameter importance (unchanged)
         self._analyze_parameter_importance()
 
     def _restore_from_trials_log(self):
@@ -613,6 +531,112 @@ class OptunaOptimizer(Optimizer):
         # Create visualizations periodically
         if trial.number % 10 == 0 and trial.number > 0:
             self._create_progress_plots()
+
+    def _get_storage_uri_for_new_study(self, is_fork: bool = False) -> Tuple[str, str]:
+        """
+        Determines the database filename and URI based on the current
+        run's configuration. This is used for creating NEW studies or FORKS.
+        """
+        try:
+            opt_mode = self.cfg.get("optimization_mode", "unknown_mode")
+            merge_method_name = "N/A"
+            if opt_mode == "merge":
+                merge_method_name = self.cfg.get("merge_method", "unknown_method")
+            elif opt_mode == "recipe":
+                recipe_path_str = self.cfg.recipe_optimization.get("recipe_path")
+                if recipe_path_str:
+                    merge_method_name = f"recipe_{Path(recipe_path_str).stem}"
+                else:
+                    merge_method_name = "recipe"
+            elif opt_mode == "layer_adjust":
+                merge_method_name = "layer_adjust"
+
+            # --- THIS IS THE FIX ---
+            scorers_raw = self.cfg.get("scorer_method", [])
+            # 1. Ensure it's a list-like object (handles single string case)
+            scorers_list_like = scorers_raw if isinstance(scorers_raw, (list, ListConfig)) else [scorers_raw]
+            # 2. Convert every item to a string and then sort
+            scorers_str_list = sorted([str(s) for s in scorers_list_like])
+            # 3. Now, join the list of strings. This is safe!
+            scorer_name_part = "_".join(scorers_str_list)
+
+            # --- END OF FIX ---
+
+            def sanitize(name):
+                # This sanitize function can be improved to handle paths better
+                safe_name = str(name).replace('\\', '/').split('/')[-1]  # Get filename from path
+                return "".join(c for c in safe_name if c.isalnum() or c in ('_', '-'))
+
+            fork_prefix = "fork_" if is_fork else ""
+
+            # NEW, CORRECTED LINE:
+            if opt_mode == 'recipe':
+                # In recipe mode, merge_method_name already contains "recipe_filename", so we don't need opt_mode.
+                db_filename_base = f"optuna_{fork_prefix}{sanitize(merge_method_name)}_{sanitize(scorer_name_part)}"
+            else:
+                # For all other modes (like 'merge'), we use the original logic.
+                db_filename_base = f"optuna_{fork_prefix}{sanitize(opt_mode)}_{sanitize(merge_method_name)}_{sanitize(scorer_name_part)}"
+
+            db_filename = f"{db_filename_base}.db"
+
+            storage_path = self.optuna_storage_dir / db_filename
+            storage_uri = f"sqlite:///{storage_path.resolve()}"
+
+            logger.info(f"Determined storage for new study/fork: '{db_filename}'")
+            return storage_uri, db_filename
+
+        except Exception as e:
+            logger.error(f"Failed to determine DB name, falling back to default: {e}", exc_info=True)
+            db_filename = "optuna_fallback.db"
+            storage_path = self.optuna_storage_dir / db_filename
+            return f"sqlite:///{storage_path.resolve()}", db_filename
+
+    def _find_db_for_study(self, study_name_to_find: str) -> Tuple[Optional[str], Optional[str]]:
+        """Scans all .db files in the storage directory to find which one contains the target study."""
+        logger.info(f"Searching for study '{study_name_to_find}' in all .db files...")
+        for db_file in self.optuna_storage_dir.glob("*.db"):
+            storage_uri = f"sqlite:///{db_file.resolve()}"
+            try:
+                # Get all study summaries from this DB without loading the whole study
+                all_summaries = optuna.study.get_all_study_summaries(storage=storage_uri)
+                for summary in all_summaries:
+                    if summary.study_name == study_name_to_find:
+                        logger.info(f"Found study '{study_name_to_find}' in database: '{db_file.name}'")
+                        return storage_uri, db_file.name
+            except Exception as e:
+                logger.warning(f"Could not inspect database '{db_file.name}': {e}")
+                continue
+        logger.error(f"Study '{study_name_to_find}' was not found in any database in {self.optuna_storage_dir}")
+        return None, None
+
+    def _set_initial_study_attributes(self, parent_name: Optional[str] = None):
+        """Sets user attributes for a newly created study or fork."""
+        try:
+            models_str = str([str(p) for p in self.cfg.get("model_paths", [])])
+            self.study.set_user_attr('config_input_models', models_str)
+            self.study.set_user_attr('config_base_model_index', self.cfg.get('base_model_index', -1))
+            self.study.set_user_attr('config_optimization_mode', self.cfg.get('optimization_mode', 'N/A'))
+            self.study.set_user_attr('config_scorers', list(self.cfg.get("scorer_method", [])))  # Store as list
+
+            if self.cfg.get("optimization_mode") == "merge":
+                self.study.set_user_attr('config_merge_method', self.cfg.get('merge_method', 'N/A'))
+
+            if parent_name:
+                self.study.set_user_attr('forked_from', parent_name)
+
+            logger.info(f"Stored initial configuration as user attributes for new study '{self.study_name}'.")
+        except Exception as e:
+            logger.warning(f"Could not store config as study attributes: {e}")
+
+    def _setup_logger_path(self):
+        """Sets up the path for the .jsonl trial logger."""
+        try:
+            hydra_run_path = Path(HydraConfig.get().runtime.output_dir)
+            trials_log_filename = f"{self.study_name}_trials.jsonl"
+            trials_log_path = hydra_run_path / trials_log_filename
+            self.logger.set_path(trials_log_path)
+        except Exception as e:
+            logger.error(f"Failed to set trial logger path: {e}")
 
     # --- MODIFIED: _create_progress_plots ---
     def _create_progress_plots(self):
@@ -925,13 +949,16 @@ class OptunaOptimizer(Optimizer):
             if opt_mode == "merge":
                 merge_method_name = self.cfg.get("merge_method", "unknown_method")
             elif opt_mode == "recipe":
+                # We get the filename stem, or use a default if the path is missing.
                 recipe_path_str = self.cfg.recipe_optimization.get("recipe_path")
-                merge_method_name = f"recipe_{Path(recipe_path_str).stem}" if recipe_path_str else "recipe"
+                merge_method_name = Path(recipe_path_str).stem if recipe_path_str else "unknown-recipe"
+                # We NO LONGER add the "recipe_" prefix here!
             elif opt_mode == "layer_adjust":
                 merge_method_name = "layer_adjust"
 
             scorers_list = self.cfg.get("scorer_method", ["unknown_scorer"])
-            if isinstance(scorers_list, str): scorers_list = [scorers_list]
+            if isinstance(scorers_list, str):
+                scorers_list = [scorers_list]
             scorer_name_part = "_".join(sorted(scorers_list))
 
             def sanitize(name):

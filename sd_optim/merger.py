@@ -42,7 +42,8 @@ precision_mapping = {
 class Merger:
     def __init__(self, cfg: DictConfig):
         self.cfg = cfg
-        if not cfg.model_paths: raise ValueError("'model_paths' cannot be empty.")
+        if not cfg.model_paths:
+            raise ValueError("'model_paths' cannot be empty.")
 
         # --- Base Config Inference (Corrected for infer_model_configs return type) ---
         self.base_model_config: Optional[model_configs.ModelConfig] = None
@@ -60,8 +61,9 @@ class Merger:
                 # Check isinstance AND state_dict exists before accessing keys
                 if isinstance(rep_model_node,
                               ModelRecipeNode) and rep_model_node.state_dict:  # <<< Added isinstance check here too
-                    # --- APPLY SAME FIX AS IN ParameterHandler ---
+
                     inferred_sets = sd_mecha.infer_model_configs(rep_model_node.state_dict.keys())
+
                     if inferred_sets:
                         best_set = inferred_sets[0]
                         if len(best_set) == 1:
@@ -72,7 +74,6 @@ class Merger:
                             logger.warning(
                                 f"Merger: Ambiguous base ModelConfig inferred for {representative_model_path_str}. Possible matches: {config_names}. Picking first one arbitrarily.")
                             self.base_model_config = next(iter(best_set))  # Pick first
-                    # --- END FIX ---
                     else:
                         # This path is taken if infer_model_configs returns empty list
                         raise ValueError(

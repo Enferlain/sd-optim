@@ -145,7 +145,7 @@ generator_total_timeout: 0 # Max total time (seconds) for a single API call. Set
 
 # --- Scoring ---
 # List of scorer identifiers to use. The final score is an average of these.
-# See scorer.py for all available identifiers (e.g., laion, hpsv21, pick, cityaes, luminaflex, manual, background_blackness).
+# See scorer.py for all available identifiers (e.g., laion, hpsv3, pick, cityaes, luminaflex, manual, background_blackness).
 scorer_method: [manual]
 scorer_average_type: arithmetic # How to average scores from DIFFERENT scorers: 'arithmetic', 'geometric', or 'quadratic'.
 scorer_weight: # Optional weights for each scorer (default is 1.0).
@@ -159,6 +159,9 @@ scorer_alt_location: # Optional alternative paths for specific scorer models.
   #   model_name: ImageReward.pt
   #   model_dir: path/to/your/imagereward/folder
 scorer_print_individual: True # Print the score from each individual scorer in the console.
+# Optional: Add this to control how much uncertainty (sigma) penalizes the score.
+# A higher value means a stronger penalty. Default is 0.5 if not specified.
+hpsv3_uncertainty_penalty: 0.5
 
 # --- Visualization ---
 visualizations:

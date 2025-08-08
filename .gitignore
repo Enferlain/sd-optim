@@ -120,15 +120,15 @@ logs/**/*.jpg
 !conf/optimization_guide/guide.tmpl.yaml
 
 # --- Other Project Files ---
-# Ignore everything in the logs folder
-logs/
+# Ignore contents of the logs folder, but not the folder itself
+logs/*
+!/logs/
 
 # Ignore the optuna_db folder
 optuna_db/
 
 # Other root folders
 .github/
-.idea/
 optimization-analysis/
 
 # Ignore non-template yaml files in conf
@@ -146,7 +146,11 @@ scorer_demo.py
 TEST.py
 
 # --- Explicitly Tracked ---
-# Ensure core files aren't accidentally ignored by broad rules above
+# Ensure core files and specified directories aren't accidentally ignored
+!/conf/
+!/models/
+!/scripts/
+!/wildcards/
 !requirements.txt
 !sd_optim.py # Or main.py
 !install.py

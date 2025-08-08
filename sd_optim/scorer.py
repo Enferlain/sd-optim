@@ -25,6 +25,7 @@ from sd_optim.models.ImageReward import ImageReward as IMGR
 from sd_optim.models.CLIPScore import CLIPScore as CLP
 from sd_optim.models.BLIPScore import BLIPScore as BLP
 from sd_optim.models.HPSv21 import HPSv21Scorer as HPS
+from sd_optim.models.HPSv3 import HPSv3Scorer as HPS3
 from sd_optim.models.PickScore import PickScore as PICK
 from sd_optim.models.WDAes import WDAes as WDA
 from sd_optim.models.ShadowScore import ShadowScore as SS
@@ -66,6 +67,10 @@ MODEL_DATA = {
     "hpsv21": {
         "url": "https://huggingface.co/xswu/HPSv2/resolve/main/HPS_v2.1_compressed.pt?download=true",
         "file_name": "HPS_v2.1.pt",
+    },
+    "hpsv3": {
+        "url": "https://huggingface.co/MizzenAI/HPSv3/resolve/main/HPSv3.safetensors?download=true",
+        "file_name": "HPSv3.safetensors",
     },
     "pick": {
         "url": "https://huggingface.co/yuvalkirstain/PickScore_v1/resolve/main/model.safetensors?download=true",
@@ -388,6 +393,7 @@ class AestheticScorer:
             "imagereward": {"class": IMGR, "files": {"model_path": "file_name"},
                             "extra_args": {"med_config": med_config_path}},
             "hpsv21": {"class": HPS, "files": {"pathname": "file_name"}},
+            "hpsv3": {"class": HPS3, "files": {"model_path": "file_name"}},
             "pick": {"class": PICK, "files": {"model_path": "file_name"}},
             "shadowv2": {"class": SS, "files": {"model_path": "file_name"}},
             "cafe": {"class": CAFE, "files": {"model_path": "file_name"}},
@@ -567,34 +573,52 @@ class AestheticScorer:
 
             # --- General Automatic Scorer Path ---
             else:
+                evaluator_lower = evaluator.lower()
+                individual_eval_score = 0.0  # Default score
+
                 try:
-                    scorer_instance = self.model.get(evaluator)
+                    scorer_instance = self.model.get(evaluator_lower)
                     if scorer_instance is None:
                         logger.error(f"Scorer instance for '{evaluator}' not found.")
-                        individual_eval_score = 0.0
+
+                    elif evaluator_lower == 'hpsv3':
+                        # HPSv3 returns a tuple (mu, sigma)
+                        mu_score, sigma_score = scorer_instance.score(image=image, prompt=prompt)
+
+                        # Print individual mu and sigma
+                        if self.cfg.scorer_print_individual:
+                            print(f"  {evaluator} (score): {mu_score:.4f}")
+                            print(f"  {evaluator} (uncertainty): {sigma_score:.4f}")
+
+                        # Process a final score combining mu and sigma.
+                        # Using Lower Confidence Bound: score = mu - k * sigma
+                        # This penalizes scores with high uncertainty.
+                        # A higher 'k' means more penalty for uncertainty.
+                        k = self.cfg.get("hpsv3_uncertainty_penalty", 0.5)
+                        individual_eval_score = mu_score - (k * sigma_score)
+
+                        if self.cfg.scorer_print_individual:
+                            print(f"  {evaluator} (processed final): {individual_eval_score:.4f}")
+
                     else:
-                        # --- THE NEW, SMART WAY! ---
-                        # 1. Start with the arguments that every scorer needs.
+                        # Standard scoring for other models
                         score_args = {'image': image}
-                        # 2. Check if the scorer's 'score' method wants a 'prompt'.
                         score_params = inspect.signature(scorer_instance.score).parameters
                         if 'prompt' in score_params:
                             score_args['prompt'] = prompt
-
-                        # 3. Call the scorer with only the arguments it accepts!
                         individual_eval_score = scorer_instance.score(**score_args)
+
+                        # Print its own score for other models
+                        if self.cfg.scorer_print_individual:
+                            print(f"{evaluator}:{individual_eval_score:.4f}")
 
                 except Exception as e:
                     logger.error(f"Error scoring with {evaluator}: {e}", exc_info=True)
-                    individual_eval_score = 0.0
+                    individual_eval_score = 0.0  # Ensure it's a float on error
 
-                weight = self.cfg.scorer_weight.get(evaluator, 1.0)
+                weight = self.cfg.scorer_weight.get(evaluator_lower, 1.0)
                 values.append(individual_eval_score)
                 scorer_weights.append(weight)
-
-                # Print its own score
-                if self.cfg.scorer_print_individual:
-                    print(f"{evaluator}:{individual_eval_score:.4f}")
         # --- End Scoring Loop ---
 
         score = self.average_calc(values, scorer_weights, self.cfg.scorer_average_type)

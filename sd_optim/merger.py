@@ -42,127 +42,169 @@ precision_mapping = {
 class Merger:
     def __init__(self, cfg: DictConfig):
         self.cfg = cfg
-        if not cfg.model_paths:
-            raise ValueError("'model_paths' cannot be empty.")
 
-        # --- Base Config Inference (Corrected for infer_model_configs return type) ---
+        # --- Universal Setup: All modes need these ---
+        self.output_file: Optional[Path] = None
+        self.best_output_file: Optional[Path] = None
         self.base_model_config: Optional[model_configs.ModelConfig] = None
-        representative_model_path_str = cfg.model_paths[0]
-        logger.info(f"Merger: Inferring base ModelConfig from: {representative_model_path_str}")
-        try:
-            self.models_dir = Path(representative_model_path_str).resolve().parent
-            if not self.models_dir.is_dir():
-                raise FileNotFoundError(f"Merger: Determined models directory not found: {self.models_dir}")
-            logger.info(f"Merger: Determined models directory: {self.models_dir}")
 
-            # Use temporary node for inference check
+        if not self.cfg.model_paths:
+            raise ValueError("'model_paths' cannot be empty, as it's needed to determine the models directory.")
+
+        # The first path ALWAYS defines our primary models directory.
+        representative_model_path_str = self.cfg.model_paths[0]
+        self.models_dir = Path(representative_model_path_str).resolve().parent
+        if not self.models_dir.is_dir():
+            raise FileNotFoundError(f"The directory of the first model is invalid: {self.models_dir}")
+        logger.info(f"Using primary models directory: {self.models_dir}")
+
+        # --- THIS IS THE MISSING PIECE, NOW RESTORED AND IN THE RIGHT PLACE ---
+        logger.info(f"Inferring base ModelConfig from: {representative_model_path_str}")
+        try:
             rep_model_node = sd_mecha.model(representative_model_path_str)
             with sd_mecha.open_input_dicts(rep_model_node, [self.models_dir]):
-                # Check isinstance AND state_dict exists before accessing keys
-                if isinstance(rep_model_node,
-                              ModelRecipeNode) and rep_model_node.state_dict:  # <<< Added isinstance check here too
-
+                if isinstance(rep_model_node, ModelRecipeNode) and rep_model_node.state_dict:
                     inferred_sets = sd_mecha.infer_model_configs(rep_model_node.state_dict.keys())
-
                     if inferred_sets:
-                        best_set = inferred_sets[0]
-                        if len(best_set) == 1:
-                            self.base_model_config = next(iter(best_set))
-                            logger.info(f"Merger: Inferred base ModelConfig: {self.base_model_config.identifier}")
-                        else:
-                            config_names = {c.identifier for c in best_set}
-                            logger.warning(
-                                f"Merger: Ambiguous base ModelConfig inferred for {representative_model_path_str}. Possible matches: {config_names}. Picking first one arbitrarily.")
-                            self.base_model_config = next(iter(best_set))  # Pick first
+                        # Taking the first from the best-matching set
+                        self.base_model_config = next(iter(inferred_sets[0]))
+                        logger.info(f"Inferred base ModelConfig: {self.base_model_config.identifier}")
                     else:
-                        # This path is taken if infer_model_configs returns empty list
-                        raise ValueError(
-                            f"Merger: Cannot infer ModelConfig for {representative_model_path_str} (no matching configs found).")
+                        raise ValueError(f"sd-mecha could not infer a ModelConfig for {representative_model_path_str}.")
                 else:
-                    # This path is taken if rep_model_node isn't ModelRecipeNode or state_dict is None
                     raise ValueError(
-                        f"Merger: Cannot load state dictionary for {representative_model_path_str} to infer config.")
+                        f"Could not load state dictionary for {representative_model_path_str} to infer config.")
+        except Exception as e:
+            logger.error(f"Critical error during base model config inference: {e}", exc_info=True)
+            raise  # This is a fatal error, so we stop execution.
 
-        except FileNotFoundError as fnf_e:  # Catch specific error
-            logger.error(f"Merger: Model file or directory not found during init: {fnf_e}")
-            raise ValueError("Merger could not initialize due to missing file/directory.") from fnf_e
-        except ValueError as val_e:  # Catch ValueErrors raised above
-            logger.error(f"Merger: Error during configuration inference: {val_e}")
-            raise  # Re-raise ValueErrors as they indicate critical config issues
-        except Exception as e:  # Catch other unexpected errors
-            logger.error(f"Merger: Unexpected error during init: {e}", exc_info=True)
-            raise ValueError("Merger failed to initialize.") from e
-        # --- End Base Config Inference ---
-
-        # --- Load Custom Config (depends on successful base inference if needed later) ---
+        # Load custom block configs (this part was correct)
         self.custom_block_config_id = self.cfg.optimization_guide.get("custom_block_config_id")
         self.custom_block_config = None
         if self.custom_block_config_id:
-            logger.debug(f"Merger: Attempting to load custom block config: '{self.custom_block_config_id}'")
             try:
-                # Resolve relies on registration happening in main() BEFORE Merger is initialized
                 self.custom_block_config = model_configs.resolve(self.custom_block_config_id)
-                logger.info(f"Merger: Successfully loaded custom block config: {self.custom_block_config_id}")
+                logger.info(f"Successfully loaded custom block config: '{self.custom_block_config_id}'")
             except ValueError as e:
-                # Log warning, but maybe don't raise error here if only used conditionally later?
-                # However, if prepare_param_args *requires* it, failure here is problematic.
-                logger.warning(f"Merger: Could not resolve custom config '{self.custom_block_config_id}': {e}")
-                # If resolution is critical for later steps, uncomment the raise:
-                # raise ValueError(f"Invalid custom_block_config_id: {self.custom_block_config_id}") from e
+                logger.warning(f"Could not resolve custom block config '{self.custom_block_config_id}': {e}")
 
-        # --- Initialize other Merger attributes ---
-        # Create ModelRecipeNode objects for ALL models AFTER determining models_dir
-        self.models: List[ModelRecipeNode] = self._create_model_nodes()  # Hint as specific type initially
-        self.output_file: Optional[Path] = None
-        self.best_output_file: Optional[Path] = None
+        # --- Mode-Specific Final Steps ---
+        self.models: List[ModelRecipeNode] = []
 
-        logger.info(f"Merger initialized with {len(self.models)} model nodes.")
+        if self.cfg.optimization_mode == "merge":
+            logger.info("Initializing for 'merge' mode: Creating model nodes from `model_paths`.")
+            self.models = self._create_model_nodes()
+            logger.info(f"Initialized with {len(self.models)} model nodes for merging.")
+
+        elif self.cfg.optimization_mode == "recipe":
+            logger.info("Initializing for 'recipe' mode: `model_paths` will be used for fallback lookup.")
+            self.models = self._create_model_nodes()  # Still needed for fallback index
+            recipe_path_str = self.cfg.recipe_optimization.get("recipe_path")
+            if not recipe_path_str or not Path(recipe_path_str).is_file():
+                raise FileNotFoundError(f"Recipe file not found or not specified: {recipe_path_str}")
+
+        elif self.cfg.optimization_mode == "layer_adjust":
+            logger.info("Initializing for 'layer_adjust' mode.")
+            self.models = self._create_model_nodes()
+
+        else:
+            raise ValueError(f"Invalid optimization_mode: {self.cfg.optimization_mode}")
+
+        logger.info("Merger initialized successfully.")
 
     def validate_config(self):
-        # Removed model_arch check
+        """
+        Performs comprehensive, mode-aware validation of the run configuration.
+        This runs before any major processing to catch errors early.
+        """
+        # --- Mode-Specific Validation ---
         if self.cfg.optimization_mode == "merge":
-            if not self.cfg.model_paths or len(self.cfg.model_paths) < 1:  # Need at least 1 for merge
-                raise ValueError(
-                    "For 'merge' mode, 'model_paths' must contain at least one model path."
-                )
+            if not self.cfg.model_paths or len(self.cfg.model_paths) < 1:
+                raise ValueError("For 'merge' mode, 'model_paths' must contain at least one model path.")
             if not self.cfg.merge_method:
-                raise ValueError("Configuration missing required field: 'merge_method'")
-        elif self.cfg.optimization_mode == "recipe":
-            # Get the recipe config section safely
-            recipe_cfg = self.cfg.get('recipe_optimization')
+                raise ValueError("Configuration missing required field: 'merge_method' for 'merge' mode.")
 
-            # If the mode is "recipe", the recipe_optimization block MUST exist.
+        elif self.cfg.optimization_mode == "recipe":
+            recipe_cfg = self.cfg.get('recipe_optimization')
             if not recipe_cfg:
                 raise ValueError(
                     "`optimization_mode` is 'recipe', but the 'recipe_optimization' section is missing in the config.")
 
-            # Check 1: The recipe file itself must exist.
-            recipe_path = recipe_cfg.get("recipe_path")
-            if not recipe_path:
-                raise ValueError("Recipe optimization selected, but 'recipe_path' is missing in the config.")
-            if not Path(recipe_path).exists():
+            # Check for required recipe parameters
+            recipe_path_str = recipe_cfg.get("recipe_path")
+            target_nodes_str = recipe_cfg.get("target_nodes")
+            target_params_list = recipe_cfg.get("target_params")
+
+            if not recipe_path_str:
+                raise ValueError("Recipe optimization requires 'recipe_path' to be specified.")
+            if not target_nodes_str:
+                raise ValueError("Recipe optimization requires 'target_nodes' to be specified (e.g., '&8').")
+            if not target_params_list:
+                raise ValueError("Recipe optimization requires 'target_params' to be specified (e.g., ['alpha']).")
+
+            recipe_path = Path(recipe_path_str)
+            if not recipe_path.exists():
                 raise FileNotFoundError(f"The specified recipe file does not exist: {recipe_path}")
 
-            # Check 2: We must know which node to target.
-            if not recipe_cfg.get("target_nodes"):
-                raise ValueError("Recipe optimization requires 'target_nodes' to be specified (e.g., '&8').")
+            # --- NEW: Advanced Recipe File Validation ---
+            try:
+                logger.debug("Performing advanced validation on recipe file...")
+                original_recipe_text = recipe_path.read_text(encoding="utf-8")
+                all_lines = original_recipe_text.strip().split('\n')
 
-            # Check 3 (NEW!): We must know which parameter inside that node to optimize.
-            if not recipe_cfg.get("target_params"):
-                raise ValueError("Recipe optimization requires 'target_params' to be specified (e.g., 'alpha').")
+                # 1. Validate target_nodes index
+                target_node_idx = int(target_nodes_str.strip('&'))
+                if not (0 <= target_node_idx < len(all_lines) - 1):
+                    raise IndexError(
+                        f"target_nodes '{target_nodes_str}' is out of bounds for the recipe file which has {len(all_lines) - 1} nodes.")
+
+                # 2. Validate node type and parameters
+                # Deserialize just enough of the recipe to inspect our target node
+                slice_to_parse = all_lines[:target_node_idx + 2]
+                target_node = sd_mecha.deserialize(slice_to_parse)
+
+                if not isinstance(target_node, sd_mecha.recipe_nodes.MergeRecipeNode):
+                    raise TypeError(
+                        f"Target node {target_nodes_str} is a '{type(target_node).__name__}', not a merge method.")
+
+                # Check if all target_params are valid for this specific merge method
+                method_obj = target_node.merge_method
+                valid_params = set(method_obj.get_param_names().kwargs.keys())
+                for param_name in target_params_list:
+                    if param_name not in valid_params:
+                        raise ValueError(
+                            f"Target parameter '{param_name}' is not valid for merge method '{method_obj.identifier}'. "
+                            f"Valid keyword parameters are: {sorted(list(valid_params))}"
+                        )
+                logger.debug("Advanced recipe validation successful.")
+
+            except (ValueError, IndexError, TypeError, FileNotFoundError) as e:
+                raise ValueError(f"Recipe configuration validation failed: {e}")
+            except Exception as e:
+                logger.error(f"An unexpected error occurred while validating the recipe file: {e}", exc_info=True)
+                raise ValueError("An unexpected error occurred during recipe validation. Check logs for details.")
+
+            # 3. Friendly informational message about model_paths
+            if self.cfg.get("model_paths"):
+                logger.info(
+                    "NOTE: `model_paths` config is ignored in 'recipe' optimization mode. Model paths are read directly from the .mecha file.")
+
         elif self.cfg.optimization_mode == "layer_adjust":
             if not self.cfg.model_paths or len(self.cfg.model_paths) < 1:
                 raise ValueError("`model_paths` must contain at least one model for 'layer_adjust' mode.")
-        else:
-            raise ValueError(f"Invalid optimization mode: {self.cfg.optimization_mode}")
 
-        # Check precision settings existence
+        else:
+            raise ValueError(f"Invalid optimization_mode: '{self.cfg.optimization_mode}'")
+
+        # --- Global Validation (works for all modes) ---
         if not hasattr(self.cfg, 'merge_dtype') or self.cfg.merge_dtype not in precision_mapping:
             raise ValueError(
-                f"Invalid or missing 'merge_dtype': {self.cfg.get('merge_dtype')}. Must be one of {list(precision_mapping.keys())}")
+                f"Invalid or missing 'merge_dtype': '{self.cfg.get('merge_dtype')}'. Must be one of {list(precision_mapping.keys())}")
         if not hasattr(self.cfg, 'save_dtype') or self.cfg.save_dtype not in precision_mapping:
             raise ValueError(
-                f"Invalid or missing 'save_dtype': {self.cfg.get('save_dtype')}. Must be one of {list(precision_mapping.keys())}")
+                f"Invalid or missing 'save_dtype': '{self.cfg.get('save_dtype')}'. Must be one of {list(precision_mapping.keys())}")
+
+        logger.info("Configuration successfully validated.")
 
     def _create_model_nodes(self) -> List[ModelRecipeNode]:
         """
@@ -356,6 +398,85 @@ class Merger:
 
         return base_model_node
 
+    def _get_conversion_context_node(self) -> recipe_nodes.ModelRecipeNode:
+        """
+        Finds a suitable, reliable ModelRecipeNode to serve as a conversion target.
+        This is critical for converting custom blocks to the base model's key space.
+        It uses a clear priority system to find the best possible candidate.
+        """
+        logger.debug("Attempting to find a suitable model for conversion context...")
+
+        # Priority 1: Use the explicitly defined base_model, if in a mode that uses it ('merge').
+        if self.cfg.optimization_mode == "merge":
+            base_model = self._select_base_model()  # Our already-fixed _select_base_model
+            if base_model:
+                logger.info(f"Using explicitly defined base_model '{base_model.path}' as conversion context.")
+                return base_model
+
+        # Priority 2: Use the explicitly defined fallback_model. This is a great, stable choice.
+        fallback_index = self.cfg.get("fallback_model_index", -1)
+        if fallback_index != -1 and 0 <= fallback_index < len(self.models):
+            fallback_model = self.models[fallback_index]
+            # We MUST validate that the fallback model isn't a LoRA!
+            self._validate_node_is_not_lora(fallback_model)
+            logger.info(
+                f"Using fallback_model at index {fallback_index} ('{fallback_model.path}') as conversion context.")
+            return fallback_model
+
+        # Priority 3 (Recipe Mode): Intelligently scan the recipe for the first valid base model.
+        if self.cfg.optimization_mode == "recipe":
+            logger.debug("Scanning recipe for the first valid base model to use as context...")
+            recipe_path = Path(self.cfg.recipe_optimization.recipe_path)
+            original_recipe_text = recipe_path.read_text(encoding="utf-8")
+
+            # We deserialize the whole recipe to inspect its nodes
+            recipe_graph = sd_mecha.deserialize(original_recipe_text)
+            visitor = utils.ModelVisitor()
+            recipe_graph.accept(visitor)
+
+            for model_node in visitor.models:
+                try:
+                    # Check each model in the recipe until we find one that isn't a LoRA.
+                    self._validate_node_is_not_lora(model_node, raise_error=False)
+                    logger.info(f"Found suitable model '{model_node.path}' inside recipe to use as conversion context.")
+                    return model_node
+                except ValueError:
+                    logger.debug(f"Skipping '{model_node.path}' as conversion context because it appears to be a LoRA.")
+                    continue
+
+        # Priority 4: If all else fails, use the first model from the model_paths list as a last resort.
+        if self.models:
+            first_model = self.models[0]
+            self._validate_node_is_not_lora(first_model)
+            logger.warning(
+                f"Could not find an explicit base/fallback model. Using the first model in model_paths ('{first_model.path}') as a last-resort conversion context.")
+            return first_model
+
+        # If we reach here, something is catastrophically wrong.
+        raise RuntimeError("Could not determine any suitable model to use for conversion context.")
+
+    # We also need a small, reusable validator for the LoRA check.
+    def _validate_node_is_not_lora(self, node: recipe_nodes.ModelRecipeNode, raise_error: bool = True):
+        """Checks if a given ModelRecipeNode is a LoRA/LyCORIS. Raises ValueError if it is."""
+        try:
+            with sd_mecha.open_input_dicts(node, [self.models_dir]):
+                config_id = node.model_config.identifier
+                if "lora" in config_id or "lycoris" in config_id:
+                    raise ValueError(
+                        f"Model '{node.path}' appears to be a LoRA/LyCORIS and cannot be used as a base/context model.")
+        except ValueError as e:
+            if raise_error:
+                raise e
+            else:
+                # Silently re-raise to be caught by the calling function
+                raise
+        except Exception as e:
+            logger.error(f"Could not verify model '{node.path}' for LoRA check: {e}")
+            if raise_error:
+                raise RuntimeError(f"Could not verify model '{node.path}'.") from e
+            else:
+                raise
+
     def _slice_models(self, prepared_model_nodes: List[RecipeNodeOrValue], merge_method: MergeMethod) -> List[
         RecipeNodeOrValue]:
         """Slices the model list to match the expected number of model-type arguments."""
@@ -544,7 +665,7 @@ class Merger:
             f"Finished preparing {len(prepared_nodes)} model arguments for merge method '{merge_method.identifier}'.")
         return prepared_nodes
 
-    # V1.5 - Block AND key, uses fallback to merge (and overwrite from keys to block)
+    # V1.6 - Proper context for conversions
     def _prepare_param_recipe_args(
             self,
             params: Dict[str, Any],  # Flat params from optimizer: {'OPT_PARAM_NAME': value}
@@ -576,7 +697,8 @@ class Merger:
             item_name = info.get('item_name')
             items_covered = info.get('items_covered', [])
 
-            if not base_param: continue
+            if not base_param:
+                continue
             handled_base_params.add(base_param)  # Mark this base_param as handled
 
             if target_type == 'block':
@@ -607,9 +729,10 @@ class Merger:
                         key_based_values_per_param[base_param][item] = value
 
         # --- Step 1b: Create sd-mecha nodes for Strategy-Based Parameters ---
-        target_model_node = self._select_base_model() or (self.models[0] if self.models else None)
-        if not target_model_node:
-            logger.error("Cannot prepare parameter nodes: Target/Base model node is missing.")
+        target_model_node = self._get_conversion_context_node()
+
+        if not target_model_node:  # This check is now for a truly fatal error
+            logger.error("Cannot prepare parameter nodes: A conversion context model is missing.")
             return {}
 
         # Process each base parameter that has values from either blocks or keys
@@ -715,43 +838,51 @@ class Merger:
             f"Prepared {len(final_param_nodes)} final parameter nodes for merge method '{merge_method.identifier}'.")
         return final_param_nodes
 
-    # V1.1 - Added handling for fallback_model_index, including -1/None check.
+    # V1.2 - fallback_model_index for merge and recipe properly
     def _execute_recipe(self, final_recipe_node: recipe_nodes.RecipeNode, model_path: Path):
-        """Executes the final recipe using sd_mecha.merge, including fallback."""
+        """Executes the final recipe, correctly handling the fallback model for ALL modes."""
         logger.info(f"Executing merge recipe and saving to: {model_path}")
 
-        # --- Determine Fallback Model ---
-        fallback_node: Optional[ModelRecipeNode] = None
-        # Use .get() with a default of None to handle missing key gracefully
-        fallback_index = self.cfg.get("fallback_model_index", None)
+        # --- Step 1: Determine the list of models available for fallback ---
+        models_for_lookup: List[ModelRecipeNode] = []
+        if self.cfg.optimization_mode == "merge":
+            models_for_lookup = self.models
+        elif self.cfg.optimization_mode == "recipe":
+            # In recipe mode, we parse the FINAL recipe to get an accurate list.
+            visitor = utils.ModelVisitor()
+            final_recipe_node.accept(visitor)
+            models_for_lookup = visitor.models
 
-        # Check if fallback is explicitly disabled or not provided
+        # --- Step 2: Determine the Fallback Node using EXPLICIT checks ---
+        fallback_node: Optional[ModelRecipeNode] = None
+        fallback_index = self.cfg.get("fallback_model_index", -1)
+
+        # This is the original, explicit checking structure you liked, now made mode-aware.
         if fallback_index is None or fallback_index == -1:
-            logger.info("No fallback model specified (index is None or -1).")
+            logger.info("No fallback model specified.")
         elif not isinstance(fallback_index, int):
             logger.error(
-                f"Invalid fallback_model_index type: {type(fallback_index)}. Must be an integer or null. No fallback will be used.")
-        elif not self.models:
+                f"Invalid fallback_model_index type: {type(fallback_index)}. Must be an integer or null. No fallback will be used."
+            )
+        elif not models_for_lookup:  # This check now works for both modes.
             logger.error(
-                f"fallback_model_index {fallback_index} specified, but no models were loaded (self.models is empty). No fallback will be used.")
-        elif not (0 <= fallback_index < len(self.models)):
+                f"fallback_model_index {fallback_index} specified, but no models were found in the current context. No fallback will be used."
+            )
+        elif not (0 <= fallback_index < len(models_for_lookup)):  # This check also now works for both modes.
             logger.error(
-                f"Invalid fallback_model_index: {fallback_index}. Must be between 0 and {len(self.models) - 1}. No fallback will be used.")
+                f"Invalid fallback_model_index: {fallback_index}. Must be between 0 and {len(models_for_lookup) - 1}. No fallback will be used."
+            )
         else:
-            # Valid index provided
-            fallback_node = self.models[fallback_index]
+            # If all checks pass, we have a valid index for our lookup list.
+            fallback_node = models_for_lookup[fallback_index]
             logger.info(
-                f"Using model at index {fallback_index} ('{fallback_node.path}') as fallback source for missing keys.")
+                f"Using model at index {fallback_index} ('{fallback_node.path}') as fallback source for missing keys."
+            )
 
-        # --- Execute Merge ---
+        # --- Step 3: Execute the Merge (this part was already correct) ---
         try:
-            # Make sure self.models_dir is correctly set in __post_init__
             if not self.models_dir or not self.models_dir.is_dir():
-                logger.warning(
-                    f"Merger.models_dir ('{self.models_dir}') is not set or invalid. Relative paths in sd_mecha might fail.")
-                effective_model_dirs = []  # Pass empty list if models_dir is bad
-            else:
-                effective_model_dirs = [self.models_dir]
+                raise FileNotFoundError("Merger.models_dir is not set or is not a valid directory.")
 
             logger.info(f"Calling sd_mecha.merge with fallback_model: {fallback_node}")
             sd_mecha.merge(
@@ -763,7 +894,7 @@ class Merger:
                 output_device="cpu",  # Keep saving to CPU
                 output_dtype=precision_mapping.get(self.cfg.save_dtype),  # Get dtype object
                 threads=self.cfg.get("threads"),
-                model_dirs=effective_model_dirs,  # Use the directory containing models
+                model_dirs=[self.models_dir],  # Use the directory containing models
                 check_mandatory_keys=False,
                 # Add other relevant sd_mecha.merge options as needed:
                 # strict_weight_space=True, check_finite=True, etc.
@@ -926,7 +1057,6 @@ class Merger:
 
         logger.info(f"Recipe optimization coordination complete. Output: {model_path}")
         return model_path
-
 
     def layer_adjust(self, params: Dict, cfg: DictConfig) -> Path:  # Takes params
         """Loads a model, applies layer adjustments, and saves the modified model."""

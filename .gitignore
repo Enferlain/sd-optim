@@ -120,6 +120,21 @@ logs/**/*.jpg
 !conf/optimization_guide/guide.tmpl.yaml
 
 # --- Other Project Files ---
+# Ignore everything in the logs folder
+logs/
+
+# Ignore the optuna_db folder
+optuna_db/
+
+# Other root folders
+.github/
+.idea/
+optimization-analysis/
+
+# Ignore non-template yaml files in conf
+conf/**/*.yaml
+!conf/**/*.tmpl.yaml
+
 *.txt
 # !wildcards/**/*.txt # Only if wildcards are stored in a tracked dir
 

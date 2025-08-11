@@ -1,4 +1,4 @@
-# sd_optim/custom_converters/convert_sdxl_optim_blocks.py (V1.1 - Correct Fallback)
+# sd_optim/custom_converters/convert_sdxl_optim_blocks.py (V1.2 - Granular VAE)
 
 import logging
 import sd_mecha
@@ -40,6 +40,7 @@ def convert_sdxl_optim_blocks_to_sdxl_sgm(
     # --- Attempt to map target_key to a DEFINED block name ---
     # Only include logic for prefixes corresponding to blocks defined
     # in the sdxl-optim_blocks.yaml config.
+    # --- UNet Block Mapping ---
     if target_key.startswith("model.diffusion_model."):
         if ".time_embed" in target_key:
             block_name = "UNET_TIME_EMBED"
@@ -57,6 +58,7 @@ def convert_sdxl_optim_blocks_to_sdxl_sgm(
             block_name = f"UNET_OUT{block_num:02d}" if 0 <= block_num <= 8 else None
         # REMOVED UNET_ELSE mapping - unmapped UNet keys will trigger fallback
 
+    # --- CLIP-L Block Mapping ---
     elif target_key.startswith("conditioner.embedders.0.transformer.text_model."):
         if ".embeddings." in target_key:
             block_name = "CLIP_L_EMBEDDING"
@@ -67,6 +69,7 @@ def convert_sdxl_optim_blocks_to_sdxl_sgm(
             block_name = f"CLIP_L_IN{layer_num:02d}" if 0 <= layer_num <= 11 else None
         # REMOVED CLIP_L_ELSE mapping
 
+    # --- CLIP-G Block Mapping ---
     elif target_key.startswith("conditioner.embedders.1.model."):
         if ".token_embedding." in target_key or ".positional_embedding" in target_key or ".embeddings." in target_key:
             block_name = "CLIP_G_EMBEDDING"
@@ -79,10 +82,29 @@ def convert_sdxl_optim_blocks_to_sdxl_sgm(
             block_name = f"CLIP_G_IN{layer_num:02d}" if 0 <= layer_num <= 31 else None
         # REMOVED CLIP_G_ELSE mapping
 
-    # Example: Handle VAE only IF VAE_ALL is defined in the YAML
-    # (Comment this out if VAE_ALL is not in your sdxl-optim-blocks.yaml)
+     # --- VAE Block Mapping (Granular) ---
     elif target_key.startswith("first_stage_model."):
-        block_name = "VAE_ALL"
+        key_suffix = target_key.split(".", 1)[1]  # Get everything after 'first_stage_model.'
+        if key_suffix.startswith("encoder.conv_in."):
+            block_name = "VAE_ENCODER_IN"
+        elif key_suffix.startswith("encoder.down."):
+            block_name = "VAE_ENCODER_DOWN"
+        elif key_suffix.startswith("encoder.mid."):
+            block_name = "VAE_ENCODER_MID"
+        elif key_suffix.startswith("encoder.norm_out.") or key_suffix.startswith("encoder.conv_out."):
+            block_name = "VAE_ENCODER_OUT"
+        elif key_suffix.startswith("quant_conv.") or key_suffix.startswith("post_quant_conv."):
+            block_name = "VAE_QUANT"
+        elif key_suffix.startswith("decoder.conv_in."):
+            block_name = "VAE_DECODER_IN"
+        elif key_suffix.startswith("decoder.mid."):
+            block_name = "VAE_DECODER_MID"
+        elif key_suffix.startswith("decoder.up."):
+            block_name = "VAE_DECODER_UP"
+        elif key_suffix.startswith("decoder.norm_out.") or key_suffix.startswith("decoder.conv_out."):
+            block_name = "VAE_DECODER_OUT"
+        else:
+            block_name = "VAE_ELSE"
 
     # --- Check if a mapping was found AND if the block exists in the input dict ---
     if block_name is not None:

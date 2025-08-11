@@ -27,6 +27,7 @@ tqdm>=4.66.2             # mecha compat
 # openai-clip            # Usually redundant if 'clip' or 'open_clip_torch' is present
 # aesthetic-predictor-v2-5 # Pulled via pip install aesthetic-predictor-v2-5 directly
 hpsv2                    # Pulled via pip install hpsv2 directly
+hpsv3                    # Pulled via pip install hpsv3 directly
 # Other potential scorer dependencies might be pulled automatically by the scorer libraries themselves
 
 # --- Plotting & Visualization ---

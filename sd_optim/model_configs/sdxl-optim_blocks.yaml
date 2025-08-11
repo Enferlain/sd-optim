@@ -90,6 +90,14 @@ components:
     CLIP_G_ELSE: {shape: [], dtype: float32, optional: true}       # Fallback for clip_g keys
 
   vae: # Component name matching the base sdxl-sgm config
-    # Prefixes based on 'first_stage_model.'
-    VAE_ALL: {shape: [], dtype: float32, optional: true} # <--- Add optional: true!
-    # Add more VAE blocks here if needed, or rely on VAE_ALL as fallback
+    # Prefixes based on 'first_stage_model.' - Replaced VAE_ALL with granular blocks
+    VAE_ENCODER_IN: {shape: [], dtype: float32, optional: true}      # encoder.conv_in
+    VAE_ENCODER_DOWN: {shape: [], dtype: float32, optional: true}    # encoder.down.*
+    VAE_ENCODER_MID: {shape: [], dtype: float32, optional: true}     # encoder.mid.*
+    VAE_ENCODER_OUT: {shape: [], dtype: float32, optional: true}     # encoder.norm_out, encoder.conv_out
+    VAE_QUANT: {shape: [], dtype: float32, optional: true}           # quant_conv, post_quant_conv
+    VAE_DECODER_IN: {shape: [], dtype: float32, optional: true}      # decoder.conv_in
+    VAE_DECODER_MID: {shape: [], dtype: float32, optional: true}     # decoder.mid.*
+    VAE_DECODER_UP: {shape: [], dtype: float32, optional: true}      # decoder.up.*
+    VAE_DECODER_OUT: {shape: [], dtype: float32, optional: true}     # decoder.norm_out, decoder.conv_out
+    VAE_ELSE: {shape: [], dtype: float32, optional: true}            # Fallback for any unhandled VAE keys

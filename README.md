@@ -10,16 +10,18 @@ This project aims to provide a flexible and powerful tool for finding optimal pa
 
 **Note:** This project is under active development and might undergo significant changes. While usability is a goal, stability is not always guaranteed on the main branch.
 
+**Note_2:** WIKI IS OUTDATED, PENDING UPDATE AFTER CHANGES STABILIZED
+
 ---
 
 ## Key Features
 
 *   **Powerful Merging Backend:** Uses [`sd-mecha`](https://github.com/ljleb/sd-mecha) for efficient, low-memory state dictionary operations.
 *   **Flexible Optimization:**
-    *   Supports both **Bayesian Optimization** (via `bayesian-optimization`) and **Optuna** for hyperparameter search.
+    *   Supports both **Bayesian Optimization** (via `bayesian-optimization` - untested) and **Optuna** for hyperparameter search.
     *   Optimize parameters for built-in or custom `sd-mecha` merge methods.
     *   Optimize hyperparameters within existing `.mecha` recipes (`optimization_mode: recipe`).
-    *   Optimize layer adjustments (`optimization_mode: layer_adjust`). *(Experimental)*
+    *   Optimize layer adjustments (`optimization_mode: layer_adjust`). *(not implemented yet)*
 *   **Granular Control:** Use `conf/optimization_guide.yaml` to define *which* parameters to optimize using flexible strategies:
     *   `all`: Optimize parameters for every key in a component.
     *   `select`: Optimize parameters for specific keys or wildcard patterns.
@@ -27,8 +29,8 @@ This project aims to provide a flexible and powerful tool for finding optimal pa
     *   `single`: Optimize a single shared parameter for an entire component.
     *   `none`: Exclude a component from optimization.
 *   **Custom Block Definitions:** Define custom block groupings via configuration and utility scripts for targeted optimization (see Wiki).
-*   **Multiple Scorers:** Utilizes various image scoring models (Aesthetic, CLIP, BLIP, HPSv2, ImageReward, PickScore, CityAesthetics, etc.) to guide optimization. See [[Scoring]] wiki page.
-*   **WebUI Integration:** Designed to run alongside a running instance of A1111, SD Forge, SwarmUI (more planned) via their APIs for image generation.
+*   **Multiple Scorers:** Utilizes various image scoring models (Aesthetic, CLIP, BLIP, HPSv3, ImageReward, PickScore, CityAesthetics, etc.) to guide optimization. See [[Scoring]] wiki page.
+*   **WebUI Integration:** Designed to run alongside a running instance of A1111, Forge, SwarmUI (comfy, reforge forks planned) via their APIs for image generation.
 *   **Asynchronous Workflow:** Generates and scores images concurrently for better efficiency.
 
 ## Getting Started
@@ -36,7 +38,7 @@ This project aims to provide a flexible and powerful tool for finding optimal pa
 1.  **Prerequisites:** Python 3.10+, Git, a running instance of a supported WebUI (e.g., A1111, Forge) with its API enabled.
 2.  **Installation:** Clone this repository into your WebUI's `extensions` folder:
     ```bash
-    git clone https://github.com/enferlain/sd-optim.git sd-optim
+    git clone -b mecha_update https://github.com/enferlain/sd-optim.git sd-optim
     ```
     *(Replace URL)*
     Then install dependencies:

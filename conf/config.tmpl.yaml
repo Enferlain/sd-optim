@@ -151,6 +151,9 @@ scorer_average_type: arithmetic # How to average scores from DIFFERENT scorers: 
 scorer_weight: # Optional weights for each scorer (default is 1.0).
   # cityaes: 1.2
   # laion: 0.5
+scorer_filters: # Optional filter for the scorers on the payloads
+  backgroundblackness: # Name of the scorer
+    exclude: ['payload_name_to_exclude'] # This payload will not be evaluated by this scorer
 scorer_default_device: cpu # Default device for scorers: 'cpu' or 'cuda'.
 scorer_device: # Optional device override per scorer.
   # imagereward: cuda

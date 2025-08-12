@@ -35,6 +35,9 @@ from sd_optim.models.CityAesthetics import CityAestheticsScorer as CITY
 from sd_optim.models.AestheticV25 import AestheticV25 as AES25
 from sd_optim.models.LumiAnatomy import HybridAnatomyScorer as LUMI
 from sd_optim.models.SimpleQuality import SimpleQualityScorer as SQ
+from sd_optim.models.GammaNoiseScorer import GammaNoiseScorer as GNS
+from sd_optim.models.ForensicNoiseScorer import ForensicNoiseScorer as FNS
+from sd_optim.models.BackgroundBlacknessScorer import BackgroundBlacknessScorer as BBS
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO)
@@ -127,6 +130,18 @@ MODEL_DATA = {
         "url": None,  # No download needed - uses OpenCV/numpy
         "file_name": None,
     },
+    "gammanoise": {
+        "url": None,
+        "file_name": None,
+    },
+    "forensicnoise": {
+        "url": None,
+        "file_name": None,
+    },
+    "backgroundblackness": {
+        "url": None,
+        "file_name": None,
+    },
 }
 
 printWSLFlag = 0
@@ -145,9 +160,14 @@ class AestheticScorer:
         self.model_path: Dict[str, Path] = {}  # Dictionary to hold Path objects for models
 
         self.rembg_session = None
-        if self.cfg.get("background_check", {}).get("enabled", False):
-            logger.info("Background check feature is enabled. Initializing rembg session...")
+        # Unified rembg session initialization
+        # If any scorer that needs it is configured, create the session.
+        scorers_needing_rembg = {'forensicnoise', 'backgroundblackness'}
+        if any(s.lower() in scorers_needing_rembg for s in self.cfg.get("scorer_method", [])):
+            logger.info("A configured scorer requires background removal. Initializing rembg session...")
             self.rembg_session = new_session(providers=['CPUExecutionProvider'])
+        else:
+            self.rembg_session = None
 
         self.setup_img_saving()
 
@@ -417,6 +437,21 @@ class AestheticScorer:
                 "files": {},  # No files needed
                 "extra_args": {}  # No extra arguments needed
             },
+            "gammanoise": {
+                "class": GNS,
+                "files": {},
+                "extra_args": {}
+            },
+            "forensicnoise": {
+                "class": FNS,
+                "files": {},
+                "extra_args": {"rembg_session": "self.rembg_session"} # Special key to pass session
+            },
+            "backgroundblackness": {
+                "class": BBS,
+                "files": {},
+                "extra_args": {"rembg_session": "self.rembg_session"} # Special key to pass session
+            },
         }
         # --- End Factory Config ---
 
@@ -445,7 +480,7 @@ class AestheticScorer:
             file_paths_ok = True
 
             # 1. Add device
-            if evaluator_lower != 'simplequality':
+            if 'device' in inspect.signature(ScorerClass.__init__).parameters:
                 try:
                     constructor_args["device"] = self.cfg.scorer_device.get(evaluator_lower, self.cfg.scorer_default_device)
                 except KeyError:
@@ -511,10 +546,17 @@ class AestheticScorer:
 
             # 3. Add extra arguments
             if "extra_args" in config:
-                # Convert Path objects in extra_args to strings if needed by constructor
                 resolved_extra_args = {}
                 for k, v in config["extra_args"].items():
-                    resolved_extra_args[k] = str(v) if isinstance(v, Path) else v
+                    # Special handling for passing the rembg_session
+                    if k == "rembg_session" and v == "self.rembg_session":
+                        if self.rembg_session:
+                            resolved_extra_args[k] = self.rembg_session
+                        else:
+                            logger.warning(f"rembg_session not available for '{evaluator}', but it was requested.")
+                    else:
+                        # Original logic for other args
+                        resolved_extra_args[k] = str(v) if isinstance(v, Path) else v
                 constructor_args.update(resolved_extra_args)
 
             # 4. Instantiate
@@ -553,33 +595,41 @@ class AestheticScorer:
                 if self.cfg.scorer_print_individual:
                     print(f"{evaluator}:{individual_eval_score:.4f}")
 
-            # --- ### FIX #3: The CORRECT Targeted Scorer Logic ### ---
-            elif evaluator == 'background_blackness':
-                # Read the config to get our instructions.
-                bg_cfg = self.cfg.get("background_check", {})
-                is_enabled = bg_cfg.get("enabled", False)
-                target_payloads = bg_cfg.get("payloads", [])
-
-                # Check if we should run for this image.
-                if is_enabled and name is not None and name in target_payloads:
-                    individual_eval_score = self.score_background_blackness(image)
-                    weight = self.cfg.scorer_weight.get(evaluator, 1.0)
-                    values.append(individual_eval_score)
-                    scorer_weights.append(weight)
-
-                    if self.cfg.scorer_print_individual:
-                        print(f"{evaluator}:{individual_eval_score:.4f}")
-                # If not enabled or not a target payload, we do nothing.
-
             # --- General Automatic Scorer Path ---
             else:
                 evaluator_lower = evaluator.lower()
+
+                # --- Payload Filtering Logic (Exclude Only) ---
+                run_scorer = True
+                scorer_filters = self.cfg.get("scorer_filters", {})
+                if name and scorer_filters and evaluator_lower in scorer_filters:
+                    filter_config = scorer_filters[evaluator_lower]
+                    exclude_list = filter_config.get("exclude")
+                    if exclude_list and name in exclude_list:
+                        run_scorer = False
+                
+                if not run_scorer:
+                    logger.debug(f"Skipping scorer '{evaluator}' for payload '{name}' due to exclude filter.")
+                    continue
+                # --- End Filtering Logic ---
+
                 individual_eval_score = 0.0  # Default score
 
                 try:
                     scorer_instance = self.model.get(evaluator_lower)
                     if scorer_instance is None:
                         logger.error(f"Scorer instance for '{evaluator}' not found.")
+
+                    elif evaluator_lower == 'forensicnoise':
+                        # This scorer has an extra parameter
+                        score_args = {'image': image}
+                        # Allow overriding detection method from config, e.g., forensicnoise_detection_method: "colored"
+                        detection_method = self.cfg.get("forensicnoise_detection_method", "structural")
+                        score_args['detection_method'] = detection_method
+                        individual_eval_score = scorer_instance.score(**score_args)
+
+                        if self.cfg.scorer_print_individual:
+                            print(f"{evaluator} ({detection_method}):{individual_eval_score:.4f}")
 
                     elif evaluator_lower == 'hpsv3':
                         # HPSv3 returns a tuple (mu, sigma)
@@ -735,62 +785,3 @@ class AestheticScorer:
                     print("\tInvalid input. Please enter a number between 0 and 10.")
             except ValueError:
                 print("\tInvalid input. Please enter a number between 0 and 10.")
-
-    ### REFORGED FUNCTION - CORRECTED SCALE ###
-    def score_background_blackness(self, image: Image.Image) -> float:
-        """
-        Calculates a score from 0.0 to 10.0 based on how close the dominant
-        background color is to pure black (0, 0, 0).
-        """
-        if self.rembg_session is None:
-            logger.error("Rembg session not initialized. Cannot perform blackness scoring.")
-            return 0.0
-
-        target_black = np.array([0, 0, 0])
-        n_clusters = 4
-        sensitivity = 0.008
-
-        try:
-            original_image = image.convert('RGB')
-            original_pixels = np.array(original_image)
-            buffer = io.BytesIO()
-            original_image.save(buffer, format="PNG")
-            input_bytes = buffer.getvalue()
-
-            output_bytes = remove(input_bytes, session=self.rembg_session)
-            output_image = Image.open(io.BytesIO(output_bytes))
-            output_pixels = np.array(output_image)
-
-            alpha_channel = output_pixels[:, :, 3]
-            background_mask = (alpha_channel == 0)
-
-            if not np.any(background_mask):
-                logger.warning("Blackness score: AI found no background pixels.")
-                return 0.0
-
-            original_background_pixels = original_pixels[background_mask]
-
-            if len(original_background_pixels) < n_clusters:
-                dominant_color = np.mean(original_background_pixels, axis=0)
-            else:
-                kmeans = KMeans(n_clusters=n_clusters, random_state=42, n_init='auto')
-                with joblib.parallel_backend('threading', n_jobs=1):
-                    kmeans.fit(original_background_pixels)
-
-                unique, counts = np.unique(kmeans.labels_, return_counts=True)
-                dominant_cluster_index = unique[counts.argmax()]
-                dominant_color = kmeans.cluster_centers_[dominant_cluster_index]
-
-            distance = np.linalg.norm(dominant_color - target_black)
-            # Calculate the score on a 0-1 scale first
-            score_0_to_1 = np.exp(-sensitivity * distance)
-
-            # <<< THE ONLY CHANGE IS HERE >>>
-            # Scale the score to the 0-10 range for consistency
-            final_score = score_0_to_1 * 10.0
-
-            return np.clip(final_score, 0.0, 10.0)
-
-        except Exception as e:
-            logger.error(f"An error occurred during blackness scoring: {e}", exc_info=True)
-            return 0.0

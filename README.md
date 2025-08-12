@@ -8,9 +8,7 @@ This project aims to provide a flexible and powerful tool for finding optimal pa
 
 ---
 
-**Note:** This project is under active development and might undergo significant changes. While usability is a goal, stability is not always guaranteed on the main branch.
-
-**Note_2:** WIKI IS OUTDATED, PENDING UPDATE AFTER CHANGES STABILIZED
+**Note:** This project is under active development and might undergo significant changes. While usability is a goal, stability is not always guaranteed on the main branch. A UI is also being worked on in spare time to provide a more user-friendly interface in the future.
 
 ---
 
@@ -52,7 +50,7 @@ This project aims to provide a flexible and powerful tool for finding optimal pa
     python sd_optim.py
     ```
 
-**For detailed setup, configuration options, and usage guides, please see the [[Project Wiki]](https://github.com/your-username/sd-optim/wiki).** *(Replace URL)*
+**For detailed setup, configuration options, and usage guides, please see the [[Project Wiki]](https://github.com/enferlain/sd-optim/wiki).**
 
 ## Planned Features
 

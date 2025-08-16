@@ -60,6 +60,7 @@ This project aims to provide a flexible and powerful tool for finding optimal pa
 *   Dynamic adjustment of runtime parameters (batch size, payloads).
 *   Expanded scoring options (perceptual similarity, character consistency).
 *   Potential integration of other optimization libraries (e.g., Hyperactive).
+*   A nice webui/app is the ultimate goal.
 
 ## Acknowledgements
 

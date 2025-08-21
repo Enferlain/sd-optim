@@ -68,3 +68,7 @@ This project aims to provide a flexible and powerful tool for finding optimal pa
 *   Relies heavily on the fantastic [`sd-mecha`](https://github.com/ljleb/sd-mecha) library by [ljleb](https://github.com/ljleb).
 *   Inspired by and utilizes concepts/code from various community projects (SuperMerger, sd-meh, etc.).
 *   Scoring models from multiple creators (LAION, OpenAI, Salesforce, THUDM, yuvalkirstain, etc.).
+
+---
+
+[![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/Panchovix/stable-diffusion-webui-reForge)

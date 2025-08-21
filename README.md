@@ -71,4 +71,4 @@ This project aims to provide a flexible and powerful tool for finding optimal pa
 
 ---
 
-[![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/Panchovix/stable-diffusion-webui-reForge)
+[![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/Enferlain/sd-optim)

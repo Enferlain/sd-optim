@@ -381,8 +381,8 @@ class Merger:
 
             with sd_mecha.open_input_dicts(base_model_node, [self.models_dir]):
                 # The LoRA check logic itself is fine.
-                if "lora" in base_model_node.model_config.identifier or \
-                        "lycoris" in base_model_node.model_config.identifier:
+                if base_model_node.model_config and ("lora" in base_model_node.model_config.identifier or \
+                        "lycoris" in base_model_node.model_config.identifier):
                     raise ValueError(
                         f"The selected base model ('{base_model_node.path}') appears to be a LoRA/LyCORIS. These cannot be used as base models."
                     )
@@ -493,7 +493,10 @@ class Merger:
         for arg_type in input_types:
             # get_origin helps handle types like StateDict[Tensor]
             origin_type = getattr(arg_type, '__origin__', arg_type)
-            if origin_type and issubclass(origin_type, sd_mecha.extensions.merge_methods.StateDict):
+            if origin_type and (
+                issubclass(origin_type, sd_mecha.extensions.merge_methods.StateDict) or
+                issubclass(origin_type, torch.Tensor)
+            ):
                 expected_num_models += 1
         # For weighted_sum, this will correctly count 2 (for 'a' and 'b').
 
@@ -572,7 +575,7 @@ class Merger:
             base_model_node: Optional[recipe_nodes.ModelRecipeNode],
             # FIX 1: Use the correct reference
             merge_method: merge_methods.MergeMethod
-    ) -> List[recipe_nodes.RecipeNode]:
+    ) -> List[RecipeNodeOrValue]:
         """
         Prepares the list of model nodes to be passed as positional arguments to a merge method.
         This function handles:
@@ -580,7 +583,7 @@ class Merger:
         2. Creation of delta nodes for standard models if the merge method expects them.
         3. Exclusion of the base model itself when creating deltas.
         """
-        prepared_nodes: List[recipe_nodes.RecipeNode] = []
+        prepared_nodes: List[RecipeNodeOrValue] = []
         param_info = merge_method.get_param_names()
         input_spaces = merge_method.get_input_merge_spaces()
         delta_space = extensions.merge_spaces.resolve("delta")
@@ -671,12 +674,12 @@ class Merger:
             params: Dict[str, Any],  # Flat params from optimizer: {'OPT_PARAM_NAME': value}
             param_info: BoundsInfo,  # Metadata: {'OPT_PARAM_NAME': {'bounds': ..., 'strategy': ..., ...}}
             merge_method: MergeMethod
-    ) -> Dict[str, RecipeNodeOrValue]:
+    ) -> Dict[str, RecipeNode]:
         """
         Prepares sd_mecha nodes for parameters based on strategies and handles fixed kwargs.
         Now supports combining block and key configs using fallback merge.
         """
-        final_param_nodes: Dict[str, RecipeNodeOrValue] = {}
+        final_param_nodes: Dict[str, RecipeNode] = {}
         # Group values by base_param and target_type based on optimizer output and param_info
         block_based_values_per_param: Dict[str, Dict[str, Any]] = {}
         key_based_values_per_param: Dict[str, Dict[str, Any]] = {}
@@ -1060,6 +1063,16 @@ class Merger:
 
     def layer_adjust(self, params: Dict, cfg: DictConfig) -> Path:  # Takes params
         """Loads a model, applies layer adjustments, and saves the modified model."""
+        # Ensure output_file is set correctly for the current iteration by the Optimizer
+        output_path = self.output_file
+        if not output_path:
+            logger.error("Output file path not set in Merger before layer_adjust call.")
+            # Create a fallback name if needed
+            model_name_for_fallback = Path(cfg.model_paths[0]).stem if cfg.model_paths else "unknown_model"
+            output_path = self.models_dir / f"layer_adjusted_{model_name_for_fallback}_fallback.safetensors"
+            logger.warning(f"Using fallback output path: {output_path}")
+            self.output_file = output_path
+
         # Determine model path: use first model from model_paths if not specified
         if not cfg.model_paths:
             raise ValueError("No model paths specified for layer adjustment.")
@@ -1107,9 +1120,7 @@ class Merger:
             logger.error(f"Error applying layer adjustments: {e}", exc_info=True)
             raise
 
-        # Save the modified model (using instance property output_file)
-        # Ensure output_file is set correctly for the current iteration by the Optimizer
-        output_path = self.output_file
+        # Save the modified model
         logger.info(f"Saving adjusted model to {output_path}")
         try:
             output_path.parent.mkdir(parents=True, exist_ok=True)  # Ensure directory exists

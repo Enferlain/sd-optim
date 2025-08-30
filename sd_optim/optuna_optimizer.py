@@ -159,6 +159,17 @@ class OptunaOptimizer(Optimizer):
         sampler_type = sampler_config.get("type", "tpe").lower()
         seed = self.cfg.optimizer.random_state
 
+        # Optuna samplers expect None for a random seed, not -1, which can cause errors with numpy.
+        if seed == -1:
+            seed = None
+        
+        # If seed is None, generate a random one for reproducibility logging
+        if seed is None:
+            # Use os.urandom to generate a cryptographically secure 32-bit integer.
+            # This avoids the np.random.randint overflow on some systems for 2**32-1.
+            seed = int.from_bytes(os.urandom(4), 'big')
+            logger.info(f"Random seed was not provided (-1 or null). Generated a new seed: {seed}")
+
         # Common sampler parameters
         sampler_kwargs = {
             "seed": seed
@@ -350,7 +361,8 @@ class OptunaOptimizer(Optimizer):
 
                 self.study = parent_study
                 self.study.sampler = sampler
-                self.study.pruner = pruner
+                # The pruner is part of the study's permanent configuration and should not be changed on resume.
+                # self.study.pruner = pruner
                 self.study_name = parent_study_name_to_load
 
         # --- Common logic from here ---
@@ -382,6 +394,9 @@ class OptunaOptimizer(Optimizer):
 
     def _restore_from_trials_log(self):
         """Restore trials from the JSON log file if database is unavailable."""
+        if not self.study:
+            logger.error("Cannot restore trials because study is not initialized.")
+            return
         trials_data = self.logger.load_trials()
         if not trials_data:
             logger.warning("No trials found in log file. Starting fresh optimization.")
@@ -611,6 +626,9 @@ class OptunaOptimizer(Optimizer):
 
     def _set_initial_study_attributes(self, parent_name: Optional[str] = None):
         """Sets user attributes for a newly created study or fork."""
+        if not self.study:
+            logger.warning("Cannot set initial attributes because study is not initialized.")
+            return
         try:
             models_str = str([str(p) for p in self.cfg.get("model_paths", [])])
             self.study.set_user_attr('config_input_models', models_str)

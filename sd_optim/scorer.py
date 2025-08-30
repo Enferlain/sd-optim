@@ -24,8 +24,8 @@ from sd_optim.models.Laion import Laion as AES
 from sd_optim.models.ImageReward import ImageReward as IMGR
 from sd_optim.models.CLIPScore import CLIPScore as CLP
 from sd_optim.models.BLIPScore import BLIPScore as BLP
-from sd_optim.models.HPSv21 import HPSv21Scorer as HPS
-from sd_optim.models.HPSv3 import HPSv3Scorer as HPS3
+# from sd_optim.models.HPSv21 import HPSv21Scorer as HPS
+# from sd_optim.models.HPSv3 import HPSv3Scorer as HPS3
 from sd_optim.models.PickScore import PickScore as PICK
 from sd_optim.models.WDAes import WDAes as WDA
 from sd_optim.models.ShadowScore import ShadowScore as SS
@@ -412,8 +412,8 @@ class AestheticScorer:
             "blip": {"class": BLP, "files": {"model_path": "file_name"}, "extra_args": {"med_config": med_config_path}},
             "imagereward": {"class": IMGR, "files": {"model_path": "file_name"},
                             "extra_args": {"med_config": med_config_path}},
-            "hpsv21": {"class": HPS, "files": {"pathname": "file_name"}},
-            "hpsv3": {"class": HPS3, "files": {"model_path": "file_name"}},
+#             "hpsv21": {"class": HPS, "files": {"pathname": "file_name"}},
+#             "hpsv3": {"class": HPS3, "files": {"model_path": "file_name"}},
             "pick": {"class": PICK, "files": {"model_path": "file_name"}},
             "shadowv2": {"class": SS, "files": {"model_path": "file_name"}},
             "cafe": {"class": CAFE, "files": {"model_path": "file_name"}},

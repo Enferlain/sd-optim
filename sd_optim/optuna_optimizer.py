@@ -185,11 +185,22 @@ class OptunaOptimizer(Optimizer):
             tpe_kwargs = {
                 "n_startup_trials": self.cfg.optimizer.init_points,
                 "multivariate": sampler_config.get("multivariate", True),
-                "group": sampler_config.get("group", False),  # Group parameters
+                "group": sampler_config.get("group", False),
                 "warn_independent_sampling": sampler_config.get("warn_independent_sampling", True),
                 "constant_liar": sampler_config.get("constant_liar", False),
+                # --- ADDED PARAMETERS ---
+                "n_ei_candidates": sampler_config.get("n_ei_candidates", 24),
+                "prior_weight": sampler_config.get("prior_weight", 1.0),
+                "consider_magic_clip": sampler_config.get("consider_magic_clip", True),
+                "consider_endpoints": sampler_config.get("consider_endpoints", False),
                 **sampler_kwargs
             }
+
+            # Only add gamma if it's not None
+            gamma = sampler_config.get("gamma", None)
+            if gamma is not None:
+                tpe_kwargs["gamma"] = gamma
+
             sampler = TPESampler(**tpe_kwargs)
             logger.info(f"Using TPE Sampler with options: {tpe_kwargs}")
 
@@ -197,9 +208,14 @@ class OptunaOptimizer(Optimizer):
             # CMA-ES is good for continuous, non-linear problems
             cmaes_kwargs = {
                 "n_startup_trials": self.cfg.optimizer.init_points,
-                "restart_strategy": sampler_config.get("restart_strategy", None),  # 'ipop' or 'bipop'
-                "sigma0": sampler_config.get("sigma0", None),  # Initial step size
+                "restart_strategy": sampler_config.get("restart_strategy", None),
+                "sigma0": sampler_config.get("sigma0", None),
                 "warn_independent_sampling": sampler_config.get("warn_independent_sampling", True),
+                # --- ADDED PARAMETERS ---
+                "popsize": sampler_config.get("popsize", None),  # Population size
+                "inc_popsize": sampler_config.get("inc_popsize", 2),  # Population increase factor for restarts
+                "use_separable_cma": sampler_config.get("use_separable_cma", False),  # For high dimensions
+                "lr_adapt": sampler_config.get("lr_adapt", False),  # Learning rate adaptation
                 **sampler_kwargs
             }
             sampler = CmaEsSampler(**cmaes_kwargs)
@@ -347,33 +363,70 @@ class OptunaOptimizer(Optimizer):
             # Sub-path B2: RESUMING
             else:
                 logger.info(f"Resuming study '{parent_study_name_to_load}' directly.")
-                parent_scorers = set(parent_study.user_attrs.get("config_scorers", []))
+
+                # 1. Get parent scorers, ensuring they are strings.
+                parent_scorers_raw = parent_study.user_attrs.get("config_scorers", [])
+                parent_scorers = set(map(str, parent_scorers_raw))
+
+                # 2. Get current scorers and flatten them.
                 current_scorers_raw = self.cfg.get("scorer_method", [])
-                current_scorers = set(
-                    current_scorers_raw if isinstance(current_scorers_raw, list) else [current_scorers_raw])
+                
+                def flatten_scorers(scorers_obj):
+                    if isinstance(scorers_obj, (list, ListConfig)):
+                        for item in scorers_obj:
+                            yield from flatten_scorers(item)
+                    else:
+                        yield str(scorers_obj)
+
+                current_scorers = set(flatten_scorers(current_scorers_raw))
 
                 if parent_scorers != current_scorers:
+                    # Convert current_scorers_raw to a more readable format for the error message
+                    current_scorers_for_error = list(flatten_scorers(current_scorers_raw))
                     raise ValueError(
                         f"FATAL: Cannot resume study '{parent_study_name_to_load}' because scorers have changed. "
-                        f"(Study used {sorted(list(parent_scorers))}, config has {sorted(list(current_scorers))}). "
+                        f"(Study used {sorted(list(parent_scorers))}, config has {sorted(current_scorers_for_error)}). "
                         "To proceed, set 'fork_study: true'."
                     )
 
                 self.study = parent_study
-                self.study.sampler = sampler
+                # --- FIX: Do NOT replace the sampler on resume ---
+                # The existing sampler in the study already contains the history. Replacing it resets the state.
+                # self.study.sampler = sampler
+                logger.info(f"Re-using existing sampler of type '{type(self.study.sampler).__name__}' from the loaded study.")
                 # The pruner is part of the study's permanent configuration and should not be changed on resume.
                 # self.study.pruner = pruner
                 self.study_name = parent_study_name_to_load
+                # --- NEW: Set the completed trials count on the base class ---
+                self.completed_trials = len(parent_study.trials)
+                logger.info(f"Setting iteration offset to {self.completed_trials} to account for existing trials.")
 
         # --- Common logic from here ---
         self._setup_logger_path()
-
         completed_trials = len(self.study.trials)
+
+        # --- NEW: Pre-populate logger with existing trials on resume ---
+        if completed_trials > 0:
+            logger.info(f"Writing {len(self.study.trials)} existing trials to the new log file...")
+            for existing_trial in self.study.trials:
+                # Use the callback to ensure consistent logging format
+                self._trial_callback(self.study, existing_trial)
+        # --- END NEW ---
         total_trials_planned = self.cfg.optimizer.init_points + self.cfg.optimizer.n_iters
         remaining_trials = max(0, total_trials_planned - completed_trials)
 
         if completed_trials > 0:
+            # --- NEW: Detailed trial breakdown ---
+            n_startup_trials = self.cfg.optimizer.init_points
+            remaining_startup_trials = max(0, n_startup_trials - completed_trials)
+            remaining_exploration_trials = max(0, remaining_trials - remaining_startup_trials)
+
             logger.info(f"Study has {completed_trials} existing trials. {remaining_trials} new trials to run.")
+            if remaining_startup_trials > 0:
+                logger.info(f"  ({remaining_startup_trials} init trials + {remaining_exploration_trials} optimization trials)")
+            else:
+                logger.info(f"  ({remaining_exploration_trials} optimization trials)")
+            # --- END NEW ---
             if self.study.best_trial: self.best_rolling_score = max(self.best_rolling_score, self.study.best_value)
 
         if remaining_trials > 0:
@@ -386,7 +439,8 @@ class OptunaOptimizer(Optimizer):
             except (KeyboardInterrupt, Exception) as e:
                 logger.error(f"Optimization loop stopped: {e}",
                              exc_info=True if not isinstance(e, KeyboardInterrupt) else False)
-                if not isinstance(e, KeyboardInterrupt): raise
+                if not isinstance(e, KeyboardInterrupt):
+                    raise
         else:
             logger.info("All planned trials already completed. Skipping optimization.")
 

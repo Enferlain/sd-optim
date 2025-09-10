@@ -41,6 +41,7 @@ class Optimizer:
     param_info: BoundsInfo = field(default_factory=dict, init=False)
     optimizer_pbounds: Dict[str, Union[Tuple[float, float], float, int, List]] = field(default_factory=dict, init=False)
     optimization_start_time: Optional[float] = None  # <<< Add start time tracker
+    completed_trials: int = 0  # <<< ADDED: To track trials from resumed studies
 
     def __post_init__(self) -> None:
         self.bounds_initializer = ParameterHandler(self.cfg)
@@ -137,14 +138,16 @@ class Optimizer:
     # --- MODIFIED: sd_target_function to use sequential producer ---
     async def sd_target_function(self, params: Dict[str, Any]) -> Optional[float]:
         self.iteration += 1
+        # --- MODIFIED: Adjust iteration number for resumed runs ---
+        effective_iteration = self.iteration + self.completed_trials
         iteration_start_time = time.time()
         iteration_type = (
-            "warmup" if self.iteration <= self.cfg.optimizer.init_points else "optimization"
+            "warmup" if effective_iteration <= self.cfg.optimizer.init_points else "optimization"
         )
-        if self.iteration in {1, self.cfg.optimizer.init_points + 1}:
+        if effective_iteration in {1, self.cfg.optimizer.init_points + 1}:
             logger.info(f"\n{'-' * 10} Starting {iteration_type} Phase {'-' * 10}>")
 
-        logger.info(f"\n--- {iteration_type} - Iteration: {self.iteration} ---")
+        logger.info(f"\n--- {iteration_type} - Iteration: {effective_iteration} ---")
         logger.info(f"Optimizer proposed parameters: {params}")
 
         # --- Unload / Merge / Load (Synchronous parts remain similar) ---
@@ -168,16 +171,17 @@ class Optimizer:
         try:
             start_merge_time = time.time()
 
+            effective_iteration = self.iteration + self.completed_trials
             if self.cfg.optimization_mode == "merge":
-                self.merger.output_file = self.merger.create_model_output_name(iteration=self.iteration)
+                self.merger.output_file = self.merger.create_model_output_name(iteration=effective_iteration)
                 model_path = self.merger.merge(
                     params=params,
                     param_info=self.param_info,
                     cache=self.cache,
-                    iteration=self.iteration
+                    iteration=effective_iteration
                 )
             elif self.cfg.optimization_mode == "layer_adjust":
-                self.merger.output_file = self.merger.create_model_output_name(iteration=self.iteration)
+                self.merger.output_file = self.merger.create_model_output_name(iteration=effective_iteration)
                 model_path = self.merger.layer_adjust(params, self.cfg)
 
             elif self.cfg.optimization_mode == "recipe":
@@ -185,7 +189,7 @@ class Optimizer:
                     params=params,
                     param_info=self.param_info,
                     cache=self.cache,
-                    iteration=self.iteration
+                    iteration=effective_iteration
                 )
 
             else:
@@ -363,7 +367,8 @@ class Optimizer:
                             f"  Image {i + 1}/{total_expected_images} scored: {individual_score:.4f} (Weight: {weight})")
 
                         if self.cfg.save_imgs:
-                            self.save_img(image, current_target_base_name, individual_score, self.iteration, i,
+                            effective_iteration = self.iteration + self.completed_trials
+                            self.save_img(image, current_target_base_name, individual_score, effective_iteration, i,
                                           current_payload)
 
                         images_processed += 1
@@ -508,7 +513,8 @@ class Optimizer:
                 logger.error(f"Error moving {self.merger.output_file} to {self.merger.best_output_file}: {e_mov}")
 
             # Static method call is correct
-            Optimizer.save_best_log(params, self.iteration)
+            effective_iteration = self.iteration + self.completed_trials
+            Optimizer.save_best_log(params, effective_iteration)
         else:
             # Delete the current iteration's model file if it's not the best and exists
             if self.merger.output_file and self.merger.output_file.exists():

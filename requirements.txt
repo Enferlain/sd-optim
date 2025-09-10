@@ -11,7 +11,7 @@ hydra-core               # Core Hydra library for configuration
 sd-mecha                 # Use the latest compatible version, or specify one explicitly like >=0.1.0 if known
 
 # --- Optimization Libraries ---
-bayesian-optimization    # Keep if you want to retain BayesOpt as an option
+bayesian-optimization==1.5.1  # Keep if you want to retain BayesOpt as an option
 optuna                   # ADDED: For Optuna optimizer support
 optuna-dashboard         # Realtime dashboard for optuna
 optuna-fast-fanova       # Recommended Optuna dependency
@@ -50,6 +50,10 @@ tensordict               # Appears related to PyTorch/distributed? Review if nee
 timm                     # Image models library, possibly used by a scorer? Review if needed.
 fairscale                # Distributed training/sharding library. Unlikely needed unless doing specific advanced things.
 # pynput                 # REMOVED: Was for old hotkey system, we'll use asyncio/other methods
+# needs descriptions
+geoopt
+rembg
+aesthetic-predictor-v2-5
 
 # --- Testing ---
 # pytest                   # Keep if you have tests or plan to add them

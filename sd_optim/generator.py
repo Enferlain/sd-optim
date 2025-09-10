@@ -114,7 +114,8 @@ class Generator:
         try:
             # <<< USE provided session for getting Swarm session ID >>>
             session_id = await self.get_swarm_session(session)  # Pass session here
-            if not session_id: logger.error("Failed to get Swarm session ID."); return
+            if not session_id:
+                logger.error("Failed to get Swarm session ID."); return
 
             payload["session_id"] = session_id
 

@@ -1895,319 +1895,6 @@ class MergeMethods:
     #     # Normalize importance scores
     #     return F.softmax(importance, dim=-1).unsqueeze(-1)
 
-    # @merge_method
-    # def pqr_projected_merge1(
-    #         a: Parameter(Tensor, "weight"),
-    #         b: Parameter(Tensor, "weight"),
-    #         *,
-    #         alpha: Parameter(Tensor) = 0.5,
-    #         rank_ratio: Parameter(float) = 0.25,
-    #         epsilon: Parameter(float) = 1e-6,  # Used for stable pivot sorting
-    #         early_exit: Parameter(bool) = True,
-    #         **kwargs
-    # ) -> Return(Tensor, "weight"):
-    #     """
-    #     Merges tensors 'a' and 'b' using pivoted QR, projection, and low-rank.
-    #
-    #     Version: 1.8 (Concise style, fail-fast, corrected math, internal block_size)
-    #
-    #     Args:
-    #         a: First input tensor.
-    #         b: Second input tensor.
-    #         alpha: Interpolation factor.
-    #         rank_ratio:  The ratio of the dimensions to keep.
-    #         epsilon: Small value for numerical stability (used in stable pivot sorting).
-    #         **kwargs: Keyword arguments, including 'key'.
-    #     """
-    #     original_shape = a.shape
-    #     key = kwargs["key"]
-    #
-    #     # Early exit if alpha is 0.0 and flag is above 0.0
-    #     if early_exit and alpha == 0.0:  # Changed from: early_exit > 0.0
-    #         return a
-    #
-    #     if len(original_shape) <= 1:
-    #         return (1 - alpha) * a + alpha * b
-    #
-    #     if key:  # Only print if key is available
-    #     # The 'alpha' variable here is ALREADY the specific float value for this key
-    #         print(f"[merge_layers] Key: {key} -- Using alpha: {alpha:.4f}")
-    #
-    #     # Reshape based on layer type and key
-    #     if "token_embedding" in key:  # CLIP text embedding
-    #         a_2d = a
-    #         b_2d = b
-    #     elif len(original_shape) == 4:  # Convolutional layers
-    #         if original_shape[2] == 1 and original_shape[3] == 1:  # 1x1 conv
-    #             a_2d = a.reshape(original_shape[0], -1)
-    #             b_2d = b.reshape(original_shape[0], -1)
-    #         else:  # Assume 3x3 (or other) conv
-    #             a_2d = a.reshape(original_shape[0], -1)
-    #             b_2d = b.reshape(original_shape[0], -1)
-    #
-    #     elif len(original_shape) == 2:  # Linear layers
-    #         a_2d = a
-    #         b_2d = b
-    #     else:
-    #         # Fallback for unexpected shapes (shouldn't happen with correct keys)
-    #         a_2d = a.reshape(original_shape[0], -1)
-    #         b_2d = b.reshape(original_shape[0], -1)
-    #
-    #     def stable_qr(x):
-    #         col_norms = torch.norm(x, dim=0)
-    #         _, pivots = torch.sort(col_norms, descending=True)
-    #         x_pivoted = x[:, pivots]
-    #
-    #         if x_pivoted.shape[0] > 4 * x_pivoted.shape[1]:
-    #             Q, R = MergeMethods.tsqr(x_pivoted, device=x.device)
-    #         else:
-    #             Q, R = torch.linalg.qr(x_pivoted, mode='reduced')
-    #
-    #         sign = torch.sign(torch.diag(R))
-    #         Q *= sign[None, :]
-    #         R *= sign[:, None]
-    #
-    #         # Check if this is a wide matrix (more columns than rows)
-    #         is_wide = x.shape[1] > x.shape[0]
-    #
-    #         # For wide matrices, we only unpivot R
-    #         if is_wide:
-    #             inverse_pivots = torch.argsort(pivots)
-    #             # Only unpivot the first x.shape[0] columns of R since that's all we have
-    #             R_unpivoted = torch.zeros((R.shape[0], x.shape[1]), device=R.device, dtype=R.dtype)
-    #             R_unpivoted[:, inverse_pivots[:R.shape[1]]] = R
-    #             return Q, R_unpivoted, pivots
-    #
-    #         # Normal unpivoting for tall/square matrices
-    #         inverse_pivots = torch.argsort(pivots)
-    #         if Q.shape[1] == inverse_pivots.shape[0]:
-    #             Q = Q[:, inverse_pivots]
-    #             R = R[inverse_pivots, :]
-    #         else:
-    #             # For any other mismatches, handle specially
-    #             R_unpivoted = torch.zeros((min(R.shape[0], x.shape[0]), x.shape[1]),
-    #                                       device=R.device, dtype=R.dtype)
-    #             # Only use as many pivots as we have columns in R
-    #             valid_pivots = min(R.shape[0], inverse_pivots.shape[0])
-    #             R_unpivoted[:, inverse_pivots[:valid_pivots]] = R[:, :valid_pivots]
-    #             print(f"Adapted unpivoting for shape mismatch. Using partial unpivoting.")
-    #             return Q, R_unpivoted, pivots
-    #
-    #         return Q, R, pivots
-    #
-    #     Qa, Ra, pa = stable_qr(a_2d)
-    #     diff = b_2d - a_2d
-    #     projected_diff = Qa @ (Qa.T @ diff)
-    #
-    #     Q_diff, R_diff, _ = stable_qr(projected_diff)
-    #
-    #     rank = max(1, int(min(projected_diff.shape) * rank_ratio))
-    #     Q_diff_trunc = Q_diff[:, :rank]
-    #     R_diff_trunc = R_diff[:rank, :]
-    #
-    #     low_rank_diff = Q_diff_trunc @ R_diff_trunc
-    #
-    #     merged = a_2d + alpha * low_rank_diff
-    #
-    #     return merged.reshape(original_shape)
-    #
-    # def tsqr(x, block_size=1024, device='cpu'):
-    #     """Tall-Skinny QR decomposition, optimized for tall, skinny matrices."""
-    #     m, n = x.shape
-    #     Rs = []
-    #     Qs = []
-    #     for i in range(0, m, block_size):
-    #         xi = x[i:i + block_size, :].to(device)  # Move block to the specified device
-    #         Qi, Ri = torch.linalg.qr(xi, 'reduced')
-    #         Rs.append(Ri)
-    #         Qs.append(Qi)  # collect Qs
-    #     stacked_R = torch.vstack(Rs).to(device)  # Ensure stacked_R is on the correct device
-    #     Q_final, R_final = torch.linalg.qr(stacked_R, 'reduced')
-    #
-    #     # now we reconstruct, multiplying each Q by the section of Q_final
-    #     # that corresponds to the *columns* in stacked_R
-    #     new_Q = []
-    #
-    #     # Q_final has dimensions min(m,n) x n
-    #     # stacked_R has dimensions min(m,n) x n
-    #     # each Qi has dimensions (block_size or less) x n
-    #     # each Ri has dimensions n x n
-    #
-    #     for Qi in Qs:
-    #         new_Q.append(Qi @ Q_final[:Qi.shape[1], :])
-    #     Q_final = torch.vstack(new_Q)  # same number of rows as x
-    #
-    #     return Q_final.to(x.device), R_final[:n, :n].to(x.device)  # Return results on the original device
-
-    ## v2 ###
-
-    @merge_method
-    def pop_lora_v2(
-            a: Parameter(Tensor, "weight"),
-            b: Parameter(Tensor, "weight"),
-            *,
-            alpha: Parameter(Tensor) = 0.5,
-            rank_ratio: Parameter(float) = 0.25,
-            epsilon: Parameter(float) = 1e-6,
-            early_exit: Parameter(bool) = True,
-            **kwargs
-    ) -> Return(Tensor, "weight"):
-        """
-        Pivoted Orthogonal Projection
-        Merges tensors 'a' and 'b' using pivoted QR, projection, and low-rank.
-        Fixed version incorporating shape-specific unpivoting.
-        """
-        original_shape = a.shape
-        key = kwargs["key"]
-
-        # Early exit if alpha is 0.0 and flag is above 0.0
-        if early_exit and alpha == 0.0:
-            return a
-
-        if len(original_shape) <= 1:
-            return (1 - alpha) * a + alpha * b
-
-        if key:
-            print(f"[merge_layers] Key: {key} -- Using alpha: {alpha:.4f}")
-
-        # Reshaping logic (unchanged)
-        if "token_embedding" in key:
-            a_2d = a
-            b_2d = b
-        elif len(original_shape) == 4:
-            a_2d = a.reshape(original_shape[0], -1)
-            b_2d = b.reshape(original_shape[0], -1)
-        elif len(original_shape) == 2:
-            a_2d = a
-            b_2d = b
-        else:
-            a_2d = a.reshape(original_shape[0], -1)
-            b_2d = b.reshape(original_shape[0], -1)
-
-        # --- helper for tall skinny matrices ---
-        def _tsqr(x: Tensor, block_size: int = 2048):
-            m, n = x.shape
-
-            if n == 0:
-                return torch.empty((m, 0), device=x.device, dtype=x.dtype), \
-                    torch.empty((0, 0), device=x.device, dtype=x.dtype)
-            if m == 0:
-                return torch.empty((0, n), device=x.device, dtype=x.dtype), \
-                    torch.empty((n, n), device=x.device, dtype=x.dtype)
-
-            Rs = []
-            Qs = []
-
-            for i in range(0, m, block_size):
-                xi = x[i:min(i + block_size, m), :]
-                if xi.shape[0] == 0: continue
-
-                Qi, Ri = torch.linalg.qr(xi, mode='reduced')
-                Qs.append(Qi)
-                Rs.append(Ri)
-
-            if not Rs:
-                return torch.empty((m, n), device=x.device, dtype=x.dtype), torch.empty((n, n), device=x.device,
-                                                                                        dtype=x.dtype)
-
-            stacked_R = torch.vstack(Rs)
-            Q_sR, R_f = torch.linalg.qr(stacked_R, mode='reduced')
-
-            Q_parts = []
-            offset = 0
-            for Qi_b, Ri_b in zip(Qs, Rs):
-                k_rows = Ri_b.shape[0]
-                Q_sR_seg = Q_sR[offset: offset + k_rows, :]
-                Q_parts.append(Qi_b @ Q_sR_seg)
-                offset += k_rows
-
-            Q_f = torch.vstack(Q_parts)
-            return Q_f, R_f
-
-        # --- pivoted qr decomp ---
-        def _stable_qr(x: Tensor, tsqr_func: callable):
-            if x.numel() == 0:
-                return torch.empty((x.shape[0], 0), device=x.device, dtype=x.dtype), \
-                    torch.empty((0, x.shape[1]), device=x.device, dtype=x.dtype), \
-                    torch.arange(x.shape[1], device=x.device)
-
-            col_norms = torch.norm(x, dim=0)
-            sort_val = col_norms + torch.arange(x.shape[1], 0, -1, device=x.device, dtype=x.dtype) * epsilon / (
-                        x.shape[1] + 1.0)
-            _, pivots = torch.sort(sort_val, descending=True)
-            x_p = x[:, pivots]
-
-            if x_p.shape[1] > 0 and x_p.shape[0] > 4 * x_p.shape[1]:
-                Q_r, R_r = tsqr_func(x_p)
-            elif x_p.shape[1] == 0:
-                Q_r = torch.empty((x_p.shape[0], 0), device=x.device, dtype=x.dtype)
-                R_r = torch.empty((0, x_p.shape[1]), device=x.device, dtype=x.dtype)
-            else:
-                Q_r, R_r = torch.linalg.qr(x_p, mode='reduced')
-
-            if R_r.shape[0] > 0 and R_r.shape[1] > 0:
-                diag_sign = torch.sign(torch.diag(R_r))
-                diag_sign[diag_sign == 0] = 1.0
-
-                k_q = min(Q_r.shape[1], diag_sign.shape[0])
-                k_r = min(R_r.shape[0], diag_sign.shape[0])
-                Q_r[:, :k_q] *= diag_sign[None, :k_q]
-                R_r[:k_r, :] *= diag_sign[:k_r, None]
-
-            # Shape-specific unpivoting
-            inv_pivots = torch.argsort(pivots)
-
-            # Check if this is a wide matrix (more columns than rows)
-            is_wide = x.shape[1] > x.shape[0]
-
-            if is_wide:
-                # For wide matrices, only unpivot R columns
-                R_unpivoted = torch.zeros((R_r.shape[0], x.shape[1]), device=R_r.device, dtype=R_r.dtype)
-                R_unpivoted[:, inv_pivots[:R_r.shape[1]]] = R_r
-                return Q_r, R_unpivoted, pivots
-            else:
-                # For tall/square matrices, unpivot both Q columns and R rows
-                if Q_r.shape[1] == inv_pivots.shape[0]:
-                    Q_r = Q_r[:, inv_pivots]
-                    R_r = R_r[inv_pivots, :]
-                else:
-                    # Handle shape mismatches
-                    R_unpivoted = torch.zeros((min(R_r.shape[0], x.shape[0]), x.shape[1]),
-                                              device=R_r.device, dtype=R_r.dtype)
-                    valid_pivots = min(R_r.shape[0], inv_pivots.shape[0])
-                    R_unpivoted[:, inv_pivots[:valid_pivots]] = R_r[:, :valid_pivots]
-                    return Q_r, R_unpivoted, pivots
-
-                return Q_r, R_r, pivots
-
-        # --- safer rank handling ---
-        Qa, Ra, pa = _stable_qr(a_2d, tsqr_func=_tsqr)
-        diff = b_2d - a_2d
-
-        if Qa.shape[1] == 0:
-            projected_diff = torch.zeros_like(diff)
-        else:
-            projected_diff = Qa @ (Qa.T @ diff)
-
-        Q_diff, R_diff, _ = _stable_qr(projected_diff, tsqr_func=_tsqr)
-
-        if projected_diff.numel() == 0 or Q_diff.shape[1] == 0 or R_diff.shape[0] == 0:
-            low_rank_diff = torch.zeros_like(projected_diff)
-        else:
-            max_rank = min(Q_diff.shape[1], R_diff.shape[0])
-            rank = max(1, int(max_rank * rank_ratio))
-            rank = min(rank, max_rank)
-
-            Q_diff_trunc = Q_diff[:, :rank]
-            R_diff_trunc = R_diff[:rank, :]
-            low_rank_diff = Q_diff_trunc @ R_diff_trunc
-
-        merged = a_2d + alpha * low_rank_diff
-
-        return merged.reshape(original_shape)
-
-    ### v3 ###
-
     @merge_method
     def pop_lora(
             a: Parameter(Tensor, "weight"),
@@ -2219,138 +1906,23 @@ class MergeMethods:
             **kwargs
     ) -> Return(Tensor, "weight"):
         """
-        Pivoted Orthogonal Projection
-        Merges tensors 'a' and 'b' using pivoted QR, projection, and low-rank.
-        """
-        original_shape = a.shape
-        key = kwargs["key"]
+        Merge two weight tensors using Pivoted Orthogonal Projection (POP) LoRA.
 
-        # Early exit handling
-        if early_exit and alpha == 0.0:
-            return a
-        if early_exit and alpha == 1.0:  # Add missing early exit
-            return b
+        Projects the difference between tensors onto the column space of 'a', then
+        applies low-rank approximation via column-pivoted QR decomposition.
 
-        if len(original_shape) <= 1:
-            return (1 - alpha) * a + alpha * b
+        Args:
+            a (Tensor): Source weight tensor.
+            b (Tensor): Target weight tensor.
+            alpha (Tensor or float, optional): Blend ratio (0.0=a, 1.0=b). Default: 0.5.
+            rank_ratio (float, optional): Low-rank approximation ratio. Default: 0.25.
+            early_exit (bool, optional): Enable fast paths for edge cases. Default: False.
 
-        if key:
-            alpha_val = float(alpha) if isinstance(alpha, torch.Tensor) else alpha
-            print(f"[pop_lora] Key: {key} -- Using alpha: {alpha_val:.4f}")
+        Returns:
+            Tensor: Merged weight tensor with same shape as inputs.
 
-        # Reshaping logic
-        if "token_embedding" in key:
-            a_2d = a
-            b_2d = b
-        elif len(original_shape) == 4:
-            a_2d = a.reshape(original_shape[0], -1)
-            b_2d = b.reshape(original_shape[0], -1)
-        elif len(original_shape) == 2:
-            a_2d = a
-            b_2d = b
-        else:
-            a_2d = a.reshape(original_shape[0], -1)
-            b_2d = b.reshape(original_shape[0], -1)
-
-        def _cpqr(A: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-            """Column-pivoted QR (Businger–Golub)"""
-            m, n = A.shape
-            device, dtype = A.device, A.dtype
-            R = A.clone()
-            piv = torch.arange(n, device=device)
-            Q = torch.eye(m, device=device, dtype=dtype)
-
-            col_norms = (R.to(torch.float32).pow(2).sum(dim=0)).to(torch.float64)
-            eps64 = torch.finfo(torch.float64).eps
-
-            for k in range(min(m, n)):
-                j_rel = torch.argmax(col_norms[k:])
-                j = k + int(j_rel.item())
-                if j != k:
-                    R[:, [k, j]] = R[:, [j, k]]
-                    piv[[k, j]] = piv[[j, k]]
-                    col_norms[[k, j]] = col_norms[[j, k]]
-
-                x = R[k:, k]
-                norm_x = torch.linalg.norm(x)
-                if norm_x <= eps64:
-                    continue
-
-                # Scalar sign from first element
-                sgn = 1.0 if float(x[0]) >= 0.0 else -1.0
-                v = x.clone()
-                v[0] += sgn * norm_x
-                v_norm = torch.linalg.norm(v)
-                if v_norm > 0:
-                    v = v / v_norm
-                tau = torch.tensor(2.0, device=device, dtype=dtype)
-
-                R_sub = R[k:, k:]
-                w = (v @ R_sub)
-                R[k:, k:] = R_sub - (v.unsqueeze(1) @ (tau * w).unsqueeze(0))
-
-                Q_sub = Q[:, k:]
-                wq = Q_sub @ v
-                Q[:, k:] = Q_sub - (wq.unsqueeze(1) @ (tau * v).unsqueeze(0))
-
-                if k + 1 < m:
-                    R[k + 1:, k] = 0
-
-                if k + 1 < n:
-                    col_norms[k + 1:] = torch.clamp(col_norms[k + 1:] - R[k, k + 1:].to(torch.float64).pow(2), min=0.0)
-                    if (k % 8) == 7 or k == 0:
-                        col_norms[k + 1:] = (R[k:, k + 1:].to(torch.float32).pow(2).sum(dim=0)).to(torch.float64)
-
-            return Q, R, piv
-
-        def _unpivot_R(R: torch.Tensor, piv: torch.Tensor, n_cols: int) -> torch.Tensor:
-            # FIX: Use proper torch.zeros dimensions
-            R_unp = torch.zeros(R.size(0), n_cols, device=R.device, dtype=R.dtype)
-            R_unp[:, piv] = R
-            return R_unp
-
-        # 1) Basis from a (reduced QR)
-        Qa, Ra = torch.linalg.qr(a_2d, mode='reduced')
-        diff = b_2d - a_2d
-
-        # FIX: Use shape[1] for number of columns, not shape[10]
-        projected_diff = Qa @ (Qa.T @ diff) if Qa.shape[1] > 0 else torch.zeros_like(diff)
-
-        # 2) CPQR on projected difference
-        if projected_diff.numel() == 0:
-            low_rank_diff = torch.zeros_like(projected_diff)
-        else:
-            Qd, Rd, piv = _cpqr(projected_diff)
-
-            # FIX: Use shape[1] for number of columns in diff
-            R_unp = _unpivot_R(Rd, piv, diff.shape[1])
-
-            # FIX: Use shape[1] for columns in Qd
-            max_rank = min(Qd.shape[1], R_unp.shape[1])
-            r = max(1, int(max_rank * rank_ratio))
-            r = min(r, max_rank)
-
-            Qd_trunc = Qd[:, :r]
-            R_trunc_unp = R_unp[:r, :]
-            low_rank_diff = Qd_trunc @ R_trunc_unp
-
-        alpha_f = float(alpha) if isinstance(alpha, torch.Tensor) else alpha
-        merged = a_2d + alpha_f * low_rank_diff
-        return merged.reshape(original_shape)
-
-    @merge_method
-    def pop_lora_v3(
-            a: Parameter(Tensor, "weight"),
-            b: Parameter(Tensor, "weight"),
-            *,
-            alpha: Parameter(Tensor) = 0.5,
-            rank_ratio: Parameter(float) = 0.25,
-            early_exit: Parameter(bool) = True,
-            **kwargs
-    ) -> Return(Tensor, "weight"):
-        """
-        Pivoted Orthogonal Projection
-        Merges tensors 'a' and 'b' using pivoted QR, projection, and low-rank.
+        Notes:
+            Falls back to linear interpolation for 1D tensors and token embeddings.
         """
         original_shape = a.shape
         key = kwargs["key"]
@@ -2449,29 +2021,14 @@ class MergeMethods:
             R_unp[:, piv] = R
             return R_unp
 
-        # 1) Basis from a (QR), with cache
-        if layer_cache is not None and 'Qa' in layer_cache:
-            Qa = layer_cache['Qa'].to(device=a.device, dtype=a.dtype)
-        else:
-            Qa, _Ra = torch.linalg.qr(a_2d, mode='reduced')
-            if layer_cache is not None:
-                layer_cache['Qa'] = Qa.detach().cpu()
+        # 1) Basis from a (QR) - NO CACHE, recompute each time
+        Qa, _Ra = torch.linalg.qr(a_2d, mode='reduced')
 
-        # Precompute projected components, with cache
-        have_proj = layer_cache is not None and 'QaT_a' in layer_cache and 'QaT_b' in layer_cache
-        if have_proj:
-            QaT_a = layer_cache['QaT_a'].to(device=a.device, dtype=a.dtype)
-            QaT_b = layer_cache['QaT_b'].to(device=a.device, dtype=a.dtype)
-        else:
-            QaT_a = Qa.T @ a_2d
-            QaT_b = Qa.T @ b_2d
-            if layer_cache is not None:
-                layer_cache['QaT_a'] = QaT_a.detach().cpu()
-                layer_cache['QaT_b'] = QaT_b.detach().cpu()
+        # 2) Project difference - NO CACHE, recompute each time
+        diff = b_2d - a_2d
+        projected_diff = Qa @ (Qa.T @ diff) if Qa.shape[1] > 0 else torch.zeros_like(diff)
 
-        projected_diff = Qa @ (QaT_b - QaT_a) if Qa.shape[1] > 0 else torch.zeros_like(b_2d)
-
-        # 2) CPQR on projected difference, cache the decomposition
+        # 3) CPQR on projected difference - CACHE ONLY THIS
         if projected_diff.numel() == 0:
             low_rank_diff = torch.zeros_like(projected_diff)
         else:
@@ -3904,7 +3461,7 @@ class MergeMethods:
             projector_eps: Parameter(float) = 1e-6,
             align_diag_threshold: Parameter(int) = 4096,
             seed: Parameter(int) = None,
-            early_exit: Parameter(bool) = True,
+            early_exit: Parameter(bool) = False,
             **kwargs
     ) -> Return(Tensor, "weight"):
         """
@@ -4029,22 +3586,36 @@ class MergeMethods:
         P = Q_a_full[:, :subspace_dim]  # [out_dim, subspace_dim]
         diff = b_2d - a_2d
 
-        # Use Gram-based projector for numerical stability
+        # Use Gram-based projector for numerical stability - CONVERT TO FP64
         k = P.shape[1]
-        I_k = torch.eye(k, device=P.device, dtype=P.dtype)
-        G = (P.T @ P).to(P.dtype) + projector_eps * I_k
-        L = torch.linalg.cholesky(G)
+        P_fp64 = P.to(torch.float64)
+        diff_fp64 = diff.to(torch.float64)
+        I_k = torch.eye(k, device=P.device, dtype=torch.float64)
+        G = (P_fp64.T @ P_fp64) + projector_eps * I_k
 
-        def proj_in_span(P, X, L):
-            return P @ torch.cholesky_solve(P.T @ X, L, upper=False)
+        # Try Cholesky in fp64 with fallback
+        try:
+            L = torch.linalg.cholesky(G)
 
-        if layer_cache is not None and 'E' in layer_cache:
-            E = layer_cache['E'].to(device=a.device, dtype=a.dtype)
-        else:
-            # Work in P-coordinates to keep updates strictly in subspace
-            E = torch.cholesky_solve(P.T @ diff, L, upper=False)
-            if layer_cache is not None:
-                layer_cache['E'] = E.cpu().to(torch.float16)
+            def proj_in_span(P_proj, X, L):
+                rhs = (P_proj.T @ X).to(L.dtype)  # Convert to match L's dtype (fp64)
+                P_proj_fp64 = P_proj.to(L.dtype)  # Convert P_proj to fp64 too
+                result = P_proj_fp64 @ torch.cholesky_solve(rhs, L, upper=False)
+                return result.to(P.dtype)  # Convert result back to original precision
+
+            # Compute E in fp64 then convert back
+            E = torch.cholesky_solve(P_fp64.T @ diff_fp64, L, upper=False)
+            E = E.to(P.dtype)  # Convert back to original precision
+        except RuntimeError as e:
+            print(f"Cholesky failed even in fp64, using QR fallback: {e}")
+            # QR fallback projector
+            Q, _ = torch.linalg.qr(P_fp64, mode='reduced')
+
+            def proj_in_span(P_proj, X, L=None):
+                X_fp64 = X.to(Q.dtype)  # Convert X to fp64 to match Q
+                return (Q @ (Q.T @ X_fp64)).to(P.dtype)  # Convert result back
+
+            E = (Q.T @ diff_fp64).to(P.dtype)
 
         # Cap rank by subspace dimension
         r = min(
@@ -4296,6 +3867,10 @@ class MergeMethods:
         Factorize dimension into butterfly-compatible factors.
         Returns (block_size, block_num) where block_num is a power of 2.
         """
+        # Fix for dimension 1 to prevent negative binary formatting
+        if dimension <= 1:
+            return max(1, dimension), 1
+
         # If factor is negative, use a reasonable default
         if factor <= 0:
             factor = 2 ** max(1, int(math.log2(dimension) / 4))
@@ -4308,8 +3883,7 @@ class MergeMethods:
         # If dimension is a power of 2, split it evenly
         if n == dimension:
             block_size = max(2, n // factor) if factor > 0 else int(math.sqrt(n))
-            block_num = dimension // block_size
-            # **FIX: Return correct tuple**
+            block_num = max(1, dimension // block_size)  # Ensure >= 1
             return block_size, block_num
 
         # Otherwise, find valid factorization
@@ -4318,9 +3892,8 @@ class MergeMethods:
             block_num = 1
             while block_num * 2 <= factor and dimension % (block_num * 2) == 0:
                 block_num *= 2
-
             block_size = dimension // block_num
-            return block_size, block_num
+            return block_size, max(1, block_num)  # Ensure >= 1
         else:
             # For odd dimensions, block_size must be the dimension itself
             return dimension, 1

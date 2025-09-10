@@ -35,9 +35,9 @@ from sd_optim.models.CityAesthetics import CityAestheticsScorer as CITY
 from sd_optim.models.AestheticV25 import AestheticV25 as AES25
 from sd_optim.models.LumiAnatomy import HybridAnatomyScorer as LUMI
 from sd_optim.models.SimpleQuality import SimpleQualityScorer as SQ
-from sd_optim.models.GammaNoiseScorer import GammaNoiseScorer as GNS
-from sd_optim.models.ForensicNoiseScorer import ForensicNoiseScorer as FNS
 from sd_optim.models.BackgroundBlacknessScorer import BackgroundBlacknessScorer as BBS
+from sd_optim.models.PCAScorer import PCAScorer as PCA
+from sd_optim.models.HybridNoiseScorer import HybridNoiseScorer as HNS
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO)
@@ -130,15 +130,15 @@ MODEL_DATA = {
         "url": None,  # No download needed - uses OpenCV/numpy
         "file_name": None,
     },
-    "gammanoise": {
-        "url": None,
-        "file_name": None,
-    },
-    "forensicnoise": {
+    "hybridnoise": {
         "url": None,
         "file_name": None,
     },
     "backgroundblackness": {
+        "url": None,
+        "file_name": None,
+    },
+    "pcascorer": {
         "url": None,
         "file_name": None,
     },
@@ -162,7 +162,7 @@ class AestheticScorer:
         self.rembg_session = None
         # Unified rembg session initialization
         # If any scorer that needs it is configured, create the session.
-        scorers_needing_rembg = {'forensicnoise', 'backgroundblackness'}
+        scorers_needing_rembg = {'hybridnoise', 'backgroundblackness'}
         if any(s.lower() in scorers_needing_rembg for s in self.cfg.get("scorer_method", [])):
             logger.info("A configured scorer requires background removal. Initializing rembg session...")
             self.rembg_session = new_session(providers=['CPUExecutionProvider'])
@@ -437,20 +437,20 @@ class AestheticScorer:
                 "files": {},  # No files needed
                 "extra_args": {}  # No extra arguments needed
             },
-            "gammanoise": {
-                "class": GNS,
+            "hybridnoise": {
+                "class": HNS,
                 "files": {},
-                "extra_args": {}
-            },
-            "forensicnoise": {
-                "class": FNS,
-                "files": {},
-                "extra_args": {"rembg_session": "self.rembg_session"} # Special key to pass session
+                "extra_args": {"rembg_session": "self.rembg_session"}
             },
             "backgroundblackness": {
                 "class": BBS,
                 "files": {},
                 "extra_args": {"rembg_session": "self.rembg_session"} # Special key to pass session
+            },
+            "pcascorer": {
+                "class": PCA,
+                "files": {},
+                "extra_args": {}
             },
         }
         # --- End Factory Config ---
@@ -558,6 +558,11 @@ class AestheticScorer:
                         # Original logic for other args
                         resolved_extra_args[k] = str(v) if isinstance(v, Path) else v
                 constructor_args.update(resolved_extra_args)
+            
+            if evaluator_lower == 'hybridnoise':
+                constructor_args['kernel_size'] = self.cfg.get("hybridnoise_kernel_size", 3)
+                constructor_args['noise_threshold'] = self.cfg.get("hybridnoise_noise_threshold", 20.0)
+                constructor_args['color_tolerance'] = self.cfg.get("hybridnoise_color_tolerance", 30)
 
             # 4. Instantiate
             try:
@@ -620,16 +625,22 @@ class AestheticScorer:
                     if scorer_instance is None:
                         logger.error(f"Scorer instance for '{evaluator}' not found.")
 
-                    elif evaluator_lower == 'forensicnoise':
-                        # This scorer has an extra parameter
+                    elif evaluator_lower == 'pcascorer':
+                        # This scorer has extra parameters for analysis
                         score_args = {'image': image}
-                        # Allow overriding detection method from config, e.g., forensicnoise_detection_method: "colored"
-                        detection_method = self.cfg.get("forensicnoise_detection_method", "structural")
-                        score_args['detection_method'] = detection_method
+                        # Read PCA settings from config, with defaults
+                        score_args['component'] = self.cfg.get("pcascorer_component", 1)
+                        score_args['mode'] = self.cfg.get("pcascorer_mode", 'projection')
+                        score_args['input_type'] = self.cfg.get("pcascorer_input_type", 'color')
+                        score_args['linearize'] = self.cfg.get("pcascorer_linearize", False)
+                        score_args['invert'] = self.cfg.get("pcascorer_invert", False)
+                        score_args['enhancement'] = self.cfg.get("pcascorer_enhancement", 'equalize')
+                        score_args['gamma'] = self.cfg.get("pcascorer_gamma", 1.0)
+                        
                         individual_eval_score = scorer_instance.score(**score_args)
 
                         if self.cfg.scorer_print_individual:
-                            print(f"{evaluator} ({detection_method}):{individual_eval_score:.4f}")
+                            print(f"{evaluator}:{individual_eval_score:.4f}")
 
                     elif evaluator_lower == 'hpsv3':
                         # HPSv3 returns a tuple (mu, sigma)

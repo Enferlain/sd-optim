@@ -134,9 +134,6 @@ optimizer:
 batch_size: 1 # Number of images to generate for EACH payload per iteration.
 save_imgs: True # Save all generated images to the run's 'imgs' folder.
 img_average_type: arithmetic # How to average scores within a batch: 'arithmetic', 'geometric', or 'quadratic'.
-background_check: # Settings for the background blackness scorer.
-  enabled: False # Set to true to enable the check. This scorer is useful for character-focused models.
-  payloads: [] # List of payload names (e.g., ["noob1", "noob2"]) to apply this specific check to.
 
 # --- Generator/aiohttp Settings ---
 generator_concurrency_limit: 10 # Max number of simultaneous API requests to the WebUI.
@@ -172,3 +169,18 @@ visualizations:
   # scatter_plot: False # (Not implemented)
   # unet_diagram: False # (Deprecated)
   # heatmap: False # (Not implemented)
+
+# --- Scorer-Specific Settings ---
+# PCAScorer settings
+pcascorer_component: 1
+pcascorer_mode: 'projection'
+pcascorer_input_type: 'color'
+pcascorer_linearize: False
+pcascorer_invert: False
+pcascorer_enhancement: 'equalize'
+pcascorer_gamma: 1.0
+
+# HybridNoiseScorer settings
+hybridnoise_kernel_size: 3
+hybridnoise_noise_threshold: 20.0
+hybridnoise_color_tolerance: 30

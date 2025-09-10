@@ -19,6 +19,12 @@ logging.basicConfig(
     format='%(asctime)s [%(levelname)s] %(name)s: %(message)s',
     datefmt='%Y-%m-%d %H:%M:%S'
 )
+
+# Suppress noisy third-party loggers - ADD THIS HERE
+logging.getLogger('choreographer').setLevel(logging.WARNING)
+logging.getLogger('kaleido').setLevel(logging.WARNING)
+logging.getLogger('plotly').setLevel(logging.WARNING)  # Just in case
+
 # Use a logger specific to this main script
 logger = logging.getLogger(__name__)  # Hydra often configures this further
 

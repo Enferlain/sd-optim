@@ -117,7 +117,7 @@ class Prompter:
                     extension_name = rendered_payload.get("extension_name", "Forge2 extras")
                     rendered_payload["alwayson_scripts"] = {
                         extension_name: {
-                            "args": [True, 0, 0, 0, 0, 'v_prediction']
+                            "args": [True, False, 0, 0, 0, 0, 'default', 'v_prediction']
                         }
                     }
 

@@ -21,9 +21,9 @@ from hydra.core.hydra_config import HydraConfig
 from omegaconf import DictConfig, open_dict, ListConfig
 from PIL import Image, PngImagePlugin
 from sd_optim.models.Laion import Laion as AES
-from sd_optim.models.ImageReward import ImageReward as IMGR
+# from sd_optim.models.ImageReward import ImageReward as IMGR
 from sd_optim.models.CLIPScore import CLIPScore as CLP
-from sd_optim.models.BLIPScore import BLIPScore as BLP
+# from sd_optim.models.BLIPScore import BLIPScore as BLP
 # from sd_optim.models.HPSv21 import HPSv21Scorer as HPS
 # from sd_optim.models.HPSv3 import HPSv3Scorer as HPS3
 from sd_optim.models.PickScore import PickScore as PICK
@@ -33,7 +33,8 @@ from sd_optim.models.CafeScore import CafeScore as CAFE
 from sd_optim.models.NoAIScore import NoAIScore as NOAI
 from sd_optim.models.CityAesthetics import CityAestheticsScorer as CITY
 from sd_optim.models.AestheticV25 import AestheticV25 as AES25
-from sd_optim.models.LumiAnatomy import HybridAnatomyScorer as LUMI
+# from sd_optim.models.LumiAnatomy import HybridAnatomyScorer as LUMI
+from sd_optim.models.LumiAnatomyv2 import Dinov3AnatomyScorer as LUMI
 from sd_optim.models.SimpleQuality import SimpleQualityScorer as SQ
 from sd_optim.models.BackgroundBlacknessScorer import BackgroundBlacknessScorer as BBS
 from sd_optim.models.PCAScorer import PCAScorer as PCA
@@ -116,6 +117,12 @@ MODEL_DATA = {
         # "config_name": "AnatomyFlaws-v11.3_adabelief_fl_naflex_3000.config.json",
         # "config_name": "AnatomyFlaws-v6.6_adabeleif_fl_sigmoid_so400m_naflex.config.json" # Config filename
     },
+    "lumidinov3": {  # <<< Our identifier
+        "url": None,
+        "file_name": "AnatomyFlaws-v15.5_dinov3_7b_bnb_fl_s3K_best_val.safetensors",
+        "config_name": "AnatomyFlaws-v15.5_dinov3_7b_bnb_fl.config.json",
+
+    },
     "lumidinov2l": {
         "url": None,
         "file_name": "AnatomyFlaws-v6.3_adabeleif_fl_sigmoid_dinov2_large_efinal_s10K_final.safetensors",
@@ -178,7 +185,24 @@ class AestheticScorer:
 
         self.setup_evaluator_paths()  # Populates self.model_path and sets default devices/weights
         self.get_models()  # Downloads files if needed
-        self._load_all_models()  # NEW: Call the loader function
+        self._load_all_models()
+
+    def unload_lazy_models(self):
+        """Unloads models that were loaded on-demand."""
+        lazy_load_list = [s.lower() for s in self.cfg.get("scorer_lazy_load_list", [])]
+        models_to_unload = [model_name for model_name in self.model if model_name in lazy_load_list]
+
+        for model_name in models_to_unload:
+            logger.info(f"Unloading lazy-loaded scorer model: '{model_name}'")
+            del self.model[model_name]
+        
+        # Optional: Add garbage collection for immediate memory release
+        if models_to_unload:
+            import gc
+            import torch
+            gc.collect()
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
 
     def setup_img_saving(self):
         """Sets up the directory for saving images if enabled."""
@@ -391,10 +415,123 @@ class AestheticScorer:
             logger.error(f"An unexpected error occurred during download: {e}")
             if path.exists(): path.unlink(missing_ok=True)
 
+    def _load_model(self, evaluator_lower: str):
+        """Loads a single scorer model instance on demand."""
+        if evaluator_lower in self.model:
+            logger.debug(f"Model '{evaluator_lower}' is already loaded.")
+            return True
+        
+        logger.info(f"Lazy loading scorer model: '{evaluator_lower}'")
+        scorer_model_dir_path = Path(self.cfg.scorer_model_dir)
+        med_config_path = scorer_model_dir_path / 'med_config.json'
+        clip_l_path = scorer_model_dir_path / "CLIP-ViT-L-14.pt"
+        clip_b_path = scorer_model_dir_path / "CLIP-ViT-B-32.safetensors"
+
+        scorer_factory = {
+            "laion": {"class": AES, "files": {"model_path": "file_name"},
+                      "extra_args": {"clip_model_path": str(clip_l_path)}},
+            "chad": {"class": AES, "files": {"model_path": "file_name"},
+                     "extra_args": {"clip_model_path": str(clip_l_path)}},
+            "wdaes": {"class": WDA, "files": {"model_path": "file_name"},
+                      "extra_args": {"clip_path": str(clip_b_path)}},
+            "clip": {"class": CLP, "files": {"model_path": "file_name"}},
+            "pick": {"class": PICK, "files": {"model_path": "file_name"}},
+            "shadowv2": {"class": SS, "files": {"model_path": "file_name"}},
+            "cafe": {"class": CAFE, "files": {"model_path": "file_name"}},
+            "noai": {"class": NOAI,
+                     "files": {"model_path_class": "class", "model_path_real": "real", "model_path_anime": "anime"}},
+            "cityaes": {"class": CITY, "files": {"pathname": "file_name"}},
+            "aestheticv25": {"class": AES25, "files": {"model_path": "file_name"}},
+            "luminaflex": {"class": LUMI, "files": {"model_path": "file_name", "config_path": "config_name"}},
+            "lumidinov3": {"class": LUMI, "files": {"model_path": "file_name", "config_path": "config_name"}},
+            "lumidinov2l": {"class": LUMI, "files": {"model_path": "file_name", "config_path": "config_name"}},
+            "lumidinov2g": {"class": LUMI, "files": {"model_path": "file_name", "config_path": "config_name"}},
+            "simplequality": {
+                "class": SQ,
+                "files": {},
+                "extra_args": {}
+            },
+            "hybridnoise": {
+                "class": HNS,
+                "files": {},
+                "extra_args": {"rembg_session": "self.rembg_session"}
+            },
+            "backgroundblackness": {
+                "class": BBS,
+                "files": {},
+                "extra_args": {"rembg_session": "self.rembg_session"}
+            },
+            "pcascorer": {
+                "class": PCA,
+                "files": {},
+                "extra_args": {}
+            },
+        }
+
+        if evaluator_lower not in scorer_factory:
+            logger.error(f"Unknown scorer '{evaluator_lower}' cannot be lazy-loaded.")
+            return False
+
+        config = scorer_factory[evaluator_lower]
+        ScorerClass = config.get("class")
+
+        if ScorerClass is None:
+            logger.error(f"Scorer class for '{evaluator_lower}' not available.")
+            return False
+
+        constructor_args = {}
+        file_paths_ok = True
+
+        if 'device' in inspect.signature(ScorerClass.__init__).parameters:
+            constructor_args["device"] = self.cfg.scorer_device.get(evaluator_lower, self.cfg.scorer_default_device)
+
+        if "files" in config:
+            for arg_name, model_data_key in config["files"].items():
+                model_data_entry = MODEL_DATA.get(evaluator_lower)
+                if not model_data_entry:
+                    logger.error(f"MODEL_DATA entry missing for '{evaluator_lower}'.")
+                    file_paths_ok = False
+                    break
+                
+                filename = model_data_entry.get(model_data_key)
+                if not filename:
+                    if evaluator_lower == "aestheticv25": continue
+                    logger.error(f"Filename key '{model_data_key}' not found for '{evaluator_lower}'.")
+                    file_paths_ok = False
+                    break
+
+                file_path = scorer_model_dir_path / filename
+                if not file_path.is_file():
+                    logger.error(f"Required file for '{evaluator_lower}' not found: {file_path}")
+                    file_paths_ok = False
+                    break
+                constructor_args[arg_name] = str(file_path)
+
+        if not file_paths_ok:
+            return False
+
+        if "extra_args" in config:
+            resolved_extra_args = {}
+            for k, v in config["extra_args"].items():
+                if k == "rembg_session" and v == "self.rembg_session":
+                    if self.rembg_session:
+                        resolved_extra_args[k] = self.rembg_session
+                else:
+                    resolved_extra_args[k] = str(v) if isinstance(v, Path) else v
+            constructor_args.update(resolved_extra_args)
+
+        try:
+            self.model[evaluator_lower] = ScorerClass(**constructor_args)
+            logger.info(f"Successfully lazy-loaded instance for scorer: '{evaluator_lower}'")
+            return True
+        except Exception as e_init:
+            logger.error(f"Failed to initialize lazy-loaded instance for '{evaluator_lower}': {e_init}", exc_info=True)
+            return False
+
     def _load_all_models(self):
         """Loads instances for all configured scorers using a factory pattern."""
         logger.info("Loading scorer model instances...")
-        # Define paths needed by some factories
+        lazy_load_list = [s.lower() for s in self.cfg.get("scorer_lazy_load_list", [])]
         scorer_model_dir_path = Path(self.cfg.scorer_model_dir)
         med_config_path = scorer_model_dir_path / 'med_config.json'
         clip_l_path = scorer_model_dir_path / "CLIP-ViT-L-14.pt"
@@ -409,11 +546,11 @@ class AestheticScorer:
             "wdaes": {"class": WDA, "files": {"model_path": "file_name"},
                       "extra_args": {"clip_path": str(clip_b_path)}},
             "clip": {"class": CLP, "files": {"model_path": "file_name"}},
-            "blip": {"class": BLP, "files": {"model_path": "file_name"}, "extra_args": {"med_config": med_config_path}},
-            "imagereward": {"class": IMGR, "files": {"model_path": "file_name"},
-                            "extra_args": {"med_config": med_config_path}},
-#             "hpsv21": {"class": HPS, "files": {"pathname": "file_name"}},
-#             "hpsv3": {"class": HPS3, "files": {"model_path": "file_name"}},
+#             "blip": {"class": BLP, "files": {"model_path": "file_name"}, "extra_args": {"med_config": med_config_path}},
+#             "imagereward": {"class": IMGR, "files": {"model_path": "file_name"},
+#                             "extra_args": {"med_config": med_config_path}},
+#            "hpsv21": {"class": HPS, "files": {"pathname": "file_name"}},
+#            "hpsv3": {"class": HPS3, "files": {"model_path": "file_name"}},
             "pick": {"class": PICK, "files": {"model_path": "file_name"}},
             "shadowv2": {"class": SS, "files": {"model_path": "file_name"}},
             "cafe": {"class": CAFE, "files": {"model_path": "file_name"}},
@@ -422,6 +559,7 @@ class AestheticScorer:
             "cityaes": {"class": CITY, "files": {"pathname": "file_name"}},
             "aestheticv25": {"class": AES25, "files": {"model_path": "file_name"}},
             "luminaflex": {"class": LUMI, "files": {"model_path": "file_name", "config_path": "config_name"}},
+            "lumidinov3": {"class": LUMI, "files": {"model_path": "file_name", "config_path": "config_name"}},
             "lumidinov2l": {"class": LUMI, "files": {"model_path": "file_name", "config_path": "config_name"}},
             "lumidinov2g": {"class": LUMI, "files": {"model_path": "file_name", "config_path": "config_name"}},
             # --- Add other custom scorers like LumiStyle here ---
@@ -459,6 +597,10 @@ class AestheticScorer:
         for evaluator in self.cfg.scorer_method:
             evaluator_lower = evaluator.lower()
             if evaluator_lower in ['manual', 'background_blackness']:
+                continue
+            
+            if evaluator_lower in lazy_load_list:
+                logger.info(f"Deferring loading of scorer '{evaluator}' due to lazy load list.")
                 continue
 
             logger.info(f"Loading instance for scorer: '{evaluator}'")
@@ -621,9 +763,20 @@ class AestheticScorer:
                 individual_eval_score = 0.0  # Default score
 
                 try:
+                    lazy_load_list = [s.lower() for s in self.cfg.get("scorer_lazy_load_list", [])]
                     scorer_instance = self.model.get(evaluator_lower)
+
+                    if scorer_instance is None and evaluator_lower in lazy_load_list:
+                        logger.info(f"'{evaluator}' is in lazy load list and not loaded. Attempting to load now.")
+                        if self._load_model(evaluator_lower):
+                            scorer_instance = self.model.get(evaluator_lower)
+                        else:
+                            logger.error(f"Failed to lazy-load model for '{evaluator}'. Skipping scoring.")
+                            continue
+
                     if scorer_instance is None:
-                        logger.error(f"Scorer instance for '{evaluator}' not found.")
+                        logger.error(f"Scorer instance for '{evaluator}' not found and not lazy-loadable. Skipping.")
+                        continue
 
                     elif evaluator_lower == 'pcascorer':
                         # This scorer has extra parameters for analysis

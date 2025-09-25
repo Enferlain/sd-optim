@@ -16,13 +16,16 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Tuple, Optional, Any, Union
 
+import sd_mecha
 import torch
+from sd_mecha.recipe_nodes import ModelRecipeNode
 from tqdm import tqdm
 
 from hydra.core.hydra_config import HydraConfig
 from omegaconf import DictConfig, open_dict
 from PIL import Image, PngImagePlugin
 
+from sd_optim import utils
 from sd_optim.bounds import ParameterHandler, BoundsInfo
 from sd_optim.generator import Generator
 from sd_optim.merger import Merger
@@ -40,14 +43,84 @@ class Optimizer:
     best_rolling_score: float = 0.0
     param_info: BoundsInfo = field(default_factory=dict, init=False)
     optimizer_pbounds: Dict[str, Union[Tuple[float, float], float, int, List]] = field(default_factory=dict, init=False)
-    optimization_start_time: Optional[float] = None  # <<< Add start time tracker
-    completed_trials: int = 0  # <<< ADDED: To track trials from resumed studies
+    optimization_start_time: Optional[float] = None  # Add start time tracker
+    completed_trials: int = 0  # To track trials from resumed studies
 
     def __post_init__(self) -> None:
-        self.bounds_initializer = ParameterHandler(self.cfg)
+        # --- STAGE 1: VALIDATE THE ENTIRE CONFIG FIRST ---
+        # This is now a clean, clear gatekeeper step.
+        utils.validate_run_config(self.cfg)
+
+        # --- STAGE 2: CENTRALIZED CONFIG LOADING ---
+        logger.info("Optimizer starting up: Performing centralized config loading...")
+
+        # Now that validation is passed, we can safely get the models_dir.
+        # This logic is now explicit and clear right where it's needed.
+        models_dir = Path(self.cfg.models_dir).resolve()
+        logger.info(f"Using primary models directory from config: {models_dir}")
+
+        # The rest of the __post_init__ is exactly the same as before.
+        # It just uses the 'models_dir' variable we defined right here.
+        if not self.cfg.model_paths:
+            raise ValueError("'model_paths' cannot be empty.")
+
+        representative_model_name = self.cfg.model_paths[0]
+        representative_model_path = models_dir / representative_model_name
+        if not representative_model_path.exists():
+            # Fallback to check if an absolute path was given in the list
+            absolute_path_check = Path(representative_model_name)
+            if absolute_path_check.is_absolute() and absolute_path_check.exists():
+                representative_model_path = absolute_path_check
+            else:
+                raise FileNotFoundError(
+                    f"Representative model not found in models_dir or as an absolute path: {representative_model_path}")
+
+        logger.info(f"Inferring base ModelConfig from: {representative_model_path}")
+        rep_model_node = sd_mecha.model(str(representative_model_path))
+
+        # We assert that the node is the specific type we need. This makes the linter happy and the code safer!
+        assert isinstance(rep_model_node,
+                          ModelRecipeNode), "The representative model must be a file path, not a literal dict."
+
+        with sd_mecha.open_input_dicts(rep_model_node, [models_dir]):
+            # Now the linter knows rep_model_node has .state_dict because of the assertion above.
+            inferred_sets = sd_mecha.infer_model_configs(rep_model_node.state_dict.keys())
+            if not inferred_sets:
+                raise ValueError(f"Could not infer a ModelConfig for {representative_model_path}.")
+            base_model_config = next(iter(inferred_sets[0]))
+            logger.info(f"Inferred base ModelConfig: {base_model_config.identifier}")
+
+        # 1c. Load the custom block config ONCE
+        custom_block_config_id = self.cfg.optimization_guide.get("custom_block_config_id")
+        custom_block_config = None
+        if custom_block_config_id:
+            try:
+                custom_block_config = sd_mecha.extensions.model_configs.resolve(custom_block_config_id)
+                logger.info(f"Successfully loaded custom block config: '{custom_block_config_id}'")
+            except ValueError as e:
+                logger.warning(f"Could not resolve custom block config '{custom_block_config_id}': {e}")
+
+        # --- STAGE 2: INITIALIZE HELPERS WITH LOADED CONFIGS ---
+        logger.info("Initializing helpers with centrally loaded configs...")
+
+        # 2a. Initialize Merger with the configs
+        self.merger = Merger(
+            cfg=self.cfg,
+            base_model_config=base_model_config,
+            custom_block_config=custom_block_config,
+            models_dir=models_dir
+        )
+
+        # 2b. Initialize ParameterHandler with the configs
+        self.bounds_initializer = ParameterHandler(
+            cfg=self.cfg,
+            base_model_config=base_model_config,
+            custom_block_config=custom_block_config
+        )
+
+        # --- STAGE 3: COMPLETE THE REST OF THE SETUP ---
         self.setup_parameter_space()
         self.generator = Generator(self.cfg.url, self.cfg.batch_size, self.cfg.webui)
-        self.merger = Merger(self.cfg)
         self.scorer = AestheticScorer(self.cfg)
         self.prompter = Prompter(self.cfg)
         self.iteration = -1
@@ -135,10 +208,10 @@ class Optimizer:
         logger.info("Sequential Producer finished.")
         # Optionally signal completion: await queue.put(None)
 
-    # --- MODIFIED: sd_target_function to use sequential producer ---
+    # sd_target_function to use sequential producer ---
     async def sd_target_function(self, params: Dict[str, Any]) -> Optional[float]:
         self.iteration += 1
-        # --- MODIFIED: Adjust iteration number for resumed runs ---
+        # Adjust iteration number for resumed runs ---
         effective_iteration = self.iteration + self.completed_trials
         iteration_start_time = time.time()
         iteration_type = (
@@ -222,7 +295,6 @@ class Optimizer:
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
             logger.info("PyTorch CUDA cache cleared.")
-        # --- END OF FIX ---
 
         # --- Load new model (keep as is, assumes synchronous is okay) ---
         try:
@@ -426,6 +498,9 @@ class Optimizer:
 
         # --- Update Best Score & Logging ---
         self.update_best_score(params, avg_score)
+        
+        # --- Unload any lazy-loaded models ---
+        self.scorer.unload_lazy_models()
 
         # --- Collect Data for Artist ---
         #       self.artist.collect_data(avg_score, params)

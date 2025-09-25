@@ -1,6 +1,4 @@
 # merger.py - Version 1.1 - initial changes
-
-# merger.py - Version 1.0
 import logging
 import sd_mecha
 import torch
@@ -21,9 +19,7 @@ from sd_mecha.extensions.merge_methods import MergeMethod, RecipeNodeOrValue
 from sd_mecha.recipe_nodes import RecipeNodeOrValue, ModelRecipeNode, RecipeNode, MergeRecipeNode
 from sd_mecha.extensions import model_configs, merge_methods  # Import model_configs
 
-# Assuming utils contains MergeMethodCodeSaver and add_extra_keys
 from sd_optim import utils
-# Assuming your custom methods are in MergeMethods and decorated correctly
 from sd_optim.merge_methods import MergeMethods
 from sd_optim.bounds import BoundsInfo, ParameterHandler
 
@@ -40,171 +36,22 @@ precision_mapping = {
 
 @dataclass
 class Merger:
-    def __init__(self, cfg: DictConfig):
+    def __init__(self, cfg: DictConfig, base_model_config: sd_mecha.extensions.model_configs.ModelConfig,
+                 custom_block_config: sd_mecha.extensions.model_configs.ModelConfig | None, models_dir: Path):
         self.cfg = cfg
+        self.base_model_config = base_model_config
+        self.custom_block_config = custom_block_config
+        self.models_dir = models_dir
 
-        # --- Universal Setup: All modes need these ---
         self.output_file: Optional[Path] = None
         self.best_output_file: Optional[Path] = None
-        self.base_model_config: Optional[model_configs.ModelConfig] = None
 
-        if not self.cfg.model_paths:
-            raise ValueError("'model_paths' cannot be empty, as it's needed to determine the models directory.")
-
-        # The first path ALWAYS defines our primary models directory.
-        representative_model_path_str = self.cfg.model_paths[0]
-        self.models_dir = Path(representative_model_path_str).resolve().parent
-        if not self.models_dir.is_dir():
-            raise FileNotFoundError(f"The directory of the first model is invalid: {self.models_dir}")
-        logger.info(f"Using primary models directory: {self.models_dir}")
-
-        # --- THIS IS THE MISSING PIECE, NOW RESTORED AND IN THE RIGHT PLACE ---
-        logger.info(f"Inferring base ModelConfig from: {representative_model_path_str}")
-        try:
-            rep_model_node = sd_mecha.model(representative_model_path_str)
-            with sd_mecha.open_input_dicts(rep_model_node, [self.models_dir]):
-                if isinstance(rep_model_node, ModelRecipeNode) and rep_model_node.state_dict:
-                    inferred_sets = sd_mecha.infer_model_configs(rep_model_node.state_dict.keys())
-                    if inferred_sets:
-                        # Taking the first from the best-matching set
-                        self.base_model_config = next(iter(inferred_sets[0]))
-                        logger.info(f"Inferred base ModelConfig: {self.base_model_config.identifier}")
-                    else:
-                        raise ValueError(f"sd-mecha could not infer a ModelConfig for {representative_model_path_str}.")
-                else:
-                    raise ValueError(
-                        f"Could not load state dictionary for {representative_model_path_str} to infer config.")
-        except Exception as e:
-            logger.error(f"Critical error during base model config inference: {e}", exc_info=True)
-            raise  # This is a fatal error, so we stop execution.
-
-        # Load custom block configs (this part was correct)
-        self.custom_block_config_id = self.cfg.optimization_guide.get("custom_block_config_id")
-        self.custom_block_config = None
-        if self.custom_block_config_id:
-            try:
-                self.custom_block_config = model_configs.resolve(self.custom_block_config_id)
-                logger.info(f"Successfully loaded custom block config: '{self.custom_block_config_id}'")
-            except ValueError as e:
-                logger.warning(f"Could not resolve custom block config '{self.custom_block_config_id}': {e}")
-
-        # --- Mode-Specific Final Steps ---
         self.models: List[ModelRecipeNode] = []
-
         if self.cfg.optimization_mode == "merge":
-            logger.info("Initializing for 'merge' mode: Creating model nodes from `model_paths`.")
-            self.models = self._create_model_nodes()
-            logger.info(f"Initialized with {len(self.models)} model nodes for merging.")
-
-        elif self.cfg.optimization_mode == "recipe":
-            logger.info("Initializing for 'recipe' mode: `model_paths` will be used for fallback lookup.")
-            self.models = self._create_model_nodes()  # Still needed for fallback index
-            recipe_path_str = self.cfg.recipe_optimization.get("recipe_path")
-            if not recipe_path_str or not Path(recipe_path_str).is_file():
-                raise FileNotFoundError(f"Recipe file not found or not specified: {recipe_path_str}")
-
-        elif self.cfg.optimization_mode == "layer_adjust":
-            logger.info("Initializing for 'layer_adjust' mode.")
+            logger.info("Creating model nodes for 'merge' mode.")
             self.models = self._create_model_nodes()
 
-        else:
-            raise ValueError(f"Invalid optimization_mode: {self.cfg.optimization_mode}")
-
-        logger.info("Merger initialized successfully.")
-
-    def validate_config(self):
-        """
-        Performs comprehensive, mode-aware validation of the run configuration.
-        This runs before any major processing to catch errors early.
-        """
-        # --- Mode-Specific Validation ---
-        if self.cfg.optimization_mode == "merge":
-            if not self.cfg.model_paths or len(self.cfg.model_paths) < 1:
-                raise ValueError("For 'merge' mode, 'model_paths' must contain at least one model path.")
-            if not self.cfg.merge_method:
-                raise ValueError("Configuration missing required field: 'merge_method' for 'merge' mode.")
-
-        elif self.cfg.optimization_mode == "recipe":
-            recipe_cfg = self.cfg.get('recipe_optimization')
-            if not recipe_cfg:
-                raise ValueError(
-                    "`optimization_mode` is 'recipe', but the 'recipe_optimization' section is missing in the config.")
-
-            # Check for required recipe parameters
-            recipe_path_str = recipe_cfg.get("recipe_path")
-            target_nodes_str = recipe_cfg.get("target_nodes")
-            target_params_list = recipe_cfg.get("target_params")
-
-            if not recipe_path_str:
-                raise ValueError("Recipe optimization requires 'recipe_path' to be specified.")
-            if not target_nodes_str:
-                raise ValueError("Recipe optimization requires 'target_nodes' to be specified (e.g., '&8').")
-            if not target_params_list:
-                raise ValueError("Recipe optimization requires 'target_params' to be specified (e.g., ['alpha']).")
-
-            recipe_path = Path(recipe_path_str)
-            if not recipe_path.exists():
-                raise FileNotFoundError(f"The specified recipe file does not exist: {recipe_path}")
-
-            # --- NEW: Advanced Recipe File Validation ---
-            try:
-                logger.debug("Performing advanced validation on recipe file...")
-                original_recipe_text = recipe_path.read_text(encoding="utf-8")
-                all_lines = original_recipe_text.strip().split('\n')
-
-                # 1. Validate target_nodes index
-                target_node_idx = int(target_nodes_str.strip('&'))
-                if not (0 <= target_node_idx < len(all_lines) - 1):
-                    raise IndexError(
-                        f"target_nodes '{target_nodes_str}' is out of bounds for the recipe file which has {len(all_lines) - 1} nodes.")
-
-                # 2. Validate node type and parameters
-                # Deserialize just enough of the recipe to inspect our target node
-                slice_to_parse = all_lines[:target_node_idx + 2]
-                target_node = sd_mecha.deserialize(slice_to_parse)
-
-                if not isinstance(target_node, sd_mecha.recipe_nodes.MergeRecipeNode):
-                    raise TypeError(
-                        f"Target node {target_nodes_str} is a '{type(target_node).__name__}', not a merge method.")
-
-                # Check if all target_params are valid for this specific merge method
-                method_obj = target_node.merge_method
-                valid_params = set(method_obj.get_param_names().kwargs.keys())
-                for param_name in target_params_list:
-                    if param_name not in valid_params:
-                        raise ValueError(
-                            f"Target parameter '{param_name}' is not valid for merge method '{method_obj.identifier}'. "
-                            f"Valid keyword parameters are: {sorted(list(valid_params))}"
-                        )
-                logger.debug("Advanced recipe validation successful.")
-
-            except (ValueError, IndexError, TypeError, FileNotFoundError) as e:
-                raise ValueError(f"Recipe configuration validation failed: {e}")
-            except Exception as e:
-                logger.error(f"An unexpected error occurred while validating the recipe file: {e}", exc_info=True)
-                raise ValueError("An unexpected error occurred during recipe validation. Check logs for details.")
-
-            # 3. Friendly informational message about model_paths
-            if self.cfg.get("model_paths"):
-                logger.info(
-                    "NOTE: `model_paths` config is ignored in 'recipe' optimization mode. Model paths are read directly from the .mecha file.")
-
-        elif self.cfg.optimization_mode == "layer_adjust":
-            if not self.cfg.model_paths or len(self.cfg.model_paths) < 1:
-                raise ValueError("`model_paths` must contain at least one model for 'layer_adjust' mode.")
-
-        else:
-            raise ValueError(f"Invalid optimization_mode: '{self.cfg.optimization_mode}'")
-
-        # --- Global Validation (works for all modes) ---
-        if not hasattr(self.cfg, 'merge_dtype') or self.cfg.merge_dtype not in precision_mapping:
-            raise ValueError(
-                f"Invalid or missing 'merge_dtype': '{self.cfg.get('merge_dtype')}'. Must be one of {list(precision_mapping.keys())}")
-        if not hasattr(self.cfg, 'save_dtype') or self.cfg.save_dtype not in precision_mapping:
-            raise ValueError(
-                f"Invalid or missing 'save_dtype': '{self.cfg.get('save_dtype')}'. Must be one of {list(precision_mapping.keys())}")
-
-        logger.info("Configuration successfully validated.")
+        logger.info("Merger initialized successfully with pre-loaded configs.")
 
     def _create_model_nodes(self) -> List[ModelRecipeNode]:
         """
@@ -381,8 +228,8 @@ class Merger:
 
             with sd_mecha.open_input_dicts(base_model_node, [self.models_dir]):
                 # The LoRA check logic itself is fine.
-                if base_model_node.model_config and ("lora" in base_model_node.model_config.identifier or \
-                        "lycoris" in base_model_node.model_config.identifier):
+                if base_model_node.model_config and ("lora" in base_model_node.model_config.identifier or
+                                                     "lycoris" in base_model_node.model_config.identifier):
                     raise ValueError(
                         f"The selected base model ('{base_model_node.path}') appears to be a LoRA/LyCORIS. These cannot be used as base models."
                     )
@@ -832,10 +679,17 @@ class Merger:
                 final_param_nodes[kwarg_name] = sd_mecha.literal(fixed_value)
                 logger.info(f"Using fixed value for '{kwarg_name}' from custom_bounds: {fixed_value}")
             else:
-                # Not in custom_bounds, rely on merge method's own default value
-                logger.info(
-                    f"Using default value for parameter '{kwarg_name}' from merge method '{merge_method.identifier}'.")
-                # Do NOT add to final_param_nodes, sd-mecha will use the method's default
+                # Not in custom_bounds, so its value depends on the mode.
+                if self.cfg.optimization_mode == 'recipe':
+                    # In recipe mode, we are NOT providing this kwarg, so the original value in the text file remains.
+                    logger.info(
+                        f"Using value for parameter '{kwarg_name}' from the source .mecha file."
+                    )
+                else:  # This applies to 'merge' mode and any other future modes
+                    # In merge mode, we don't provide it, so sd-mecha uses the function's default.
+                    logger.info(
+                        f"Using default value for parameter '{kwarg_name}' from merge method '{merge_method.identifier}'."
+                    )
 
         logger.info(
             f"Prepared {len(final_param_nodes)} final parameter nodes for merge method '{merge_method.identifier}'.")
@@ -1054,9 +908,14 @@ class Merger:
             debug_path.write_text(final_recipe_text, encoding="utf-8")
             raise ValueError(f"Final recipe deserialization failed. Saved debug recipe to {debug_path}: {e}")
 
+        # We now perform a DEEP injection of the cache into every merge node.
+        logger.info("Performing deep injection of the shared cache into the recipe graph...")
+        cache_injector = utils.CacheInjectorVisitor(cache)
+        final_recipe_node_with_cache = cache_injector.visit(final_recipe_node)
+
         model_path = self.output_file
-        self._save_recipe_etc(final_recipe_node, model_path, iteration)
-        self._execute_recipe(final_recipe_node, model_path)
+        self._save_recipe_etc(final_recipe_node_with_cache, model_path, iteration)
+        self._execute_recipe(final_recipe_node_with_cache, model_path)
 
         logger.info(f"Recipe optimization coordination complete. Output: {model_path}")
         return model_path

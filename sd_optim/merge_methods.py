@@ -24,17 +24,19 @@ from scipy.linalg import sqrtm
 from scipy.stats import binom, rankdata
 from torch import Tensor, polar
 from torch.utils import checkpoint
-from typing import Optional, Callable, Dict, Tuple, TypeVar, Generic, get_type_hints, get_origin, Union, get_args, List, Set, Iterable
+from typing import Optional, Callable, Dict, Tuple, TypeVar, Generic, get_type_hints, get_origin, Union, get_args, List,  Set, Iterable
 from pytorch_wavelets import DWTForward, DWTInverse
 from sd_mecha import Parameter, Return, merge_method  # Import Parameter and Return
 
 from sd_optim.TALON import TALON
-from sd_optim.svd import torch_svd_lowrank # you need to make your own or use the one from mecha
-from torch import Tensor # Import Tensor
+from sd_optim.svd import torch_svd_lowrank  # you need to make your own or use the one from mecha
+from sd_mecha.extensions.builtin.merge_methods.svd import svd_lowrank, stiefel_interpolate, fractional_orthogonal_matrix_power
+from torch import Tensor  # Import Tensor
 
 try:
     import cupy as cp
     from cupy.cuda import cusolver
+
     CUPY_AVAILABLE = True
 except ImportError:
     CUPY_AVAILABLE = False
@@ -57,7 +59,7 @@ class MergeMethods:
         cache = kwargs["cache"]
         key = kwargs["key"]
 
-        if key: # Only print if key is available
+        if key:  # Only print if key is available
             # The 'alpha' variable here is ALREADY the specific float value for this key
             print(f"[merge_layers] Key: {key} -- Using alpha: {alpha:.4f}")
 
@@ -71,8 +73,8 @@ class MergeMethods:
             if not b_is_finite: warning_msg += "Input 'b' has NaNs/Infs. "
             warning_msg += "Returning input 'a' as fallback."
             # Use your logging system here if you have one, otherwise print
-            print(warning_msg, file=sys.stderr) # Or logpy.warning(warning_msg)
-            return a # Return tensor 'a'
+            print(warning_msg, file=sys.stderr)  # Or logpy.warning(warning_msg)
+            return a  # Return tensor 'a'
         # --- END OF NaN/Inf CHECK ---
 
         # Early exit if alpha is 0.0 and flag is above 0.0
@@ -1017,7 +1019,7 @@ class MergeMethods:
             **kwargs
     ) -> Return(Tensor, "weight"):
         key = kwargs["key"]
-        if key: # Only print if key is available
+        if key:  # Only print if key is available
             # The 'alpha' variable here is ALREADY the specific float value for this key
             print(f"[geosum] Key: {key} -- Using alpha: {alpha:.4f}")
         a = torch.complex(a, torch.zeros_like(a))
@@ -1271,7 +1273,6 @@ class MergeMethods:
 
         return u, s, vh
 
-
     @merge_method
     def orthonorm(
             a: Parameter(Tensor, merge_space="delta"),  # orig_model - base
@@ -1307,7 +1308,7 @@ class MergeMethods:
 
     # V1.0 - Updated to use @sd_mecha.merge_method and type hints
     @staticmethod
-    @merge_method # Explicit identifier recommended
+    @merge_method  # Explicit identifier recommended
     def weighted_sum_0_filtered(
             # Use Parameter() to specify type and optionally merge space.
             # Assuming inputs 'a' and 'b' are expected in weight space.
@@ -1319,18 +1320,18 @@ class MergeMethods:
             alpha: Parameter(Tensor) = 0.0,
             # **kwargs is essential to receive the 'key' and other metadata
             **kwargs,
-    ) -> Return(Tensor, "weight"): # Return type is Tensor, in weight space
+    ) -> Return(Tensor, "weight"):  # Return type is Tensor, in weight space
         """
         Performs weighted sum (1-alpha)*a + alpha*b, but ONLY for keys matching
         specific patterns. Returns 'a' unmodified for non-matching keys.
         Effectively sets alpha=0 for non-matching keys.
         """
         # YES, the 'key' is still available in kwargs! sd-mecha injects it.
-        key = kwargs.get("key") # Use .get() for safety, though 'key' should always be there
+        key = kwargs.get("key")  # Use .get() for safety, though 'key' should always be there
         if key is None:
-             # This shouldn't happen in normal sd-mecha execution, but good to handle
-             print("Merge method 'weighted_sum_0_filtered' called without 'key' in kwargs.")
-             return a # Fallback to returning 'a'
+            # This shouldn't happen in normal sd-mecha execution, but good to handle
+            print("Merge method 'weighted_sum_0_filtered' called without 'key' in kwargs.")
+            return a  # Fallback to returning 'a'
 
         # The patterns to apply the weighted sum to
         patterns = [
@@ -1340,10 +1341,10 @@ class MergeMethods:
             "*.norm3.*",
             "*.emb_layers.*",
             "model.diffusion_model.out.*",
-            "*.conv.*", # Careful, this might be too broad?
+            "*.conv.*",  # Careful, this might be too broad?
             "*.skip_connection.*",
-            "model.diffusion_model.output_blocks.8.0.out_layers.3.*", # Example specific key
-            "model.diffusion_model.input_blocks.0.0.*", # Example specific key
+            "model.diffusion_model.output_blocks.8.0.out_layers.3.*",  # Example specific key
+            "model.diffusion_model.input_blocks.0.0.*",  # Example specific key
         ]
 
         # Check if the current key matches any pattern
@@ -1357,7 +1358,6 @@ class MergeMethods:
             # logger.debug(f"Returning unmodified 'a' for key: {key}") # Optional logging
             # Return 'a' unmodified for all other keys
             return a
-
 
     # @staticmethod
     # @merge_method
@@ -2052,437 +2052,173 @@ class MergeMethods:
         return merged.reshape(original_shape)
 
     @merge_method
-    def delta_dis(
-            *models: Parameter(Tensor, "delta"), # subtract
-            magnitude_ratio: Parameter(Tensor) = 0.6,
-            direction_ratio: Parameter(Tensor) = 0.75,
-            above_average_ratio: Parameter(Tensor) = 1.2,
-            calibration_value: Parameter(Tensor) = 1.0,
-            early_exit: Parameter(bool) = 1.0,
-            **kwargs,
-    ) -> Return(Tensor, "delta"): # add diff
-        """Improved delta disentanglement merge based on WIDEN"""
+    def delta_widen(
+            *deltas: Parameter(Tensor, "delta"),  # subtract
+            magnitude_ratio: Parameter(float) = 2.0,  # weight of magnitude divergence
+            direction_ratio: Parameter(float) = 2.0,  # weight of directional divergence
+            temperature: Parameter(float) = 1.0,  # softmax sharpness
+            critical_quantile: Parameter(float) = 0.80,  # pooled per-parameter threshold across models
+            topk: Parameter(int) = 0,  # 0=off; 1..M enables per-column top-k gating
+            rank_blend: Parameter(float) = 0.0,  # 0=off; 0.3–0.6 blends rank with raw divergences
+            baseline_index: Parameter(int) = -1,  # -1 = zero baseline; >=0 = anchor model
+            baseline_bias: Parameter(float) = 0.0,  # logit boost for baseline model when anchoring
+            keep_baseline: Parameter(float) = 0.0,  # convex blend with baseline delta
+            early_exit: Parameter(bool) = False,  # fast path when both ratios are 0
+    ) -> Return(Tensor, "delta"):  # add diff
+        """
+        Stable WIDEN-style columnwise merge.
 
+        Core knobs (highest effect first):
+        - magnitude_ratio: Weight of magnitude divergence in logits; higher prioritizes columns with large norm changes (typical 1–3).
+        - direction_ratio: Weight of directional divergence (1 - cosine); higher emphasizes changed directions (typical 1–3).
+        - temperature: Softmax sharpness across models per column; lower picks winners, higher blends more (0.5–2.0).
+        - critical_quantile: Cross-model per-parameter threshold for "critical" status; higher marks fewer columns as critical (0.70–0.90).
+        - topk: Keep only top-k models per column before softmax; 0 disables, 2 is a good default for crisper gating.
+        - rank_blend: Blend factor for rank-normalized vs raw divergences; 0.3–0.6 improves robustness across heterogeneous layers.
+
+        Anchoring and safety:
+        - baseline_index: -1 uses a zero baseline; >=0 anchors to that delta for patching-style merges.
+        - baseline_bias: Additive logit boost for the baseline when anchoring; positive values favor the anchor per column (0.5–2.0).
+        - keep_baseline: Convex blend with the baseline delta after merging; ensures a minimum of baseline signal (0.1–0.3).
+        - early_exit: If both ratios are 0, return the baseline (or zeros) immediately to avoid unnecessary work.
+
+        Notes:
+        - Columnwise disentanglement for linear/conv weights; magnitude-only for 1D params (bias/norm).
+        - Uses float32 for softmax stability and eps-guarded cosine similarity.
+        """
+
+        if len(deltas) == 0:
+            raise ValueError("At least one model delta is required. [delta_widen_sd]")
+
+        ref = deltas[baseline_index] if 0 <= baseline_index < len(deltas) else torch.zeros_like(deltas[0])
+        dtype, device = deltas[0].dtype, deltas[0].device
+
+        # Early exit if no divergence terms are used
         if early_exit and magnitude_ratio == 0.0 and direction_ratio == 0.0:
-            return models[0]
+            return ref
 
-        def tensor_components(t: Tensor):
-            # Handle scalars and empty tensors consistently
-            if t.numel() == 0:  # Empty tensor
-                return torch.tensor([0.0], device=t.device), torch.tensor([0.0], device=t.device)  # Return 1D tensors
-            if t.dim() == 0:  # Scalar
-                return torch.tensor([torch.abs(t)], device=t.device), torch.tensor([torch.sign(t)],
-                                                                                   device=t.device)  # Return as 1D
-            if t.dim() == 1:  # 1D Tensors
-                return torch.abs(t), torch.sign(t)
+        # Helpers: map param tensor to [d, k] columns (features) and back
+        def to_dk(t: torch.Tensor):
+            if t.dim() == 0:  # scalar
+                return t.reshape(1, 1), (t.shape, "scalar")
+            if t.dim() == 1:  # vector (bias/norm) -> magnitude-only
+                return t.reshape(1, -1), (t.shape, "vec")
+            if t.dim() == 2:  # linear [out, in] -> [d=out, k=in]
+                return t, (t.shape, "linear")
+            # conv [out, in, kh, kw] -> [d=out, k=in*kh*kw]
+            d, c, kh, kw = t.shape
+            return t.reshape(d, c * kh * kw), (t.shape, "conv")
 
-            # For multi-dimensional tensors
-            if t.dim() == 4:  # Conv layers
-                mag = torch.norm(t.reshape(t.shape[0], -1), p=2, dim=1)
-            else:  # Linear/embedding
-                mag = torch.norm(t, p=2, dim=1)
+        def components_dk(Wdk: torch.Tensor):
+            # columnwise 2-norms and unit directions
+            m = torch.linalg.vector_norm(Wdk, ord=2, dim=0)  # [k]
+            D = Wdk / m.clamp_min(1e-12)  # [d, k]
+            return m, D
 
-            # Safe division
-            mag_expanded = mag.unsqueeze(-1)
-            if t.dim() > 2:
-                for _ in range(t.dim() - 2):
-                    mag_expanded = mag_expanded.unsqueeze(-1)
+        def minmax01(x: torch.Tensor):
+            # normalize to [0,1] per model row
+            x_min = x.min(dim=1, keepdim=True).values
+            x_max = x.max(dim=1, keepdim=True).values
+            return (x - x_min) / (x_max - x_min).clamp_min(1e-12)
 
-            dir = t / (mag_expanded + 1e-7)
-            return mag, dir
-
-        def rank_within_model(values: Tensor):
-            # Handle empty or scalar tensors
-            if values.numel() == 0:
-                return torch.tensor([], device=values.device, dtype=values.dtype)  # Return empty tensor
-            if values.dim() == 0:  # Scalar: return a 0-rank tensor
-                return torch.tensor(0.0, device=values.device, dtype=values.dtype)
-            # Percentile-based ranking (0-1 range)
-            sorted_idx = torch.argsort(values, dim=0, stable=True)
-            ranks = torch.arange(values.shape[0], device=values.device, dtype=values.dtype) / values.shape[0]
-            result = torch.zeros_like(values)
-            result.scatter_(0, sorted_idx, ranks)
-            return result
-
-        # Process each model
-        components = [tensor_components(model) for model in models]
-        mags, dirs = zip(*components)
-
-        # Rank magnitudes within each model
-        mag_ranks = torch.stack([rank_within_model(torch.abs(m)) for m in mags])
-
-        # Rank directions within each model.
-        dir_ranks = []
-        for d in dirs:
-            if d.numel() == 0 or d.ndim < 2:  # Check for empty or <2D tensors
-                #  Create a zero tensor of the same shape as other rank tensors.
-                dir_ranks.append(torch.zeros_like(mag_ranks[0]))
+        # Build columnwise components for each model and reference
+        M = len(deltas)
+        mags, dirs, metas = [], [], []
+        for m in deltas:
+            Wdk, meta = to_dk(m)
+            metas.append(meta)
+            if Wdk.numel() == 0:
+                mags.append(torch.zeros(1, device=device, dtype=dtype))
+                dirs.append(torch.zeros_like(Wdk))
+                continue
+            if meta[1] in ("scalar", "vec"):
+                mags.append(Wdk.abs().reshape(-1))  # magnitude-only for 1D
+                dirs.append(None)
             else:
-                dir_ranks.append(
-                    rank_within_model(1 - torch.cosine_similarity(
-                        d.reshape(d.shape[0], -1),
-                        dirs[0].reshape(dirs[0].shape[0], -1),
-                        dim=1
-                    ))
-                )
-        dir_ranks = torch.stack(dir_ranks)
+                mcol, D = components_dk(Wdk)
+                mags.append(mcol)
+                dirs.append(D)
 
-        # Combined weighted ranks
-        combined_ranks = magnitude_ratio * mag_ranks + direction_ratio * dir_ranks
-
-        # Apply calibration (critical step from original WIDEN)
-        avg_ranks = combined_ranks.mean(dim=0, keepdim=True)
-        mask = combined_ranks > (avg_ranks * above_average_ratio)
-        combined_ranks[mask] = calibration_value
-
-        # Final merge with controlled scaling
-        merged = torch.zeros_like(models[0])
-        for i, model in enumerate(models):
-            # Apply weights with proper broadcasting
-            weight_expanded = combined_ranks[i]
-
-            # Correctly handle scalar models
-            if model.dim() == 0:
-                weight_expanded = weight_expanded.squeeze()  # Remove extra dimensions, making it a scalar
-            else:
-                for _ in range(model.dim() - 1):
-                    weight_expanded = weight_expanded.unsqueeze(-1)
-            merged += model * weight_expanded
-
-        # Normalize by sum of weights
-        weight_sum = combined_ranks.sum(dim=0)
-        for _ in range(models[0].dim() - 1):
-            weight_sum = weight_sum.unsqueeze(-1)
-
-        # handle scalar here too
-        if merged.dim() == 0:
-            if weight_sum != 0:
-                merged = merged / weight_sum
+        ref_dk, ref_meta = to_dk(ref)
+        if ref_meta[1] in ("scalar", "vec"):
+            ref_mag = ref_dk.abs().reshape(-1)
+            ref_dir = None
         else:
-            merged = merged / (weight_sum + 1e-7)
+            ref_mag, ref_dir = components_dk(ref_dk)
+
+        # Compute divergences per column j
+        mag_divs, dir_divs = [], []
+        for i in range(M):
+            md = (mags[i] - ref_mag).abs()
+            mag_divs.append(md)
+            if dirs[i] is None or ref_dir is None:
+                dd = torch.zeros_like(md)
+            else:
+                # per-column cosine similarity (dim=0 across rows)
+                cos = F.cosine_similarity(dirs[i], ref_dir, dim=0, eps=1e-12)
+                dd = 1.0 - cos  # in [0,2]
+            dir_divs.append(dd)
+
+        mag_divs = torch.stack(mag_divs, dim=0)  # [M, k]
+        dir_divs = torch.stack(dir_divs, dim=0)  # [M, k]
+
+        # Optional rank–raw hybridization for robustness
+        if rank_blend > 0.0:
+            mag_raw01 = minmax01(mag_divs)
+            dir_raw01 = minmax01(dir_divs)
+            # ranks within each model row (columns axis)
+            mag_rank = torch.argsort(torch.argsort(mag_divs, dim=1), dim=1).to(mag_divs.dtype)
+            dir_rank = torch.argsort(torch.argsort(dir_divs, dim=1), dim=1).to(dir_divs.dtype)
+            den = (mag_divs.shape[1] - 1) if mag_divs.shape[1] > 1 else 1
+            mag_rank01 = mag_rank / den
+            dir_rank01 = dir_rank / den
+            mag_divs = rank_blend * mag_rank01 + (1.0 - rank_blend) * mag_raw01
+            dir_divs = rank_blend * dir_rank01 + (1.0 - rank_blend) * dir_raw01
+
+        # Per-parameter pooled criticality via quantiles across models
+        q = torch.tensor(critical_quantile, device=device, dtype=mag_divs.dtype)
+        mag_thr = torch.quantile(mag_divs, q, dim=0)
+        dir_thr = torch.quantile(dir_divs, q, dim=0)
+        crit_mask = (mag_divs > mag_thr) | (dir_divs > dir_thr)  # [M, k]
+
+        # Build logits with additive logit offset for critical positions
+        logits = magnitude_ratio * mag_divs + direction_ratio * dir_divs
+        logits = logits + 0.5 * crit_mask.to(logits.dtype)  # fixed δ=0.5 offset (simple, effective)
+
+        # Optional baseline logit bias (anchoring)
+        if 0 <= baseline_index < M and baseline_bias != 0.0:
+            logits[baseline_index] = logits[baseline_index] + baseline_bias
+
+        # Optional per-column top-k gating before softmax
+        if topk > 0 and topk < M:
+            _, idx = torch.topk(logits, topk, dim=0)  # [topk, k]
+            mask = torch.full_like(logits, float('-inf'))
+            logits = mask.scatter(0, idx, logits.gather(0, idx))
+
+        # Softmax over models in float32 for stability
+        logits32 = logits.to(torch.float32) / float(temperature)
+        weights = torch.softmax(logits32, dim=0).to(dtype)  # [M, k]
+
+        # Merge back with correct broadcasting per param type
+        merged = torch.zeros_like(deltas[0])
+        for i in range(M):
+            meta = metas[i]
+            if meta[1] in ("scalar", "vec"):
+                w = weights[i].reshape(-1)
+                merged = merged + deltas[i] * (w if w.numel() == deltas[i].numel() else 1.0)
+            elif meta[1] == "linear":  # [out, in] -> broadcast over rows
+                wcol = weights[i].reshape(1, -1)
+                merged = merged + deltas[i] * wcol
+            else:  # conv [out, in, kh, kw] -> FIXED: per position weights
+                d, c, kh, kw = deltas[i].shape
+                # FIX: Reshape to full [1, c, kh, kw] to match columnwise disentanglement
+                wcol = weights[i].reshape(1, c, kh, kw)
+                merged = merged + deltas[i] * wcol
+
+        if keep_baseline != 0.0:
+            merged = keep_baseline * ref + (1.0 - keep_baseline) * merged
 
         return merged
-
-    @merge_method
-    def delta_widen(
-            *models: Parameter(Tensor, "delta"),
-            baseline_index: Parameter(int) = -1,
-            magnitude_ratio: Parameter(float) = 2.0,  # Now actually works
-            direction_ratio: Parameter(float) = 2.0,  # Now actually works
-            above_average_ratio: Parameter(float) = 2.0,  # Now actually works
-            calibration_value: Parameter(float) = 5.0,  # Now actually works
-            early_exit: Parameter(float) = 1.0,
-            **kwargs,
-    ) -> Return(Tensor, "delta"):
-        """
-        WIDEN-based Disentanglement Merge with Fixed Parameter Sensitivity.
-
-        This version preserves raw divergence magnitudes to ensure all parameters
-        have meaningful impact on the final merge.
-
-        Args:
-            *models (Tensor): A list of the model deltas (e.g., LoRA weights) to be merged.
-            baseline_index (int): Controls the merge strategy.
-                - `-1` (Unbiased Merge): Compares all models to a zero tensor.
-                - `0, 1, ...` (Biased/Patching Merge): Compares all other models to the
-                  delta at this index.
-            magnitude_ratio (float): The weight given to the magnitude component of the
-                deltas. Now has actual impact on results.
-            direction_ratio (float): The weight given to the direction component of the
-                deltas. Now has actual impact on results.
-            above_average_ratio (float): A threshold multiplier to identify "critical"
-                parameters. Now works on raw divergences.
-            calibration_value (float): The factor by which to boost the importance of
-                critical parameters. Now has dramatic effects.
-            early_exit (float): If True, and both magnitude and direction ratios are 0,
-                returns baseline immediately.
-            **kwargs: Catches any other parameters passed to the merge method.
-
-        Returns:
-            Tensor: The final merged delta tensor, with the same dtype and on the same
-                device as the input models.
-        """
-        original_dtype = models[0].dtype
-        device = models[0].device
-
-        # Early exit optimization
-        if early_exit == 1.0 and magnitude_ratio == 0.0 and direction_ratio == 0.0:
-            if 0 <= baseline_index < len(models):
-                return models[baseline_index]
-            else:
-                return torch.zeros_like(models[0])
-
-        # Determine baseline
-        if baseline_index == -1:
-            baseline_tensor = torch.zeros_like(models[0])
-        elif 0 <= baseline_index < len(models):
-            baseline_tensor = models[baseline_index]
-        else:
-            raise ValueError(
-                f"Invalid baseline_index: {baseline_index}. Must be -1 or between 0 and {len(models) - 1}.")
-
-        def tensor_components(t: Tensor):
-            """
-            Disentangle a tensor into magnitude and direction.
-            This version handles all tensors consistently on a per-output-feature basis.
-            """
-            if t.numel() == 0:
-                return (
-                    torch.tensor(0.0, device=device, dtype=t.dtype),
-                    torch.tensor(0.0, device=device, dtype=t.dtype),
-                )
-            if t.dim() <= 1:
-                return torch.abs(t), torch.sign(t)
-
-            orig_shape = t.shape
-            t_2d = t.reshape(orig_shape[0], -1)
-            mag = torch.norm(t_2d, p=2, dim=1)
-            dir_2d = t_2d / (mag.unsqueeze(1) + 1e-12)
-            return mag, dir_2d.reshape(orig_shape)
-
-        def compute_raw_divergence(mag, dir_tensor, ref_mag, ref_dir):
-            """Compute raw divergence from reference (preserving actual magnitudes)."""
-            # Keep raw magnitude differences - NO RANKING
-            mag_div = torch.abs(mag - ref_mag)
-
-            # Compute directional divergence
-            if dir_tensor.dim() <= 1:
-                cos_sim = dir_tensor * ref_dir
-            else:
-                dir_flat = dir_tensor.reshape(dir_tensor.shape[0], -1)
-                ref_dir_flat = ref_dir.reshape(ref_dir.shape[0], -1)
-                cos_sim = torch.nn.functional.cosine_similarity(dir_flat, ref_dir_flat, dim=1, eps=1e-12)
-
-            dir_div = 1.0 - cos_sim
-            return mag_div, dir_div
-
-        # --- Compute Raw Divergences for All Models ---
-        ref_mag, ref_dir = tensor_components(baseline_tensor)
-
-        all_mag_divs = []
-        all_dir_divs = []
-
-        for i, model in enumerate(models):
-            mag, dir_tensor = tensor_components(model)
-            mag_div, dir_div = compute_raw_divergence(mag, dir_tensor, ref_mag, ref_dir)
-
-            if i == baseline_index:
-                # Baseline model gets high importance (but not infinite)
-                all_mag_divs.append(torch.ones_like(mag_div) * torch.max(mag_div).item() * 2.0)
-                all_dir_divs.append(torch.ones_like(dir_div) * torch.max(dir_div).item() * 2.0)
-            else:
-                all_mag_divs.append(mag_div)
-                all_dir_divs.append(dir_div)
-
-        # --- Apply Critical Parameter Detection on RAW Divergences ---
-        enhanced_mag_divs = []
-        enhanced_dir_divs = []
-
-        for i in range(len(models)):
-            raw_mag_div = all_mag_divs[i]
-            raw_dir_div = all_dir_divs[i]
-
-            # Apply critical parameter detection on RAW values
-            if above_average_ratio > 0:
-                # Use median for more robust threshold detection
-                mag_threshold = torch.median(raw_mag_div) * above_average_ratio
-                dir_threshold = torch.median(raw_dir_div) * above_average_ratio
-
-                # Identify critical parameters
-                critical_mag = raw_mag_div > mag_threshold
-                critical_dir = raw_dir_div > dir_threshold
-
-                # Apply strong calibration to critical parameters
-                calibrated_mag = torch.where(
-                    critical_mag,
-                    raw_mag_div * calibration_value,
-                    raw_mag_div * 0.5  # Suppress non-critical
-                )
-                calibrated_dir = torch.where(
-                    critical_dir,
-                    raw_dir_div * calibration_value,
-                    raw_dir_div * 0.5  # Suppress non-critical
-                )
-            else:
-                calibrated_mag = raw_mag_div
-                calibrated_dir = raw_dir_div
-
-            enhanced_mag_divs.append(calibrated_mag)
-            enhanced_dir_divs.append(calibrated_dir)
-
-        # --- Combine Magnitude and Direction with Parameter Ratios ---
-        combined_importance = []
-        for i in range(len(models)):
-            # NOW the parameter ratios have real impact on raw divergences
-            combined = (magnitude_ratio * enhanced_mag_divs[i]) + (direction_ratio * enhanced_dir_divs[i])
-            combined_importance.append(combined)
-
-        # --- Apply Standard Softmax (No Temperature Needed) ---
-        softmax_input = torch.stack(combined_importance, dim=0)
-
-        if original_dtype == torch.float16:
-            warnings.warn("Input dtype is float16. Upcasting to float32 for softmax stability.", UserWarning)
-            importance_scores = torch.softmax(softmax_input.to(torch.float32), dim=0).to(original_dtype)
-        else:
-            importance_scores = torch.softmax(softmax_input, dim=0)
-
-        # --- Final Merge ---
-        merged_delta = torch.zeros_like(models[0])
-        for i, model in enumerate(models):
-            weight = importance_scores[i]
-            if model.dim() > 1 and weight.dim() > 0:
-                reshape_shape = [-1] + [1] * (model.dim() - 1)
-                reshaped_weight = weight.reshape(reshape_shape)
-            else:
-                reshaped_weight = weight
-
-            merged_delta += model * reshaped_weight
-
-        return merged_delta
-
-    @merge_method
-    def pop_lora_seq(
-            *models: Parameter(Tensor, "delta"),
-            base_model_index: Parameter(int) = 0,
-            alpha: Parameter(float) = 0.5,
-            rank_ratio: Parameter(float) = 0.25,
-            early_exit: Parameter(bool) = True,
-            **kwargs
-    ) -> Return(Tensor, "delta"):
-        """
-        True Sequential Application of pop_lora (v2 - Flexible & Robust)
-
-        Strictly adheres to the original pop_lora logic, applied sequentially.
-        Allows specifying which model is the base.
-        The basis for projection is calculated ONCE from the specified base model
-        and is NEVER changed. At each step, the next model in the sequence is
-        compared against the current accumulated result, and the resulting
-        delta is projected onto the ORIGINAL base's structure.
-        """
-        if not 0 <= base_model_index < len(models):
-            raise ValueError(f"base_model_index must be between 0 and {len(models) - 1}.")
-
-        if early_exit and alpha == 0.0:
-            return torch.zeros_like(models[0])
-
-        model_list = list(models)
-        start_model = model_list.pop(base_model_index)
-        other_models = model_list
-
-        original_shape = start_model.shape
-        if len(original_shape) <= 1:
-            current_model_state = start_model.clone()
-            for next_model in other_models:
-                current_model_state += alpha * (next_model - current_model_state)
-            return current_model_state - start_model
-
-        start_model_2d = start_model.view(original_shape[0], -1)
-
-        # 1. Get the structural basis of the CHOSEN base model. This is our fixed canvas.
-        Qa_base, _ = MergeMethods._stable_qr(start_model_2d)
-
-        # 2. Initialize the total accumulated delta. We start with no change.
-        total_delta_2d = torch.zeros_like(start_model_2d)
-
-        # 3. The main sequential loop iterates through the remaining models.
-        for next_model in other_models:
-            # 4. The "current state" of our model is the start + all accumulated deltas so far.
-            current_model_state = start_model_2d + total_delta_2d
-            next_model_2d = next_model.view(original_shape[0], -1)
-
-            # 5. Calculate the difference between the next model and our CURRENT STATE.
-            delta = next_model_2d - current_model_state
-
-            # 6. Project this new delta onto the ORIGINAL, FIXED base's structure.
-            projected_delta = Qa_base @ (Qa_base.T @ delta) if Qa_base.shape[1] > 0 else torch.zeros_like(
-                start_model_2d)
-
-            # 7. Simplify the projected delta into a low-rank update.
-            Q_diff, R_diff = MergeMethods._stable_qr(projected_delta)
-
-            if Q_diff.numel() == 0 or R_diff.numel() == 0:
-                step_update_delta = torch.zeros_like(start_model_2d)
-            else:
-                max_rank = min(Q_diff.shape[1], R_diff.shape[0])
-                rank = max(1, int(max_rank * rank_ratio))
-                rank = min(rank, max_rank)
-
-                Q_diff_trunc = Q_diff[:, :rank]
-                R_diff_trunc = R_diff[:rank, :]
-                step_update_delta = Q_diff_trunc @ R_diff_trunc
-
-            # 8. Add this single step's filtered and simplified update to our running total delta.
-            total_delta_2d += alpha * step_update_delta
-
-        # 9. The final result is the total accumulated delta, reshaped to its original glory.
-        return total_delta_2d.reshape(original_shape)
-
-    def _stable_qr(x: Tensor):
-        """
-        Performs RRQR using cuSOLVER's dgeqp3/sgeqp3 for maximum performance.
-        Uses DLPack for zero-copy tensor transfer between PyTorch and CuPy.
-        """
-        if not CUPY_AVAILABLE:
-            raise ImportError("You need to install CuPy for this optimized version to work!")
-
-        if x.numel() == 0:
-            return torch.empty((x.shape[0], 0), device=x.device, dtype=x.dtype), \
-                torch.empty((0, x.shape[1]), device=x.device, dtype=x.dtype)
-
-        # 1. Zero-copy view of the PyTorch tensor in CuPy via DLPack
-        x_cupy = cp.from_dlpack(torch.utils.dlpack.to_dlpack(x))
-
-        # Ensure it's a float32 or float64, as cuSOLVER requires one of them.
-        if x_cupy.dtype not in [cp.float32, cp.float64]:
-            x_cupy = x_cupy.astype(cp.float64)  # Default to float64 for precision
-
-        # 2. Setup cuSOLVER handle and memory
-        handle = cusolver.create()
-        m, n = x_cupy.shape
-        k = min(m, n)
-
-        jpvt = cp.zeros(n, dtype=cp.int32)
-        tau = cp.zeros(k, dtype=x_cupy.dtype)
-
-        # Select correct functions based on dtype
-        if x_cupy.dtype == cp.float64:
-            buffer_size_func, geqp3_func, ormqr_func, buffer_size_ormqr_func = \
-                cusolver.dnDgeqp3_bufferSize, cusolver.dnDgeqp3, cusolver.dnDormqr, cusolver.dnDormqr_bufferSize
-        else:  # float32
-            buffer_size_func, geqp3_func, ormqr_func, buffer_size_ormqr_func = \
-                cusolver.dnSgeqp3_bufferSize, cusolver.dnSgeqp3, cusolver.dnSormqr, cusolver.dnSormqr_bufferSize
-
-        # 3. Perform pivoted QR decomposition
-        work_size = buffer_size_func(handle, m, n, x_cupy.data.ptr, m)
-        work = cp.empty(work_size, dtype=x_cupy.dtype)
-        geqp3_func(handle, m, n, x_cupy.data.ptr, m, jpvt.data.ptr, tau.data.ptr, work.data.ptr, work_size,
-                   info := cp.empty(1, dtype=cp.int32))
-        cp.cuda.runtime.deviceSynchronize()
-        assert info[0] == 0, f"cusolver geqp3 failed with error code {info[0]}"
-
-        # 4. Extract R and explicitly form Q
-        R_cupy = cp.triu(x_cupy)[:k, :]
-        Q_cupy = cp.eye(m, k, dtype=x_cupy.dtype)
-
-        work_size_ormqr = buffer_size_ormqr_func(handle, 'L', 'N', m, k, k, x_cupy.data.ptr, m, tau.data.ptr,
-                                                 Q_cupy.data.ptr, m)
-        work_ormqr = cp.empty(work_size_ormqr, dtype=x_cupy.dtype)
-        ormqr_func(handle, 'L', 'N', m, k, k, x_cupy.data.ptr, m, tau.data.ptr, Q_cupy.data.ptr, m, work_ormqr.data.ptr,
-                   work_size_ormqr, info)
-        cp.cuda.runtime.deviceSynchronize()
-        assert info[0] == 0, f"cusolver ormqr failed with error code {info[0]}"
-
-        # 5. Unpivot R using the pivot indices from geqp3
-        pivots = jpvt - 1  # cuSOLVER is 1-based, we need 0-based
-        inv_pivots = cp.argsort(pivots)
-        R_cupy_unpivoted = R_cupy[:, inv_pivots]
-
-        # 6. Zero-copy conversion back to PyTorch and cleanup
-        Q_torch = torch.from_dlpack(Q_cupy.to_dlpack()).to(x.device)
-        R_torch = torch.from_dlpack(R_cupy_unpivoted.to_dlpack()).to(x.device)
-
-        cusolver.destroy(handle)
-        return Q_torch, R_torch
 
     @merge_method
     def rams(
@@ -2701,7 +2437,7 @@ class MergeMethods:
             raise ValueError("At least one delta tensor must be provided!")
 
         if outlier_tolerance == 0.0 and outlier_intensity == 0.0:
-                return torch.zeros_like(deltas[0])
+            return torch.zeros_like(deltas[0])
 
         core_indices = [1, 3, 4, 6, 7, 8, 9, 10]
         device = deltas[0].device
@@ -2822,7 +2558,8 @@ class MergeMethods:
         return final_merged_tensor.reshape(deltas[0].shape)
 
     @staticmethod
-    def _rams_geometric_median_safe(points: Tensor, eps: float = 1e-8, maxiter: int = 150, ftol: float = 1e-5) -> Tensor:
+    def _rams_geometric_median_safe(points: Tensor, eps: float = 1e-8, maxiter: int = 150,
+                                    ftol: float = 1e-5) -> Tensor:
         """Geometric median with just timeout protection - no other changes."""
         n_points, *dims = points.shape
         if n_points == 0:
@@ -3448,7 +3185,7 @@ class MergeMethods:
     #     return result[:out_dim, :out_dim].to(x.dtype)
 
     @merge_method
-    def butterfly_merge(
+    def butterfly_projection(
             a: Parameter(Tensor, "weight"),
             b: Parameter(Tensor, "weight"),
             *,
@@ -3456,10 +3193,9 @@ class MergeMethods:
             rank_ratio: Parameter(float) = 0.25,
             lora_dim: Parameter(int) = 64,
             constraint: Parameter(float) = 0.05,
-            boft_iters: Parameter(int) = 2,
+            boft_iters: Parameter(int) = 3,
             boft_step_scale: Parameter(float) = 0.1,
             projector_eps: Parameter(float) = 1e-6,
-            align_diag_threshold: Parameter(int) = 4096,
             seed: Parameter(int) = None,
             early_exit: Parameter(bool) = False,
             **kwargs
@@ -3481,7 +3217,6 @@ class MergeMethods:
             boft_iters: Number of alignment iterations for butterfly orthogonalization.
             boft_step_scale: Scaling factor for the alignment step size.
             projector_eps: Epsilon for numerical stability in the Cholesky projector.
-            align_diag_threshold: Dimension threshold to switch to a diagonal approximation for alignment.
             seed: Optional seed for deterministic behavior.
             **kwargs: Keyword arguments, including 'key' for layer identification.
 
@@ -3510,7 +3245,7 @@ class MergeMethods:
                 t_end = dim * (i + 1)
                 k_a = a[t_start:t_end]
                 k_b = b[t_start:t_end]
-                vs.append(MergeMethods.butterfly_merge.__wrapped__(
+                vs.append(MergeMethods.butterfly_projection.__wrapped__(
                     k_a, k_b,
                     alpha=alpha,
                     rank_ratio=rank_ratio,
@@ -3519,7 +3254,6 @@ class MergeMethods:
                     boft_iters=boft_iters,
                     boft_step_scale=boft_step_scale,
                     projector_eps=projector_eps,
-                    align_diag_threshold=align_diag_threshold,
                     seed=seed,
                     early_exit=early_exit,
                     **k_kwargs
@@ -3557,16 +3291,23 @@ class MergeMethods:
             else:
                 lora_dim = 32
 
-        # Determine subspace dimension for meaningful projection
-        subspace_dim = min(lora_dim, min(a_2d.shape))
+        # **NEW: Calculate consistent subspace dimension using the same clamping logic**
+        out_dim = a_2d.shape[0]
+        padded_dim = MergeMethods._next_pow2(out_dim)
+        lora_dim_pow2 = MergeMethods._clamp_lora_dim_pow2(lora_dim, padded_dim)
+
+        # Use the clamped dimension for consistency with butterfly_orthogonalize
+        subspace_dim = min(lora_dim_pow2, min(a_2d.shape))
 
         # More stable seed generation
         seed_a = seed if seed is not None else MergeMethods.stable_seed_from_tensor(a_2d, key)
 
+        # **UPDATED: Cache key now includes lora_dim_pow2 for consistency**
         if cache is not None:
-            if key not in cache:
-                cache[key] = {}
-            layer_cache = cache[key]
+            cache_key = f"{key}_lora{lora_dim_pow2}"  # Include clamped lora_dim in cache key
+            if cache_key not in cache:
+                cache[cache_key] = {}
+            layer_cache = cache[cache_key]
         else:
             layer_cache = None
 
@@ -3574,48 +3315,46 @@ class MergeMethods:
             Q_a_full = layer_cache['Q_a_full'].to(device=a.device, dtype=a.dtype)
         else:
             # Apply data-aligned butterfly orthogonalization to create subspace basis
+            # **UPDATED: Pass lora_dim_pow2 for consistency**
             Q_a_full = MergeMethods.butterfly_orthogonalize(
-                a_2d, lora_dim, constraint, a.device,
-                seed=seed_a, guide=a_2d, iters=boft_iters, step=constraint * boft_step_scale,
-                align_diag_threshold=align_diag_threshold
-            )
+                a_2d, key, lora_dim_pow2, constraint, a.device,
+                seed=seed_a, guide=a_2d, iters=boft_iters, step=constraint * boft_step_scale)
             if layer_cache is not None:
-                layer_cache['Q_a_full'] = Q_a_full.cpu().to(torch.float16)
+                layer_cache['Q_a_full'] = Q_a_full.cpu()
 
         # Create projection matrix for subspace restriction
         P = Q_a_full[:, :subspace_dim]  # [out_dim, subspace_dim]
         diff = b_2d - a_2d
 
-        # Use Gram-based projector for numerical stability - CONVERT TO FP64
+        # Modern QR-based projector with Cholesky fallback - CONVERT TO FP64
         k = P.shape[1]
         P_fp64 = P.to(torch.float64)
         diff_fp64 = diff.to(torch.float64)
-        I_k = torch.eye(k, device=P.device, dtype=torch.float64)
-        G = (P_fp64.T @ P_fp64) + projector_eps * I_k
 
-        # Try Cholesky in fp64 with fallback
+        # Primary approach: QR-based projector (more numerically stable)
         try:
-            L = torch.linalg.cholesky(G)
-
-            def proj_in_span(P_proj, X, L):
-                rhs = (P_proj.T @ X).to(L.dtype)  # Convert to match L's dtype (fp64)
-                P_proj_fp64 = P_proj.to(L.dtype)  # Convert P_proj to fp64 too
-                result = P_proj_fp64 @ torch.cholesky_solve(rhs, L, upper=False)
-                return result.to(P.dtype)  # Convert result back to original precision
-
-            # Compute E in fp64 then convert back
-            E = torch.cholesky_solve(P_fp64.T @ diff_fp64, L, upper=False)
-            E = E.to(P.dtype)  # Convert back to original precision
-        except RuntimeError as e:
-            print(f"Cholesky failed even in fp64, using QR fallback: {e}")
-            # QR fallback projector
             Q, _ = torch.linalg.qr(P_fp64, mode='reduced')
-
-            def proj_in_span(P_proj, X, L=None):
-                X_fp64 = X.to(Q.dtype)  # Convert X to fp64 to match Q
-                return (Q @ (Q.T @ X_fp64)).to(P.dtype)  # Convert result back
-
+            # Compute projection coefficients: E = Q^T diff
             E = (Q.T @ diff_fp64).to(P.dtype)
+
+        except RuntimeError as qr_error:
+            # Fallback to Cholesky if QR fails (very rare)
+            print(f"QR failed, using Cholesky fallback: {qr_error}")
+            try:
+                I_k = torch.eye(k, device=P.device, dtype=torch.float64)
+                G = (P_fp64.T @ P_fp64) + projector_eps * I_k
+                L = torch.linalg.cholesky(G)
+
+                # Compute E using modern triangular solves
+                rhs = P_fp64.T @ diff_fp64
+                y = torch.linalg.solve_triangular(L, rhs, upper=False)
+                E = torch.linalg.solve_triangular(L.T, y, upper=True).to(P.dtype)
+
+            except RuntimeError as chol_error:
+                print(f"Both QR and Cholesky failed, using pseudo-inverse: {chol_error}")
+                # Last resort: pseudo-inverse
+                P_pinv = torch.linalg.pinv(P_fp64)
+                E = (P_pinv @ diff_fp64).to(P.dtype)
 
         # Cap rank by subspace dimension
         r = min(
@@ -3623,31 +3362,25 @@ class MergeMethods:
             subspace_dim
         )
 
-        if layer_cache is not None and 'Q_e_full' in layer_cache:
-            Q_e = layer_cache['Q_e_full'].to(device=a.device, dtype=a.dtype)
-        else:
-            # Apply data-aligned butterfly orthogonalization in subspace coordinates
-            diff_seed = MergeMethods.stable_seed_from_tensor(E, f"{key}_diff")
-            Q_e = MergeMethods.butterfly_orthogonalize(
-                E, subspace_dim, constraint, a.device,
-                seed=diff_seed, guide=E, iters=boft_iters, step=constraint * boft_step_scale,
-                align_diag_threshold=align_diag_threshold
-            )
-            if layer_cache is not None:
-                layer_cache['Q_e_full'] = Q_e.cpu().to(torch.float16)
+        diff_seed = MergeMethods.stable_seed_from_tensor(E, f"{key}_diff")
 
-        # Low-rank approximation in subspace coordinates
-        Qe_trunc = Q_e[:, :r]  # [subspace_dim, r]
-        subspace_update = Qe_trunc @ (Qe_trunc.T @ E)  # [subspace_dim, in_dim]
+        # Optimal low-rank approximation in subspace coordinates using RSVD
+        if E.shape[1] > 3 * r and E.shape[0] >= r:
+            # Use randomized SVD for wide matrices (more efficient than exact SVD)
+            power_iters = 1 if min(E.shape) > 100 else 0  # Power iterations for large matrices
+            svd_driver = "gesvd" if E.is_cuda else "gesvda"
+            U, S, Vt = svd_lowrank(E, rank=r, iters=power_iters, seed=diff_seed, driver=svd_driver)
+            subspace_update = U * S.unsqueeze(-2) @ Vt  # Optimal rank-r approximation
+        else:
+            # Use exact SVD for small matrices (more accurate)
+            svd_driver = "gesvd" if E.is_cuda else "gesvda"
+            U, S, Vt = torch.linalg.svd(E, full_matrices=False, driver=svd_driver)
+            if S.shape[0] > r:
+                U, S, Vt = U[:, :r], S[:r], Vt[:r, :]
+            subspace_update = U * S.unsqueeze(-2) @ Vt
 
         # Project back to ambient space - update is guaranteed to be in span(P)
         optimal_update = P @ subspace_update  # [out_dim, in_dim]
-
-        # **OPTIONAL: Assert subspace containment for debugging**
-        if __debug__:  # Only in debug mode to avoid performance hit
-            resid = (optimal_update - proj_in_span(P, optimal_update, L)).norm()
-            denom = optimal_update.norm().clamp_min(1e-8)
-            assert resid <= 1e-4 * denom, f"Update leaked out of subspace: {(resid / denom).item():.6f}"
 
         # Merge with data-aligned butterfly-based update
         merged = a_2d + alpha * optimal_update
@@ -3682,27 +3415,30 @@ class MergeMethods:
         return int(hash_obj.hexdigest()[:8], 16) % 2147483647
 
     @staticmethod
-    def butterfly_orthogonalize(x, lora_dim=4, constraint=0.01, device=None, seed=None, guide=None, iters=1, step=None,
-                                align_diag_threshold=4096):
+    def butterfly_orthogonalize(x, key, lora_dim=4, constraint=0.01, device=None,
+                                seed=None, guide=None, iters=1, step=None):
         """
         Creates a data-aligned orthogonal basis using butterfly factorization.
 
         Args:
-            x: Input tensor (used for scaling and dimensions)
-            lora_dim: Controls the complexity of the butterfly factorization
-            constraint: Controls the magnitude of butterfly rotations (0.0 = identity)
-            device: Device to use for computation
-            seed: Random seed for deterministic behavior
-            guide: Tensor to align the basis with (default: x)
-            iters: Number of alignment iterations
-            step: Step size for alignment (default: constraint)
-            align_diag_threshold: Dimension threshold to switch to a diagonal approximation for alignment.
+            x (Tensor): Input tensor to base the orthogonalization on.
+            key (str): Unique identifier for caching computed bases.
+            lora_dim (int): Target low-rank dimension; internally adjusted to power-of-two.
+            constraint (float): Maximum rotation amplitude constraint (0-1).
+            device (torch.device, optional): Compute device.
+            seed (int, optional): Random seed for reproducibility.
+            guide (Tensor, optional): Guidance tensor for alignment.
+            iters (int): Number of alignment iterations.
+            step (float, optional): Step size for alignment iterations.
 
         Returns:
-            Q: Data-aligned orthogonal matrix with butterfly structure
+            Tensor: Orthogonal basis matrix aligned to input data.
         """
         if device is None:
             device = x.device
+
+        # **FIX: Store original dtype for consistency**
+        original_dtype = x.dtype
 
         # Coerce to 2D for all downstream linear algebra
         x2d = x.reshape(x.shape[0], -1)
@@ -3719,21 +3455,34 @@ class MergeMethods:
             gen.manual_seed(seed)
 
         try:
-            block_size, block_num = MergeMethods.butterfly_factor(out_dim, lora_dim)
-            boft_m = sum(int(i) for i in f"{block_num - 1:b}") + 1
+            # **NEW: Use helpers for power-of-two factorization**
+            padded_dim = MergeMethods._next_pow2(out_dim)
+            lora_dim_pow2 = MergeMethods._clamp_lora_dim_pow2(lora_dim, padded_dim)
+            block_size, block_num = MergeMethods.butterfly_factor(padded_dim, lora_dim_pow2)
+            boft_m = int(math.log2(block_num))  # Now guaranteed to be valid
 
             # Initialize butterfly blocks with input-informed scaling
             oft_blocks = MergeMethods.initialize_butterfly_blocks(x, boft_m, block_num, block_size, device, gen)
 
-            # Apply data alignment sweep
+            # Apply data alignment sweep - returns orthogonal blocks directly
             if iters > 0 and step > 0:
-                oft_blocks = MergeMethods.align_butterfly_blocks(
-                    oft_blocks, guide2d, boft_m, block_num, block_size, iters, step, device,
-                    align_diag_threshold=align_diag_threshold
-                )
+                r_blocks = MergeMethods.align_butterfly_blocks(
+                    oft_blocks, guide2d, boft_m, block_num, block_size, iters, step, device, key)
+            else:
+                # Convert initial skew blocks to orthogonal for consistency
+                I = torch.eye(block_size, device=device, dtype=original_dtype)  # **ADD DTYPE**
+                q = oft_blocks - oft_blocks.transpose(-1, -2)
+                try:
+                    r_blocks = (I + q) @ torch.linalg.solve(I - q + 1e-10 * I, I)
+                except Exception:
+                    r_blocks = torch.eye(block_size, device=device, dtype=original_dtype).expand_as(q)  # **ADD DTYPE**
 
-            return MergeMethods.apply_butterfly_transform(x, oft_blocks, boft_m, block_size, block_num, constraint,
-                                             device)
+            # **FIX: Ensure consistent dtype before apply_butterfly_transform**
+            r_blocks = r_blocks.to(dtype=original_dtype)
+            result = MergeMethods.apply_butterfly_transform(x, r_blocks, boft_m, block_size, block_num, device, key)
+
+            # **FIX: Ensure final result matches input dtype**
+            return result.to(dtype=original_dtype)
 
         except Exception as e:
             print(
@@ -3746,22 +3495,36 @@ class MergeMethods:
                 # Apply constraint as magnitude scaling
                 Q_norm = torch.norm(Q, dim=0, keepdim=True)
                 constraint_value = constraint * torch.sqrt(
-                    torch.tensor(guide2d.shape[0], dtype=guide2d.dtype, device=device))
+                    torch.tensor(guide2d.shape[0], dtype=original_dtype, device=device))  # **ADD DTYPE**
                 scale = torch.clamp(constraint_value / (Q_norm + 1e-8), max=1.0)
                 Q = Q * scale
 
-            return Q
+            # **FIX: Ensure fallback result matches input dtype**
+            return Q.to(dtype=original_dtype)
 
     @staticmethod
     def initialize_butterfly_blocks(x, boft_m, block_num, block_size, device, generator=None):
         """
-        Initialize butterfly blocks with input-informed scaling using local generator.
+        Initializes butterfly blocks with anti-symmetric matrices scaled to input properties.
+
+        Args:
+            x (Tensor): Reference tensor for dtype and scaling statistics.
+            boft_m (int): Number of butterfly layers (log2 of block count).
+            block_num (int): Number of blocks in each butterfly layer.
+            block_size (int): Size of each square block matrix.
+            device (torch.device): Compute device.
+            generator (torch.Generator, optional): Random generator for reproducibility.
+
+        Returns:
+            Tensor: Initialized butterfly blocks tensor of shape (boft_m, block_num, block_size, block_size).
         """
-        blocks = torch.zeros(boft_m, block_num, block_size, block_size, device=device)
+        dtype = x.dtype
+
+        blocks = torch.zeros(boft_m, block_num, block_size, block_size,
+                             device=device, dtype=dtype)  # **ADD DTYPE**
 
         with torch.no_grad():
             # Scale initialization based on input tensor characteristics
-            x_norm = torch.norm(x)
             x_mean = torch.mean(torch.abs(x))
 
             # Adaptive scaling based on input statistics
@@ -3770,7 +3533,9 @@ class MergeMethods:
             for i in range(boft_m):
                 for j in range(block_num):
                     # Create anti-symmetric matrices with input-informed scaling
-                    random_vals = torch.randn(block_size, block_size, device=device, generator=generator) * base_scale
+                    random_vals = torch.randn(block_size, block_size,
+                                              device=device, dtype=dtype,
+                                              generator=generator) * base_scale  # **ADD DTYPE**
 
                     # Decay scale with butterfly layer depth for stability
                     layer_scale = 1.0 / (i + 1)
@@ -3781,46 +3546,61 @@ class MergeMethods:
         return blocks
 
     @staticmethod
-    def align_butterfly_blocks(oft_blocks, guide2d, boft_m, block_num, block_size, iters, step, device,
-                               align_diag_threshold=4096):
+    def align_butterfly_blocks(oft_blocks, guide2d, boft_m, block_num, block_size, iters, step, device, key):
         """
-        Align butterfly blocks to guide tensor using blockwise Jacobi-style updates.
+        Align butterfly blocks to a reference data subspace.
+
+        Uses fast Cayley transform steps combined with Newton–Schulz iterations
+        to compute orthogonal rotations that align the blocks to the target data.
+        Supports fallback to Stiefel manifold interpolation for non-square blocks.
 
         Args:
-            oft_blocks: The butterfly blocks to align.
-            guide2d: The 2D tensor to align the basis with.
-            boft_m: Number of butterfly stages.
-            block_num: Number of blocks per stage.
-            block_size: Size of each butterfly block.
-            iters: Number of alignment iterations.
-            step: Step size for alignment.
-            device: Device to use for computation.
-            align_diag_threshold: Dimension threshold to switch to a diagonal approximation.
+            oft_blocks (Tensor): Initial butterfly blocks, skew-symmetric matrices.
+            guide2d (Tensor): Data guiding the alignment.
+            boft_m (int): Number of butterfly factorization stages.
+            block_num (int): Number of butterfly blocks.
+            block_size (int): Size of each block.
+            iters (int): Number of alignment iterations.
+            step (float): Initial alignment step size.
+            device (torch.device): Computation device.
+            key (str): Identifier for caching and logging.
+
+        Returns:
+            Tensor: Series of aligned orthogonal butterfly blocks.
         """
+        original_dtype = oft_blocks.dtype
+
+        def _polar_newton(A: torch.Tensor, iters: int = 2) -> torch.Tensor:
+            """
+            Approximate nearest orthogonal matrix via Newton–Schulz iteration.
+            Assumes A is already near-orthogonal for best convergence.
+            """
+            Q = A
+            I = torch.eye(A.shape[-1], device=A.device, dtype=A.dtype)
+            for _ in range(iters):
+                QTQ = Q.mH @ Q
+                Q = 0.5 * Q @ (3 * I - QTQ)
+            return Q
+
         with torch.no_grad():
-            C = None
-            C_diag = None
-            # **OPTIMIZATION: Skip expensive covariance for very large tensors**
-            if guide2d.shape[0] > align_diag_threshold:
-                # For large tensors, use a more efficient diagonal approximation
-                guide_norms = torch.sum(guide2d * guide2d, dim=1)  # [out_dim]
-                C_diag = torch.diag(guide_norms)
-            else:
-                # Compute full covariance matrix for alignment target
-                C = guide2d @ guide2d.T  # [out_dim, out_dim]
+            # Convert blocks to orthogonal matrices via Cayley transform
+            I = torch.eye(block_size, device=device, dtype=original_dtype)
+            q = oft_blocks - oft_blocks.transpose(-1, -2)  # Make anti-symmetric
 
-            # Apply alignment sweeps
+            # Convert to orthogonal via Cayley: R = (I+Q)(I-Q)^-1
+            try:
+                r = (I + q) @ torch.linalg.solve(I - q + 1e-10 * I, I)
+            except Exception:
+                r = torch.eye(block_size, device=device, dtype=original_dtype).expand_as(q)
+
+            # Apply alignment iterations - work directly with orthogonal matrices
             for iter_idx in range(iters):
-                # Decay step size over iterations
-                current_step = step / (iter_idx + 1)
+                alignment_strength = step / (iter_idx + 1)  # Decay over iterations
 
-                # Process each butterfly stage
                 for i in range(boft_m):
-                    stage_step = current_step / (i + 1)  # Further decay by stage
+                    stage_step = alignment_strength / (i + 1)  # Further decay by stage
 
-                    # Process each block in this stage
                     for j in range(block_num):
-                        # Calculate the index range this block affects
                         start_idx = j * block_size
                         end_idx = min((j + 1) * block_size, guide2d.shape[0])
 
@@ -3829,171 +3609,206 @@ class MergeMethods:
 
                         actual_block_size = end_idx - start_idx
 
-                        # Extract the relevant portion of covariance matrix
-                        if guide2d.shape[0] > align_diag_threshold:
-                            # Use diagonal approximation
-                            assert C_diag is not None
-                            C_block = C_diag[start_idx:end_idx, start_idx:end_idx]
-                        else:
-                            assert C is not None
-                            C_block = C[start_idx:end_idx, start_idx:end_idx]
+                        # Skip degenerate cases
+                        if actual_block_size < 2:
+                            continue
 
-                        # Create anti-symmetric alignment matrix: A = (S - S^T) / 2
-                        A = (C_block - C_block.T) * 0.5
+                        # Get current orthogonal matrix
+                        current_Q = r[i, j, :actual_block_size, :actual_block_size]
 
-                        # Normalize A to prevent explosion
-                        A_norm = torch.norm(A)
-                        if A_norm > 1e-8:
-                            A = A / A_norm
+                        # Create target alignment from guide data
+                        guide_block = guide2d[start_idx:end_idx]
 
-                        # Add alignment nudge to existing block
-                        if actual_block_size == block_size:
-                            oft_blocks[i, j] += A * stage_step
-                        else:
-                            # Handle partial blocks at boundaries
-                            oft_blocks[i, j][:actual_block_size, :actual_block_size] += A * stage_step
+                        if guide_block.shape[1] >= actual_block_size:
+                            # Use QR to get orthogonal target from guide
+                            target_Q, _ = torch.linalg.qr(guide_block[:, :actual_block_size], mode='reduced')
 
-                        # Apply per-block constraint to prevent explosion
-                        block_norm = torch.norm(oft_blocks[i, j])
-                        max_norm = 0.1 / (i + 1)  # Decreasing constraint by stage
-                        if block_norm > max_norm:
-                            oft_blocks[i, j] = oft_blocks[i, j] * (max_norm / block_norm)
+                            # Enforce SO(n) target (avoid reflections)
+                            sign = torch.linalg.slogdet(target_Q)
+                            if sign.sign < 0:
+                                target_Q = target_Q.clone()
+                                target_Q[:, -1] = -target_Q[:, -1]
 
-        return oft_blocks
+                            try:
+                                if current_Q.shape[0] == current_Q.shape[1]:
+                                    # **NEW: Fast Cayley step instead of fractional matrix power**
+                                    R_rel = target_Q @ current_Q.mH
+
+                                    # Short backtracking with Cayley update
+                                    max_step = 0.1 / (i + 1)
+                                    tau = min(stage_step, max_step)
+
+                                    for _ in range(4):  # Reduced from 8 to 4 attempts
+                                        # Cayley step: solve (I - τS) X = (I + τS)
+                                        S = 0.5 * (R_rel - R_rel.mH)  # skew-symmetric part
+                                        I_loc = torch.eye(actual_block_size, device=current_Q.device,
+                                                          dtype=current_Q.dtype)
+
+                                        try:
+                                            update = torch.linalg.solve(I_loc - tau * S, I_loc + tau * S)
+                                            trial = update @ current_Q
+
+                                            # 2-step Newton–Schulz polar retraction (replaces SVD)
+                                            trial = _polar_newton(trial, iters=2)
+
+                                            step_norm = torch.linalg.matrix_norm(trial - current_Q)
+
+                                            if step_norm <= max_step or tau < 1e-6:
+                                                aligned_Q = trial
+                                                break
+                                            tau *= 0.5
+                                        except Exception:
+                                            # If solve fails, try smaller step
+                                            tau *= 0.5
+                                            if tau < 1e-6:
+                                                aligned_Q = current_Q
+                                                break
+                                    else:
+                                        aligned_Q = trial
+                                else:
+                                    # Tall block: Stiefel geodesic (rectangular case)
+                                    # Keep existing stiefel_interpolate for non-square blocks
+                                    aligned_Q = stiefel_interpolate(
+                                        current_Q.to(torch.float64),
+                                        target_Q.to(torch.float64),
+                                        stage_step,
+                                        eps=1e-8,
+                                        max_iters=50
+                                    ).to(current_Q.dtype)
+
+                                # **FIX: Ensure aligned_Q has correct dtype before assignment**
+                                r[i, j, :actual_block_size, :actual_block_size] = aligned_Q.to(dtype=original_dtype)
+
+                            except (RuntimeError, AssertionError):
+                                # Fallback: keep current block
+                                r[i, j, :actual_block_size, :actual_block_size] = current_Q
+
+            # **FIX: Ensure final result has correct dtype**
+            return r.to(dtype=original_dtype)
 
     @staticmethod
     def butterfly_factor(dimension: int, factor: int = -1) -> tuple[int, int]:
         """
-        Factorize dimension into butterfly-compatible factors.
-        Returns (block_size, block_num) where block_num is a power of 2.
+        Compute butterfly factorization parameters.
+
+        Given a dimension and optional factor, computes block size and block number
+        that are compatible with butterfly matrix structure.
+        Ensures `block_num` is a power of two, suitable for FFT-like operations.
+
+        Args:
+            dimension (int): Input dimension to factorize.
+            factor (int): Desired factor; if <= 0, a default factor based on log scale is used.
+
+        Returns:
+            tuple[int, int]: (block_size, block_num) representing the factorization.
         """
-        # Fix for dimension 1 to prevent negative binary formatting
         if dimension <= 1:
             return max(1, dimension), 1
 
-        # If factor is negative, use a reasonable default
+        # Default factor if not provided
         if factor <= 0:
-            factor = 2 ** max(1, int(math.log2(dimension) / 4))
+            factor = 2 ** max(1, int(math.log2(dimension) // 4))
 
-        # Find a factorization where both factors are powers of 2 if possible
-        n = 1
-        while n * 2 <= dimension:
-            n *= 2
+        # Clamp factor to a power-of-two divisor of dimension
+        f = 1
+        while (f << 1) <= factor and (dimension % (f << 1) == 0):
+            f <<= 1
 
-        # If dimension is a power of 2, split it evenly
-        if n == dimension:
-            block_size = max(2, n // factor) if factor > 0 else int(math.sqrt(n))
-            block_num = max(1, dimension // block_size)  # Ensure >= 1
-            return block_size, block_num
+        block_size = max(2, dimension // f)
+        block_num = max(1, dimension // block_size)
 
-        # Otherwise, find valid factorization
-        if dimension % 2 == 0:
-            # For even dimensions, find a power-of-2 block_num that divides dimension
-            block_num = 1
-            while block_num * 2 <= factor and dimension % (block_num * 2) == 0:
-                block_num *= 2
-            block_size = dimension // block_num
-            return block_size, max(1, block_num)  # Ensure >= 1
-        else:
-            # For odd dimensions, block_size must be the dimension itself
-            return dimension, 1
+        # Force block_num to power-of-two (defensive)
+        while block_num & (block_num - 1):  # Check if not power of 2
+            block_size <<= 1
+            block_num = dimension // block_size
+            if block_size > dimension:
+                block_size = dimension
+                block_num = 1
+                break
+
+        return block_size, block_num
 
     @staticmethod
-    def apply_butterfly_transform(x, oft_blocks, boft_m, block_size, block_num, constraint, device):
+    def apply_butterfly_transform(x, r_blocks, boft_m, block_size, block_num, device, key):
         """
-        Apply butterfly orthogonal transformation to input x, preserving the
-        elegant approach from the original BOFT implementation.
+        Apply butterfly orthogonal transformation using precomputed orthogonal blocks.
+
+        Transforms input tensor using a butterfly factorization approach that preserves
+        orthogonality through staged block-wise operations on a power-of-two padded grid.
+
+        Args:
+            x (Tensor): Input tensor to determine output dimensions and dtype.
+            r_blocks (Tensor): Precomputed orthogonal blocks with shape
+                              (boft_m, block_num, block_size, block_size).
+            boft_m (int): Number of butterfly stages (log2 of block_num).
+            block_size (int): Size of individual transformation blocks.
+            block_num (int): Number of blocks in the butterfly factorization.
+            device (torch.device): Device for tensor operations.
+            key (str): Layer identifier for debugging/logging.
+
+        Returns:
+            Tensor: Orthogonal transformation matrix of shape (x.shape[0], x.shape[0]).
         """
-        # Identity matrix for Cayley transform
-        I = torch.eye(block_size, device=device)
-
-        # Make blocks anti-symmetric first
-        q = oft_blocks - oft_blocks.transpose(-1, -2)
-
-        # Apply constraint per block rather than globally
-        if constraint > 0:
-            constraint_value = constraint * x.shape[0] / (boft_m * block_num)  # Scale by number of blocks
-            for i in range(boft_m):
-                for j in range(block_num):
-                    block_norm = torch.norm(q[i, j]) + 1e-8
-                    if block_norm > constraint_value:
-                        q[i, j] = q[i, j] * constraint_value / block_norm
-
-        # Convert to orthogonal matrices via Cayley transform: R = (I+Q)(I-Q)^-1
-        try:
-            r = (I + q) @ torch.linalg.solve(I - q + 1e-10 * I, I)
-        except Exception:  # Fallback for LinAlgError
-            # Fallback if matrix is singular
-            r = torch.eye(block_size, device=device).expand_as(q)
-
-        # Create identity matrix to handle arbitrary dimensions
         out_dim = x.shape[0]
-        padded_dim = block_size * block_num
+        min_butterfly_dim = block_size * block_num
 
-        if out_dim > padded_dim:
-            # Matrix is bigger than butterfly factorization can handle
-            # Create full-size identity, but only transform the first padded_dim dimensions
-            result = torch.eye(out_dim, device=device)
-            transform_size = padded_dim
-            print(f"DEBUG: Large matrix {out_dim} > {padded_dim}, transforming first {transform_size} dims")
-        else:
-            # Matrix fits within butterfly factorization
-            # Create padded identity, transform all actual dimensions
-            result = torch.eye(padded_dim, device=device)
-            transform_size = out_dim
+        # True padding: work on a power-of-two grid >= out_dim
+        padded_dim = 1
+        while padded_dim < out_dim:
+            padded_dim <<= 1
 
-        # Safety check
-        transform_size = max(1, min(transform_size, padded_dim, out_dim))
+        # Ensure we have at least the butterfly coverage; extra dims are identity
+        working_dim = max(min_butterfly_dim, padded_dim)
 
-        # Apply butterfly transformation using original approach
-        for i in range(boft_m):
-            bi = r[i]  # [block_num, block_size, block_size]
-            g = 2
-            k = 2 ** i * (block_size // 2)
+        # Initialize with identity on the working dimension
+        result = torch.eye(working_dim, device=device, dtype=x.dtype)
 
-            # Only transform the active part of the matrix
-            active = result[:transform_size, :transform_size]
+        # Conditions guaranteed true with padded factorization
+        for stage in range(boft_m):
+            stage_blocks = r_blocks[stage]
 
-            # Reshape for butterfly application - with proper padding handling
-            try:
-                # Try the elegant reshape approach
-                reshaped = active.unflatten(-1, (-1, g, k))
-                reshaped = reshaped.transpose(-2, -1).flatten(-3)
-                reshaped = reshaped.unflatten(-1, (-1, block_size))
+            # Calculate stride and step for this stage (powers of 2)
+            stride = 1 << stage
+            step_size = max(1, block_size >> stage)
 
-                # Apply the butterfly block - only to blocks that fit
-                valid_blocks = min(reshaped.shape[-2], bi.shape[0])
-                transformed = torch.zeros_like(reshaped)
-                transformed[..., :valid_blocks, :] = torch.einsum(
-                    "b i j, b j ... -> b i ...",
-                    bi[:valid_blocks],
-                    reshaped[..., :valid_blocks, :]
-                )
+            # Elegant reshape/transpose path (no condition checks needed)
+            temp = result.unflatten(-1, (-1, 2, stride * step_size))
+            temp = temp.transpose(-2, -1).flatten(-3)
+            temp = temp.unflatten(-1, (-1, block_size))
 
-                # Reshape back
-                transformed = transformed.flatten(-2)
-                transformed = transformed.unflatten(-1, (-1, k, g))
-                transformed = transformed.transpose(-2, -1).flatten(-3)
+            # Apply block transformations using orthogonal matrices
+            valid_blocks = min(temp.shape[-2], stage_blocks.shape[0])
+            for j in range(valid_blocks):
+                if temp.shape[-1] >= stage_blocks.shape[-1]:
+                    # **FIXED: Right-multiply with conjugate transpose**
+                    temp[..., j, :] = temp[..., j, :] @ stage_blocks[j].mH
 
-                # Update the result
-                result[:transform_size, :transform_size] = transformed
+            # Reshape back
+            temp = temp.flatten(-2)
+            temp = temp.unflatten(-1, (-1, stride * step_size, 2))
+            temp = temp.transpose(-2, -1).flatten(-3)
+            result = temp
 
-            except RuntimeError:
-                # If reshape fails due to dimension issues, fall back to block-by-block
-                # This preserves the correct transformation even when dimensions don't align perfectly
-                for j in range(min(block_num, transform_size // block_size)):
-                    start = j * block_size
-                    end = min((j + 1) * block_size, transform_size)
-                    if end <= start:
-                        continue
+        # Extract the portion corresponding to original dimensions
+        final_result = torch.eye(out_dim, device=device, dtype=x.dtype)
+        copy_dim = min(out_dim, working_dim)
+        final_result[:copy_dim, :copy_dim] = result[:copy_dim, :copy_dim]
 
-                    # Apply transformation to this block
-                    block = result[start:end, start:end]
-                    result[start:end, start:end] = bi[j % bi.shape[0], :end - start, :end - start] @ block
+        return final_result
 
-        # Return only the part corresponding to original dimensions
-        return result[:out_dim, :out_dim].to(x.dtype)
+    def _next_pow2(n: int) -> int:
+        """Return the next power of 2 greater than or equal to n"""
+        p = 1
+        while p < n:
+            p <<= 1
+        return p
 
+    def _clamp_lora_dim_pow2(lora_dim: int, padded_dim: int) -> int:
+        """Choose largest power-of-two ≤ lora_dim that divides padded_dim"""
+        d = 1
+        while (d << 1) <= lora_dim and (padded_dim % (d << 1) == 0):
+            d <<= 1
+        return d
 
     # @staticmethod
     # @merge_method
@@ -5905,7 +5720,7 @@ class MergeMethods:
             eps: Parameter(float) = 1e-6,
             maxiter: Parameter(int) = 150,
             ftol: Parameter(float) = 1e-22,
-            weight_decay: Parameter(float) = 0.0218, # .0218,
+            weight_decay: Parameter(float) = 0.0218,  # .0218,
             min_agreement: Parameter(float) = 0.3,
             chunk_size: Parameter(int) = 4,
             memory_safety_margin: Parameter(float) = 0.9,  # Default to 90% usage

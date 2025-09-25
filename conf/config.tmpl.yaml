@@ -159,6 +159,7 @@ scorer_alt_location: # Optional alternative paths for specific scorer models.
   #   model_name: ImageReward.pt
   #   model_dir: path/to/your/imagereward/folder
 scorer_print_individual: True # Print the score from each individual scorer in the console.
+scorer_lazy_load_list: [] # List of large scorers to load on-demand to save VRAM (e.g., [hpsv3, imagereward]).
 # Optional: Add this to control how much uncertainty (sigma) penalizes the score.
 # A higher value means a stronger penalty. Default is 0.5 if not specified.
 hpsv3_uncertainty_penalty: 0.5

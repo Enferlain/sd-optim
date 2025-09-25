@@ -45,8 +45,121 @@ from omegaconf import DictConfig, OmegaConf  # If reading from Hydra config
 
 logger = logging.getLogger(__name__)
 
+# Map precision strings to torch.dtype objects
+precision_mapping = {
+    "fp16": torch.float16,
+    "bf16": torch.bfloat16,
+    "fp32": torch.float32,
+    "fp64": torch.float64,
+}
 
-# Define T if not already imported from merge_methods
+
+#####################################
+### --- Run Config validation --- ###
+#####################################
+def validate_run_config(cfg: DictConfig) -> None: # <-- Changed return type to None
+    """
+    Performs comprehensive validation of the run configuration.
+    Raises an error if any configuration is invalid.
+    """
+    logger.info("Validating run configuration...")
+
+    # --- Core Path Validation ---
+    models_dir_str = cfg.get("models_dir")
+    if not models_dir_str:
+        raise ValueError("'models_dir' must be set in your config.yaml.")
+    models_dir = Path(models_dir_str).resolve()
+    if not models_dir.is_dir():
+        raise FileNotFoundError(f"The specified models_dir is invalid or not found: {models_dir}")
+
+    # --- Mode-Specific Validation ---
+    if cfg.optimization_mode == "merge":
+        if not cfg.model_paths or len(cfg.model_paths) < 1:
+            raise ValueError("For 'merge' mode, 'model_paths' must contain at least one model path.")
+        if not cfg.merge_method:
+            raise ValueError("Configuration missing required field: 'merge_method' for 'merge' mode.")
+
+    elif cfg.optimization_mode == "recipe":
+        recipe_cfg = cfg.get('recipe_optimization')
+        if not recipe_cfg:
+            raise ValueError("`optimization_mode` is 'recipe', but 'recipe_optimization' section is missing.")
+
+        recipe_path_str = recipe_cfg.get("recipe_path")
+        target_nodes_raw = recipe_cfg.get("target_nodes")  # <-- Get the raw value
+        target_params_list = recipe_cfg.get("target_params")
+
+        if not recipe_path_str: raise ValueError("Recipe optimization requires 'recipe_path'.")
+        if not target_nodes_raw: raise ValueError("Recipe optimization requires 'target_nodes'.")
+        if not target_params_list: raise ValueError("Recipe optimization requires 'target_params'.")
+
+        recipe_path = Path(recipe_path_str)
+        if not recipe_path.exists():
+            raise FileNotFoundError(f"Recipe file does not exist: {recipe_path}")
+
+        try:
+            # --- THIS IS THE NEW, FLEXIBLE LOGIC ---
+
+            # 1. Normalize the 'target_nodes' input into a list
+            target_nodes_list = []
+            if isinstance(target_nodes_raw, str):
+                target_nodes_list = [target_nodes_raw]
+            elif isinstance(target_nodes_raw, (list, ListConfig)):
+                target_nodes_list = list(target_nodes_raw)  # Convert from ListConfig if needed
+            else:
+                raise TypeError(f"target_nodes must be a string or a list, but got {type(target_nodes_raw)}")
+
+            logger.debug(f"Performing advanced validation on recipe for targets: {target_nodes_list}")
+            original_recipe_text = recipe_path.read_text(encoding="utf-8")
+            all_lines = original_recipe_text.strip().split('\n')
+
+            # 2. Loop through each target node and validate it
+            for target_node_str in target_nodes_list:
+                target_node_idx = int(target_node_str.strip('&'))
+
+                if not (0 <= target_node_idx < len(all_lines) - 1):
+                    raise IndexError(f"target_nodes entry '{target_node_str}' is out of bounds for the recipe.")
+
+                target_line = all_lines[target_node_idx + 1]
+                match = re.search(r'merge\s+"([^"]+)"', target_line)
+                if not match:
+                    raise TypeError(f"Target node {target_node_str} does not appear to be a valid merge line.")
+
+                method_name = match.group(1)
+                method_obj = resolve_merge_method(method_name)
+
+                valid_params = set(method_obj.get_param_names().kwargs.keys())
+                for param_name in target_params_list:
+                    if param_name not in valid_params:
+                        raise ValueError(
+                            f"For target '{target_node_str}', parameter '{param_name}' is not valid for method '{method_obj.identifier}'. "
+                            f"Valid params are: {sorted(list(valid_params))}"
+                        )
+            logger.debug("Advanced recipe validation successful for all target nodes.")
+
+        except (ValueError, IndexError, TypeError, FileNotFoundError) as e:
+            raise ValueError(f"Recipe configuration validation failed: {e}") from e
+        except Exception as e:
+            logger.error(f"Unexpected error validating recipe file: {e}", exc_info=True)
+            raise ValueError("Unexpected error during recipe validation.") from e
+
+        if cfg.get("model_paths"):
+            logger.info("NOTE: In 'recipe' mode, `model_paths` is only used to locate the `models_dir`.")
+
+    elif cfg.optimization_mode == "layer_adjust":
+        if not cfg.model_paths or len(cfg.model_paths) < 1:
+            raise ValueError("`model_paths` must contain at least one model for 'layer_adjust' mode.")
+    else:
+        raise ValueError(f"Invalid optimization_mode: '{cfg.optimization_mode}'")
+
+    # --- Global Validation ---
+    if not hasattr(cfg, 'merge_dtype') or cfg.merge_dtype not in precision_mapping:
+        raise ValueError(
+            f"Invalid 'merge_dtype': '{cfg.get('merge_dtype')}'. Must be one of {list(precision_mapping.keys())}")
+    if not hasattr(cfg, 'save_dtype') or cfg.save_dtype not in precision_mapping:
+        raise ValueError(
+            f"Invalid 'save_dtype': '{cfg.get('save_dtype')}'. Must be one of {list(precision_mapping.keys())}")
+
+    logger.info("Configuration successfully validated.")
 
 
 #######################################
@@ -349,6 +462,48 @@ def get_info_from_target_node(root_node: recipe_nodes.RecipeNode, target_node_re
         "method_name": target_node.merge_method.identifier,
         "model_names": model_names,
     }
+
+
+class CacheInjectorVisitor(RecipeVisitor):
+    """
+    A visitor that performs a deep traversal of a recipe graph and injects
+    a cache object into every single MergeRecipeNode it finds.
+    """
+
+    def __init__(self, cache: Dict):
+        self.cache = cache
+        # Keep track of visited nodes to avoid infinite loops in complex graphs
+        self.visited = set()
+
+    def visit(self, node: RecipeNode) -> RecipeNode:
+        """Helper to handle traversal and avoid re-visiting nodes."""
+        if node not in self.visited:
+            self.visited.add(node)
+            node.accept(self)
+        return node
+
+    def visit_model(self, node: ModelRecipeNode):
+        # Models don't have caches, nothing to do here.
+        pass
+
+    def visit_literal(self, node: LiteralRecipeNode):
+        # Literals don't have caches, but they might contain other nodes.
+        if isinstance(node.value, dict):
+            for value in node.value.values():
+                if isinstance(value, RecipeNode):
+                    self.visit(value)
+
+    def visit_merge(self, node: MergeRecipeNode):
+        # This is the important part!
+
+        # 1. First, recursively visit all the children to ensure the whole tree is covered.
+        for arg in node.args:
+            self.visit(arg)
+        for kwarg in node.kwargs.values():
+            self.visit(kwarg)
+
+        # 2. NOW, inject the cache into the current merge node.
+        node.set_cache(self.cache)
 
 
 #######################

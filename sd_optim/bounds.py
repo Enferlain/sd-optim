@@ -22,57 +22,12 @@ BoundsInfo = Dict[str, Dict[str, Any]]
 
 
 class ParameterHandler:
-    def __init__(self, cfg: DictConfig):
+    def __init__(self, cfg: DictConfig, base_model_config: sd_mecha.extensions.model_configs.ModelConfig,
+                 custom_block_config: sd_mecha.extensions.model_configs.ModelConfig | None):
         self.cfg = cfg
-        if not cfg.model_paths: raise ValueError("'model_paths' cannot be empty.")
-
-        self.base_model_config: Optional[model_configs.ModelConfig] = None
-        representative_model_path_str = cfg.model_paths[0]
-        logger.info(f"Merger: Inferring base ModelConfig from: {representative_model_path_str}")
-        try:
-            self.models_dir = Path(representative_model_path_str).resolve().parent
-            if not self.models_dir.is_dir(): raise FileNotFoundError(f"Merger: Dir not found: {self.models_dir}")
-            logger.info(f"Merger: Determined models directory: {self.models_dir}")
-
-            rep_model_node: RecipeNode = sd_mecha.model(representative_model_path_str)
-            with sd_mecha.open_input_dicts(rep_model_node, [self.models_dir]):
-                if isinstance(rep_model_node, ModelRecipeNode) and rep_model_node.state_dict:
-                    # --- MODIFICATION START ---
-                    # infer_model_configs now returns List[Set[ModelConfig]]
-                    inferred_sets = sd_mecha.infer_model_configs(rep_model_node.state_dict.keys())
-                    if inferred_sets:
-                        # Get the set with the highest affinity (first element)
-                        best_set = inferred_sets[0]
-                        # If there's only one config in the best set, use it
-                        if len(best_set) == 1:
-                            self.base_model_config = next(iter(best_set))
-                            logger.info(f"Merger: Inferred base ModelConfig: {self.base_model_config.identifier}")
-                        else:
-                            # Handle ambiguity if multiple configs match equally well
-                            config_names = {c.identifier for c in best_set}
-                            logger.warning(
-                                f"Merger: Ambiguous base ModelConfig inferred for {representative_model_path_str}. Possible matches: {config_names}. Picking first one arbitrarily.")
-                            # You might want more sophisticated logic here, e.g., check against a preferred list
-                            self.base_model_config = next(iter(best_set))  # Pick first for now
-                    # --- MODIFICATION END ---
-                    else:
-                        raise ValueError(f"Merger: Cannot infer ModelConfig for {representative_model_path_str}")
-                else:
-                    raise ValueError(f"Merger: Cannot load dictionary for {representative_model_path_str}")
-        except Exception as e:
-            logger.error(f"Merger: Error inferring base config or models_dir: {e}", exc_info=True)
-            raise ValueError("Merger could not determine base ModelConfig or models directory.") from e
-
-        # Load Custom Config remains the same...
-        self.custom_block_config_id = self.cfg.optimization_guide.get("custom_block_config_id")
-        self.custom_block_config = None
-        if self.custom_block_config_id:
-            try:
-                self.custom_block_config = model_configs.resolve(self.custom_block_config_id)
-                logger.info(f"Successfully loaded custom block ModelConfig: {self.custom_block_config_id}")
-            except ValueError as e:
-                logger.error(f"Could not resolve custom_block_config_id '{self.custom_block_config_id}': {e}.")
-                raise ValueError(f"Invalid custom_block_config_id: {self.custom_block_config_id}") from e
+        self.base_model_config = base_model_config
+        self.custom_block_config = custom_block_config
+        logger.info("ParameterHandler initialized with pre-loaded model configs.")
 
         # --- REMOVED self.param_names = self._get_optimizable_parameter_names() ---
 

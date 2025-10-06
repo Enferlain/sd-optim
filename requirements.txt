@@ -15,6 +15,7 @@ bayesian-optimization==1.5.1  # Keep if you want to retain BayesOpt as an option
 optuna                   # ADDED: For Optuna optimizer support
 optuna-dashboard         # Realtime dashboard for optuna
 optuna-fast-fanova       # Recommended Optuna dependency
+cmaes                    # Needed for Optuna sampler
 # gunicorn               # REMOVED/Confirmed Commented: Causes issues on Windows for optuna-dashboard
 # hyperopt               # Keep if you plan to add Hyperopt later
 

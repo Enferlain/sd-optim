@@ -278,14 +278,22 @@ class Optimizer:
             logger.error("Halting optimization due to unrecoverable setup error.")
             # Re-raising the exception will crash the program and stop Optuna.
             raise config_error
-        except Exception as e_merge:
-            # This will now only catch other, more general runtime errors.
-            logger.error(f"A non-fatal error occurred during model processing: {e_merge}", exc_info=True)
-            return 0.0  # Return low score for this specific trial on non-config errors
+
+        except Exception as e:
+            # --- THIS IS THE PART WE CHANGE ---
+            logger.error(f"A runtime error occurred during the trial: {e}", exc_info=True)
+            logger.error("Halting optimization because fail_on_error is enabled.")
+
+            # Instead of returning 0.0, we re-raise the exception.
+            # This will stop the Optuna study.
+            raise e
+            # --- END OF CHANGE ---
 
         if not model_path or not model_path.exists():
-            logger.error(f"Model processing failed to produce a valid file at {model_path}")
-            return 0.0
+            # Instead of just logging and returning, we raise a critical error.
+            error_message = f"CRITICAL: Model processing finished but the output file was not created at '{model_path}'. Halting."
+            logger.error(error_message)
+            raise RuntimeError(error_message)  # This will crash the program.
 
         # This is the most critical point to free up VRAM.
         logger.info("Performing immediate post-merge memory cleanup before image generation...")

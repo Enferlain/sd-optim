@@ -875,7 +875,12 @@ class Merger:
 
         if not isinstance(target_node, MergeRecipeNode):
             raise TypeError(f"Target node {target_node_ref} is not a merge node.")
-        valid_params = set(target_node.merge_method.get_param_names().kwargs.keys())
+
+        # --- FIX IS HERE! ---
+        param_names = target_node.merge_method.get_param_names()
+        valid_params = set(param_names.args) | set(param_names.kwargs.keys())
+        # --- END FIX ---
+
         for param_name in recipe_cfg.target_params:
             if param_name not in valid_params:
                 raise ValueError(

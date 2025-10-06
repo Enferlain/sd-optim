@@ -216,6 +216,11 @@ class OptunaOptimizer(Optimizer):
                 "inc_popsize": sampler_config.get("inc_popsize", 2),  # Population increase factor for restarts
                 "use_separable_cma": sampler_config.get("use_separable_cma", False),  # For high dimensions
                 "lr_adapt": sampler_config.get("lr_adapt", False),  # Learning rate adaptation
+                # --- NEWLY ADDED PARAMETERS from Optuna documentation ---
+                "x0": sampler_config.get("x0", None),  # Initial parameter values
+                "consider_pruned_trials": sampler_config.get("consider_pruned_trials", False),  # Consider pruned trials
+                "with_margin": sampler_config.get("with_margin", False),  # Use CMA-ES with margin
+                # Note: source_trials is not configurable from YAML as it requires actual FrozenTrial objects
                 **sampler_kwargs
             }
             sampler = CmaEsSampler(**cmaes_kwargs)
@@ -262,8 +267,28 @@ class OptunaOptimizer(Optimizer):
                 "crossover_prob": sampler_config.get("crossover_prob", 0.9),
                 "swapping_prob": sampler_config.get("swapping_prob", 0.5),
                 "warn_independent_sampling": sampler_config.get("warn_independent_sampling", True),
-                **sampler_kwargs
+                # --- NEWLY ADDED PARAMETERS from Optuna documentation ---
+                "constraints_func": sampler_config.get("constraints_func", None),  # Constraint function for optimization
+                "elite_population_selection_strategy": sampler_config.get("elite_population_selection_strategy", None),  # Elite selection strategy
+                "child_generation_strategy": sampler_config.get("child_generation_strategy", None),  # Child generation strategy
+                "after_trial_strategy": sampler_config.get("after_trial_strategy", None),  # After trial strategy
+                "seed": sampler_kwargs.get("seed")  # Use only the seed from sampler_kwargs
             }
+            # Handle crossover separately as it requires specific import
+            crossover_config = sampler_config.get("crossover", None)
+            if crossover_config is not None:
+                try:
+                    # Import the crossover class dynamically
+                    from optuna.samplers.nsgaii import BaseCrossover
+                    if isinstance(crossover_config, str):
+                        # Try to get the crossover class by name
+                        import optuna.samplers.nsgaii as nsgaii_module
+                        crossover_class = getattr(nsgaii_module, crossover_config)
+                        nsgaii_kwargs["crossover"] = crossover_class()
+                    elif isinstance(crossover_config, BaseCrossover):
+                        nsgaii_kwargs["crossover"] = crossover_config
+                except (ImportError, AttributeError) as e:
+                    logger.warning(f"Could not set crossover '{crossover_config}': {e}")
             sampler = NSGAIISampler(**nsgaii_kwargs)
             logger.warning("Using NSGA-II Sampler - primarily for multi-objective optimization.")
             logger.info(f"NSGA-II options: {nsgaii_kwargs}")

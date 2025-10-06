@@ -85,7 +85,7 @@ def validate_run_config(cfg: DictConfig) -> None: # <-- Changed return type to N
             raise ValueError("`optimization_mode` is 'recipe', but 'recipe_optimization' section is missing.")
 
         recipe_path_str = recipe_cfg.get("recipe_path")
-        target_nodes_raw = recipe_cfg.get("target_nodes")  # <-- Get the raw value
+        target_nodes_raw = recipe_cfg.get("target_nodes")
         target_params_list = recipe_cfg.get("target_params")
 
         if not recipe_path_str: raise ValueError("Recipe optimization requires 'recipe_path'.")
@@ -97,14 +97,11 @@ def validate_run_config(cfg: DictConfig) -> None: # <-- Changed return type to N
             raise FileNotFoundError(f"Recipe file does not exist: {recipe_path}")
 
         try:
-            # --- THIS IS THE NEW, FLEXIBLE LOGIC ---
-
-            # 1. Normalize the 'target_nodes' input into a list
             target_nodes_list = []
             if isinstance(target_nodes_raw, str):
                 target_nodes_list = [target_nodes_raw]
             elif isinstance(target_nodes_raw, (list, ListConfig)):
-                target_nodes_list = list(target_nodes_raw)  # Convert from ListConfig if needed
+                target_nodes_list = list(target_nodes_raw)
             else:
                 raise TypeError(f"target_nodes must be a string or a list, but got {type(target_nodes_raw)}")
 
@@ -112,7 +109,6 @@ def validate_run_config(cfg: DictConfig) -> None: # <-- Changed return type to N
             original_recipe_text = recipe_path.read_text(encoding="utf-8")
             all_lines = original_recipe_text.strip().split('\n')
 
-            # 2. Loop through each target node and validate it
             for target_node_str in target_nodes_list:
                 target_node_idx = int(target_node_str.strip('&'))
 
@@ -127,7 +123,11 @@ def validate_run_config(cfg: DictConfig) -> None: # <-- Changed return type to N
                 method_name = match.group(1)
                 method_obj = resolve_merge_method(method_name)
 
-                valid_params = set(method_obj.get_param_names().kwargs.keys())
+                # --- FIX: Combine both regular and keyword-only arguments ---
+                param_names = method_obj.get_param_names()
+                valid_params = set(param_names.args) | set(param_names.kwargs.keys())
+                # --- END FIX ---
+
                 for param_name in target_params_list:
                     if param_name not in valid_params:
                         raise ValueError(
@@ -160,6 +160,22 @@ def validate_run_config(cfg: DictConfig) -> None: # <-- Changed return type to N
             f"Invalid 'save_dtype': '{cfg.get('save_dtype')}'. Must be one of {list(precision_mapping.keys())}")
 
     logger.info("Configuration successfully validated.")
+
+
+def _get_valid_params_for_node(node: MergeRecipeNode) -> List[str]:
+    """
+    Correctly inspects an sd-mecha MergeRecipeNode and returns ALL
+    valid keyword parameter names.
+    """
+    if not isinstance(node, MergeRecipeNode):
+        return []
+
+    # sd-mecha's MergeMethod object has a helper for this!
+    # It correctly combines regular and keyword-only arguments.
+    param_names = node.merge_method.get_param_names()
+
+    # We only care about keyword arguments that can be optimized
+    return list(param_names.kwargs.keys())
 
 
 #######################################

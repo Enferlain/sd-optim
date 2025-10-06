@@ -101,34 +101,88 @@ optimizer:
       minimum_window: 0.0
 
   # --- Settings specific to 'optuna' optimizer ---
-  optuna_config:
-    storage_dir: optuna_db # Folder where Optuna's study database files (.db) will be saved.
-    resume_study_name: null # To resume a specific study, provide its name here (e.g., "run_20250612_191003_tpe"). Set to null for new runs.
-    use_pruning: False # Enable Optuna trial pruning to stop unpromising trials early.
-    pruner_type: median # Pruner type: 'median' or 'successive_halving'.
-    early_stopping: False # Enable early stopping for the entire study if no improvement is seen.
-    patience: 10 # Number of trials without improvement before stopping the study.
-    min_improvement: 0.001 # Minimum score increase required to reset the patience counter.
+  optuna_config: # NEW Sub-section
+    storage_dir: optuna_db # Folder to save study databases to
+    # If this is null, a new study is ALWAYS created.
+    resume_from_study: null # Example: "run_20250702_auto_tpe"
+    # This will copy the parent's trials into a new study with a new DB file.
+    # This is how you continue an experiment with different scorers.
+    fork_study: false
+    use_pruning: False       # Enable Optuna trial pruning (True/False)
+    pruner_type: median      # Pruner type: median, successive_halving
+    early_stopping: False    # Enable early stopping (True/False)
+    patience: 10             # Trials without improvement before stopping
+    min_improvement: 0.001   # Minimum score increase to reset patience
     n_jobs: 1 # Number of parallel jobs for Optuna. >1 can speed up optimization but is EXPERIMENTAL and may cause issues.
     sampler:
-      type: tpe # Sampler algorithm: tpe, random, cmaes, gp, qmc, grid.
-      # --- TPE specific (Tree-structured Parzen Estimator) ---
-      multivariate: True # Use multivariate TPE, can capture correlations between parameters.
-      group: True # Group parameters together for optimization.
-      # warn_independent_sampling: True
-      # constant_liar: False
+      type: tpe              # Sampler type: tpe, random, cmaes, gp, qmc, grid, nsgaii, botorch
+      # --- TPE specific ---
+      multivariate: True
+      group: True
+      constant_liar: True
+      warn_independent_sampling: True
+      n_ei_candidates: 48    # Number of candidate points (increase for better exploration, e.g., 48 for 40-100 params)
+      # gamma: null            # Good/bad threshold function (null = auto, or callable function)
+      # prior_weight: 1.0      # Weight of prior distributions
+      consider_magic_clip: True  # Numerical stability for extreme values
+      consider_endpoints: False  # Whether to consider parameter bounds as candidates
+
       # --- CMA-ES specific ---
-      # restart_strategy: 'ipop' # Strategy for restarting the sampler: 'ipop', 'bipop', or null.
-      # sigma0: 0.1 # Initial step-size.
-      # --- QMC specific (Quasi-Monte Carlo) ---
-      # qmc_type: 'sobol' # 'sobol', 'halton', or 'lhs'.
-      # scramble: True
+      # warn_independent_sampling: True
+      # restart_strategy: null # 'ipop', 'bipop', or null for no restart
+      # sigma0: null           # Initial step size (null = auto)
+      # popsize: null          # Population size (null = auto)
+      # inc_popsize: 2         # Population increase factor for IPOP restarts
+      # use_separable_cma: False  # Use separable CMA for high dimensions (80-100+ params)
+      # lr_adapt: False        # Learning rate adaptation
+      # x0: null               # Initial parameter values (dict of initial values for each parameter)
+      # consider_pruned_trials: False  # Whether to consider pruned trials for sampling
+      # with_margin: False     # Use CMA-ES with margin for mixed-integer optimization
+
+      # --- GP (Gaussian Process) specific ---
+      # deterministic_objective: False  # Whether objective function is deterministic
+      # n_startup_trials: null          # Number of startup trials (null = use init_points)
+
+      # --- QMC specific ---
+      # qmc_type: sobol       # 'sobol', 'halton', 'lhs'
+      # scramble: True        # Whether to scramble the sequence
+      # warn_asyncronous_seeding: True  # Warn about async seeding issues
+
       # --- Grid specific ---
-      # search_space: # Define the exact points for the grid sampler to try.
-      #   alpha: [0.1, 0.5, 0.9]
-      #   beta: [10, 20, 30]
-    launch_dashboard: True # If True, automatically launches the Optuna dashboard in the background when the run starts.
-    dashboard_port: 8080 # Port for the Optuna dashboard.
+      # search_space:         # Define exact search points for grid sampler
+      #   param1: [0.1, 0.5, 0.9]
+      #   param2: [10, 20, 30]
+
+      # --- NSGAII specific (Multi-objective) ---
+      # population_size: 50   # Population size for genetic algorithm
+      # mutation_prob: null   # Mutation probability (null = auto)
+      # crossover_prob: 0.9   # Crossover probability
+      # swapping_prob: 0.5    # Gene swapping probability
+      # crossover: null       # Crossover method (e.g., 'UniformCrossover', 'BLXAlphaCrossover', etc.)
+      # constraints_func: null  # Function to compute constraints for constrained optimization
+      # elite_population_selection_strategy: null  # Custom strategy for selecting elite population
+      # child_generation_strategy: null  # Custom strategy for generating child parameters
+      # after_trial_strategy: null  # Custom procedure to conduct after each trial
+
+      # --- BoTorch specific (requires botorch package) ---
+      # n_startup_trials: null        # Number of startup trials (null = use init_points)
+      # candidates_func: null         # Custom candidate generation function
+      # constraints_func: null        # Constraint function for optimization
+      # n_objectives: null            # Number of objectives (for multi-objective)
+
+    # --- Pruner specific settings ---
+    # n_startup_trials: 5           # Min trials before pruning starts (for pruners that support it)
+    # n_warmup_steps: 0             # Warmup steps before pruning evaluation
+    # interval_steps: 1             # Interval for pruning evaluation
+
+    # --- Advanced Optuna settings ---
+    # direction: minimize           # 'minimize' or 'maximize' (usually auto-detected)
+    # catch: []                     # List of exceptions to catch during trials
+    # callbacks: []                 # List of callback functions
+
+    launch_dashboard: True # Launch dashboard after run?
+    dashboard_port: 8080  # Port for the dashboard
+
 
 # --- Image Generation ---
 batch_size: 1 # Number of images to generate for EACH payload per iteration.

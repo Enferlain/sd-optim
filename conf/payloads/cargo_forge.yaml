@@ -4,19 +4,21 @@ defaults:
     - negeuler2 # needed
 #    - negeuler3
 #    - negeuler4
-    - noob5 # needed
-    - noob6 # needed
+#    - noob5 # needed
+#    - noob6 # needed
 #    - negeuler5
 #    - negeuler6
 #    - negeuler7
-    - negeuler8 # needed
-    - noob1 # needed
+#    - negeuler8 # needed
+#    - noob1 # needed
     - noob7 # needed
-    - noob2 # needed
-    - noob3 # needed
-    - noob8 # needed
-#    - noob9 # hires
+#    - noob2 # needed
+#    - noob3 # needed
+#    - noob8 # needed
+    - noob9 # hires
+    - noob10b # hires
 #    - noob10 # hires
+#    - noob11 # 2048x2048
 
 score_weight: 1.0
 

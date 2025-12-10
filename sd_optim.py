@@ -38,8 +38,8 @@ def main(cfg: DictConfig) -> None:
     logger.info("             Starting sd-optim v1.x             ")
     logger.info("==================================================")
     try:
-        #        run_dir = Path(os.getcwd()) # Hydra sets CWD to the output directory
-        #        logger.info(f"Hydra Run Directory: {run_dir}")
+        # run_dir = Path(os.getcwd()) # Hydra sets CWD to the output directory
+        # logger.info(f"Hydra Run Directory: {run_dir}")
         # Log the entire config using OmegaConf for better readability (optional, consider DEBUG level)
         # logger.debug(f"Full configuration:\n{OmegaConf.to_yaml(cfg)}")
         logger.info(f"Selected WebUI: {cfg.get('webui', 'N/A')}")

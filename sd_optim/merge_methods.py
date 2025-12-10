@@ -1902,7 +1902,7 @@ class MergeMethods:
             *,
             alpha: Parameter(Tensor) = 0.5,
             rank_ratio: Parameter(float) = 0.25,
-            early_exit: Parameter(bool) = True,
+            early_exit: Parameter(bool) = False,
             **kwargs
     ) -> Return(Tensor, "weight"):
         """
@@ -1927,6 +1927,19 @@ class MergeMethods:
         original_shape = a.shape
         key = kwargs["key"]
         cache = kwargs.get("cache")
+
+        shape_a = a.shape
+        shape_b = b.shape
+
+        # The most important check: do the shapes match?
+        if shape_a != shape_b:
+            print("=" * 80)
+            print(f"!!! MISMATCH DETECTED FOR KEY: {key} !!!")
+            print(f"  - Shape of Tensor 'a': {shape_a}")
+            print(f"  - Shape of Tensor 'b': {shape_b}")
+            print(f"  - Dtype of 'a': {a.dtype}, Device: {a.device}")
+            print(f"  - Dtype of 'b': {b.dtype}, Device: {b.device}")
+            print("=" * 80)
 
         layer_cache = None
         if cache is not None:

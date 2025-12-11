@@ -5,6 +5,7 @@ import aiohttp
 from dataclasses import dataclass
 from typing import Dict, AsyncGenerator, Optional
 from PIL import Image
+from pathlib import Path
 from omegaconf import DictConfig
 
 from sd_optim.gen_adapters import BackendAdapter, A1111Adapter, ComfyUIAdapter
@@ -42,6 +43,18 @@ class Generator:
             
         else:
             raise ValueError(f"Unsupported WebUI type: {self.webui}")
+
+    async def load_model(self, model_path: Path, session: aiohttp.ClientSession):
+        """Async pass-through to the adapter's load logic."""
+        if not self.adapter:
+            raise RuntimeError("Backend Adapter not initialized.")
+        await self.adapter.load_model(model_path, session)
+
+    async def unload_model(self, session: aiohttp.ClientSession):
+        """Async pass-through to the adapter's unload logic."""
+        if not self.adapter:
+            raise RuntimeError("Backend Adapter not initialized.")
+        await self.adapter.unload_model(session)
 
     async def generate(
             self,

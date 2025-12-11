@@ -2,29 +2,25 @@
 import gc
 import os
 import shutil
-import asyncio  # <<< Import asyncio
 import logging
-import socket
-
 import aiohttp
-import requests
+import asyncio  # <<< Import asyncio
 import time  # <<< Import time for logging durations
+import torch
 
 from contextlib import suppress
 from abc import abstractmethod
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Tuple, Optional, Any, Union
-
-import sd_mecha
-import torch
-from sd_mecha.recipe_nodes import ModelRecipeNode
 from tqdm import tqdm
-
 from hydra.core.hydra_config import HydraConfig
 from omegaconf import DictConfig, open_dict
 from PIL import Image, PngImagePlugin
 
+import sd_mecha
+
+from sd_mecha.recipe_nodes import ModelRecipeNode
 from sd_optim import utils
 from sd_optim.bounds import ParameterHandler, BoundsInfo
 from sd_optim.generator import Generator
@@ -208,12 +204,12 @@ class Optimizer:
         logger.info("Sequential Producer finished.")
         # Optionally signal completion: await queue.put(None)
 
-    # sd_target_function to use sequential producer ---
     async def sd_target_function(self, params: Dict[str, Any]) -> Optional[float]:
         self.iteration += 1
         # Adjust iteration number for resumed runs ---
         effective_iteration = self.iteration + self.completed_trials
         iteration_start_time = time.time()
+        
         iteration_type = (
             "warmup" if effective_iteration <= self.cfg.optimizer.init_points else "optimization"
         )
@@ -223,147 +219,121 @@ class Optimizer:
         logger.info(f"\n--- {iteration_type} - Iteration: {effective_iteration} ---")
         logger.info(f"Optimizer proposed parameters: {params}")
 
-        # --- Unload / Merge / Load (Synchronous parts remain similar) ---
-        api_url: Optional[str] = None  # Give it a type hint too for clarity
-        try:
-            api_url = f"{self.cfg.url}/sd_optim/unload-model"
-            # Add timeout to synchronous requests
-            response = requests.post(api_url, params={"webui": self.cfg.webui,
-                                                      "target_url": self.cfg.url if self.cfg.webui == 'swarm' else None},
-                                     timeout=30)
-            response.raise_for_status()
-            logger.info("Unload model request sent successfully.")
-        except requests.exceptions.Timeout:
-            logger.warning(f"Timeout sending unload request to {api_url}. Continuing...")
-        except requests.exceptions.RequestException as e:
-            logger.warning(f"Failed to send unload request to {api_url}: {e}. Continuing...")
-        except Exception as e_unl:
-            logger.error(f"Unexpected error during unload request: {e_unl}", exc_info=True)
-
-        model_path: Optional[Path] = None
-        try:
-            start_merge_time = time.time()
-
-            effective_iteration = self.iteration + self.completed_trials
-            if self.cfg.optimization_mode == "merge":
-                self.merger.output_file = self.merger.create_model_output_name(iteration=effective_iteration)
-                model_path = self.merger.merge(
-                    params=params,
-                    param_info=self.param_info,
-                    cache=self.cache,
-                    iteration=effective_iteration
-                )
-            elif self.cfg.optimization_mode == "layer_adjust":
-                self.merger.output_file = self.merger.create_model_output_name(iteration=effective_iteration)
-                model_path = self.merger.layer_adjust(params, self.cfg)
-
-            elif self.cfg.optimization_mode == "recipe":
-                model_path = self.merger.recipe_optimization(
-                    params=params,
-                    param_info=self.param_info,
-                    cache=self.cache,
-                    iteration=effective_iteration
-                )
-
-            else:
-                raise ValueError(f"Invalid optimization mode: {self.cfg.optimization_mode}")
-
-            merge_duration = time.time() - start_merge_time
-            logger.info(f"Model processing took {merge_duration:.2f} seconds.")
-
-        except (ValueError, TypeError, FileNotFoundError) as config_error:
-            # These errors indicate a fundamental problem with the user's setup or config.
-            # The program should not continue.
-            logger.error(f"FATAL CONFIGURATION ERROR: {config_error}", exc_info=True)
-            logger.error("Halting optimization due to unrecoverable setup error.")
-            # Re-raising the exception will crash the program and stop Optuna.
-            raise config_error
-
-        except Exception as e:
-            # --- THIS IS THE PART WE CHANGE ---
-            logger.error(f"A runtime error occurred during the trial: {e}", exc_info=True)
-            logger.error("Halting optimization because fail_on_error is enabled.")
-
-            # Instead of returning 0.0, we re-raise the exception.
-            # This will stop the Optuna study.
-            raise e
-            # --- END OF CHANGE ---
-
-        if not model_path or not model_path.exists():
-            # Instead of just logging and returning, we raise a critical error.
-            error_message = f"CRITICAL: Model processing finished but the output file was not created at '{model_path}'. Halting."
-            logger.error(error_message)
-            raise RuntimeError(error_message)  # This will crash the program.
-
-        # This is the most critical point to free up VRAM.
-        logger.info("Performing immediate post-merge memory cleanup before image generation...")
-        # We can create a simple helper for this or just put it inline.
-        # For clarity, let's keep it here.
-        gc.collect()
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
-            logger.info("PyTorch CUDA cache cleared.")
-
-        # --- Load new model (keep as is, assumes synchronous is okay) ---
-        try:
-            api_url = f"{self.cfg.url}/sd_optim/load-model"
-            load_payload = {
-                "model_path": str(model_path.resolve()),
-                "webui": self.cfg.webui,
-                "target_url": self.cfg.url if self.cfg.webui == 'swarm' else None
-            }
-            response = requests.post(api_url, json=load_payload)
-            response.raise_for_status()
-            logger.info(f"Load model request sent successfully for {model_path.name}.")
-        except requests.exceptions.RequestException as e:
-            logger.error(
-                f"Failed to send load request to {api_url} for {model_path.name}: {e}. Cannot generate images.")
-            return 0.0
-        except Exception as e_load:
-            logger.error(f"Unexpected error during load request: {e_load}", exc_info=True)
-            return 0.0
-
-        # --- Setup for Concurrent Generation ---
-        start_gen_score_time = time.time()
-        scores = []
-        norm_weights = []
-        payloads, target_paths = self.prompter.render_payloads(self.cfg.batch_size)
-        if not payloads:
-            logger.error("Prompter generated no payloads.")
-            return 0.0
-
-        # Determine queue size: number of concurrent generators + maybe 1 buffer slot
+        # --- NEW: Configure Session for the entire trial ---
         concurrency_limit = self.cfg.get("generator_concurrency_limit", 2)
-        image_queue = asyncio.Queue(maxsize=concurrency_limit)
-        interrupt_event = asyncio.Event()  # Event for interrupt signal
-        total_expected_images = len(payloads)
-        final_score_for_optimizer = 0.0  # Default score
-        interrupt_triggered = False
-        fake_score_value = 0.0  # Value entered by user on override
-
-        # Configure aiohttp session (remains the same)
         keepalive_interval = self.cfg.get("generator_keepalive_interval", 60)
-        connector = aiohttp.TCPConnector(
-            limit=concurrency_limit,
-            limit_per_host=concurrency_limit,
-            keepalive_timeout=keepalive_interval,
-        )
-        logger.info(f"Configured aiohttp TCPConnector: KeepAlive Enabled (Interval: {keepalive_interval}s)")
-        total_timeout_seconds = self.cfg.get("generator_total_timeout", 3600)  # Timeout for queue.get
-        client_timeout_setting = None if total_timeout_seconds is None or total_timeout_seconds <= 0 else aiohttp.ClientTimeout(
-            total=total_timeout_seconds)
-        if client_timeout_setting:
-            logger.info(f"Configured aiohttp ClientSession: Total Timeout = {total_timeout_seconds}s")
-        else:
-            logger.info("Configured aiohttp ClientSession: Client-side timeout DISABLED.")
+        total_timeout_seconds = self.cfg.get("generator_total_timeout", 3600)
+        
+        connector = aiohttp.TCPConnector(limit=concurrency_limit, keepalive_timeout=keepalive_interval)
+        timeout_settings = aiohttp.ClientTimeout(total=total_timeout_seconds) if total_timeout_seconds > 0 else None
 
-        producer_task = None
+        # We wrap the ENTIRE trial in this session
+        async with aiohttp.ClientSession(connector=connector, timeout=timeout_settings) as session:
 
-        try:
-            async with aiohttp.ClientSession(
-                    connector=connector,
-                    timeout=client_timeout_setting
-            ) as session:
+            # --- STEP 1: ASYNC UNLOAD ---
+            try:
+                # OLD: requests.post(...)
+                # NEW: Delegate to generator -> adapter
+                await self.generator.unload_model(session)
+                logger.info("Unload model request processed.")
+            except Exception as e_unl:
+                # OLD: requests.exceptions handling
+                # NEW: Generic catch for async errors
+                logger.warning(f"Unload request failed (continuing): {e_unl}")
+
+            model_path: Optional[Path] = None
+            
+            # --- INDENTATION START: Everything below is now inside 'async with session' ---
+            try:
+                start_merge_time = time.time()
+
+                effective_iteration = self.iteration + self.completed_trials
+                if self.cfg.optimization_mode == "merge":
+                    self.merger.output_file = self.merger.create_model_output_name(iteration=effective_iteration)
+                    model_path = self.merger.merge(
+                        params=params,
+                        param_info=self.param_info,
+                        cache=self.cache,
+                        iteration=effective_iteration
+                    )
+                elif self.cfg.optimization_mode == "layer_adjust":
+                    self.merger.output_file = self.merger.create_model_output_name(iteration=effective_iteration)
+                    model_path = self.merger.layer_adjust(params, self.cfg)
+
+                elif self.cfg.optimization_mode == "recipe":
+                    model_path = self.merger.recipe_optimization(
+                        params=params,
+                        param_info=self.param_info,
+                        cache=self.cache,
+                        iteration=effective_iteration
+                    )
+
+                else:
+                    raise ValueError(f"Invalid optimization mode: {self.cfg.optimization_mode}")
+
+                merge_duration = time.time() - start_merge_time
+                logger.info(f"Model processing took {merge_duration:.2f} seconds.")
+
+            except (ValueError, TypeError, FileNotFoundError) as config_error:
+                # These errors indicate a fundamental problem with the user's setup or config.
+                logger.error(f"FATAL CONFIGURATION ERROR: {config_error}", exc_info=True)
+                logger.error("Halting optimization due to unrecoverable setup error.")
+                raise config_error
+
+            except Exception as e:
+                # --- THIS IS THE PART WE CHANGE ---
+                logger.error(f"A runtime error occurred during the trial: {e}", exc_info=True)
+                logger.error("Halting optimization because fail_on_error is enabled.")
+                # Instead of returning 0.0, we re-raise the exception.
+                raise e
+                # --- END OF CHANGE ---
+
+            if not model_path or not model_path.exists():
+                error_message = f"CRITICAL: Model processing finished but the output file was not created at '{model_path}'. Halting."
+                logger.error(error_message)
+                raise RuntimeError(error_message)
+
+            # This is the most critical point to free up VRAM.
+            logger.info("Performing immediate post-merge memory cleanup before image generation...")
+            gc.collect()
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+                logger.info("PyTorch CUDA cache cleared.")
+
+            # --- STEP 3: ASYNC LOAD ---
+            try:
+                # OLD: requests.post(api_url, ...)
+                # NEW: Delegate to generator -> adapter
+                await self.generator.load_model(model_path, session)
+                logger.info(f"Load model request processed for {model_path.name}.")
+            except Exception as e_load:
+                logger.error(f"Failed to load model: {e_load}. Cannot generate.")
+                raise RuntimeError(f"Critical Load Failure: {e_load}") from e_load
+
+            # --- Setup for Concurrent Generation ---
+            start_gen_score_time = time.time()
+            scores = []
+            norm_weights = []
+            payloads, target_paths = self.prompter.render_payloads(self.cfg.batch_size)
+
+            if not payloads:
+                logger.error("Prompter generated no payloads.")
+                raise RuntimeError("Prompter failed to generate any payloads.")
+
+            # Determine queue size: number of concurrent generators + maybe 1 buffer slot
+            image_queue = asyncio.Queue(maxsize=concurrency_limit)
+            interrupt_event = asyncio.Event()  # Event for interrupt signal
+            total_expected_images = len(payloads)
+            final_score_for_optimizer = 0.0  # Default score
+            interrupt_triggered = False
+            fake_score_value = 0.0  # Value entered by user on override
+
+            # (Connector creation removed here as we reused the outer one)
+            
+            producer_task = None
+
+            try:
+                # REMOVED: async with aiohttp.ClientSession... (We use the outer 'session')
 
                 # Launch ONE Sequential Producer Task
                 producer_task = asyncio.create_task(
@@ -371,7 +341,7 @@ class Optimizer:
                         payloads,
                         target_paths,
                         image_queue,
-                        session,
+                        session, # <<< PASS THE OUTER SESSION
                         interrupt_event
                     )
                 )
@@ -401,7 +371,7 @@ class Optimizer:
 
                     if queue_item is None:
                         logger.info("Consumer: Received end signal from producer.")
-                        break  # Optional: Handle producer end signal
+                        break
 
                     order_index, image, current_payload, current_target_base_name = queue_item
 
@@ -423,7 +393,7 @@ class Optimizer:
                         f"Consumer: Scoring image {i + 1}/{total_expected_images} ('{current_target_base_name}')...")
                     score_start_time = time.time()
                     individual_score = 0.0
-                    processed_item = False  # Flag to track if we should call task_done
+                    processed_item = False
                     try:
                         individual_score = await self.scorer.score(image, current_payload["prompt"],
                                                                    name=current_target_base_name)
@@ -433,8 +403,7 @@ class Optimizer:
                             interrupt_event.set()
                             fake_score_value = self.scorer.handle_override_prompt()
                             interrupt_triggered = True
-                            # --- DO NOT call task_done here anymore ---
-                            break  # Exit loop, finally block will be skipped for this item
+                            break
 
                         # --- Normal Score Processing ---
                         score_duration = time.time() - score_start_time
@@ -452,39 +421,37 @@ class Optimizer:
                                           current_payload)
 
                         images_processed += 1
-                        processed_item = True  # Mark that we processed normally
+                        processed_item = True
 
                     except Exception as e_score:
                         logger.error(
                             f"Consumer: Error scoring image '{current_target_base_name}' (index {i}): {e_score}",
                             exc_info=True)
-                        # Decide if task_done should be called on error? Usually yes.
-                        processed_item = True  # Mark as processed even on error? Or handle differently? Let's mark done.
+                        processed_item = True
                     finally:
-                        # --- Call task_done() ONLY if the loop didn't break early ---
                         if processed_item:
                             image_queue.task_done()
-                        # If 'break' happened, processed_item is False, so task_done is skipped here.
 
                 # End of consumer loop
 
-        except asyncio.CancelledError:
-            logger.warning("Main task cancelled.")
-            if interrupt_event:
-                interrupt_event.set()  # Ensure producer stops
-        except Exception as e_main:
-            logger.error(f"Error during concurrent generation/scoring: {e_main}", exc_info=True)
-            if interrupt_event:
-                interrupt_event.set()  # Signal producer on error
-        finally:
-            # --- Cleanup ---
-            if producer_task and not producer_task.done():
-                logger.info("Cancelling producer task...")
-                producer_task.cancel()
-                with suppress(asyncio.CancelledError):
-                    await producer_task
-                logger.info("Producer task cancelled.")
-            # Session closes automatically with 'async with'
+            except asyncio.CancelledError:
+                logger.warning("Main task cancelled.")
+                if interrupt_event:
+                    interrupt_event.set()
+            except Exception as e_main:
+                logger.error(f"Error during concurrent generation/scoring: {e_main}", exc_info=True)
+                if interrupt_event:
+                    interrupt_event.set()
+            finally:
+                # --- Cleanup ---
+                if producer_task and not producer_task.done():
+                    logger.info("Cancelling producer task...")
+                    producer_task.cancel()
+                    with suppress(asyncio.CancelledError):
+                        await producer_task
+                    logger.info("Producer task cancelled.")
+            
+            # --- INDENTATION END --- (The 'async with session' closes here)
 
         gen_score_duration = time.time() - start_gen_score_time
         logger.info(f"Generation & scoring phase took {gen_score_duration:.2f} seconds.")
@@ -495,20 +462,21 @@ class Optimizer:
             avg_score = fake_score_value
         elif not scores:
             logger.warning("No images were successfully scored.")
-            avg_score = 0.0
+            raise RuntimeError("Generation failed: No images were produced or scored.")
         else:
             try:
                 avg_score = self.scorer.average_calc(scores, norm_weights, self.cfg.img_average_type)
                 logger.info(f"Calculated average score: {avg_score:.4f}")
             except Exception as e_avg:
                 logger.error(f"Error calculating average score: {e_avg}", exc_info=True)
-                avg_score = 0.0
+                raise RuntimeError(f"Score calculation error: {e_avg}")
 
         # --- Update Best Score & Logging ---
         self.update_best_score(params, avg_score)
         
         # --- Unload any lazy-loaded models ---
         self.scorer.unload_lazy_models()
+
 
         # --- Collect Data for Artist ---
         #       self.artist.collect_data(avg_score, params)

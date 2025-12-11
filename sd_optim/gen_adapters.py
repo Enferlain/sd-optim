@@ -181,6 +181,7 @@ class ComfyUIAdapter(BackendAdapter):
                                 image.load()
                                 logger.debug(f"Identified FINAL image from save node {current_node_id}")
                                 yield image
+                                return
                             except Exception as e:
                                 logger.error(f"Failed to decode streaming image: {e}")
                         else:

@@ -5,6 +5,7 @@ numpy>=1.26.0            # Numerical operations (check sd-mecha requirement)
 PyYAML>=6.0.1            # For reading YAML configs (check sd-mecha requirement)
 omegaconf                # For advanced configuration management (used by Hydra)
 hydra-core               # Core Hydra library for configuration
+aiohttp>=3.9.0           # For async functionality
 
 # --- sd-mecha Dependency ---
 # sd-mecha==0.0.27       # OLD VERSION - COMMENTED OUT

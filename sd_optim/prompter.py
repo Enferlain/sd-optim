@@ -108,16 +108,18 @@ class Prompter:
 
     def load_payloads(self) -> None:
         self.raw_payloads = {}
-        # Determine cargo file based on webui type
-        cargo_file = f"cargo_{self.cfg.webui}.yaml"
         
-        # Fetch cargo config, fallback to empty if missing
-        cargo_data = self.cfg.payloads.get(cargo_file)
-        if not cargo_data:
-            # Fallback to generic cargo if specific one missing
-            cargo_data = self.cfg.payloads.get("cargo", {})
-
+        # --- FIX: Direct Access ---
+        # Hydra has already merged the selected cargo file (e.g., cargo_comfy.yaml)
+        # into self.cfg.payloads. We just use it.
+        cargo_data = self.cfg.payloads
+        
         defaults, payloads = unpack_cargo(cargo_data)
+        
+        if not payloads:
+            logger.error("No payloads found in configuration! Check conf/payloads/ structure.")
+            # Debug tip for user
+            logger.debug(f"Current 'payloads' config keys: {list(cargo_data.keys()) if cargo_data else 'Empty'}")
         
         for payload_name, payload in payloads.items():
             self.raw_payloads[payload_name] = assemble_payload(defaults, payload)

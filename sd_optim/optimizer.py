@@ -395,7 +395,9 @@ class Optimizer:
                     individual_score = 0.0
                     processed_item = False
                     try:
-                        individual_score = await self.scorer.score(image, current_payload["prompt"],
+                        # --- FIX: Safely get the prompt, defaulting to "" if not in payload ---
+                        prompt_for_scorer = current_payload.get("prompt", "")
+                        individual_score = await self.scorer.score(image, prompt_for_scorer,
                                                                    name=current_target_base_name)
 
                         if individual_score == -1.0:

@@ -1,0 +1,193 @@
+{
+  "6": {
+    "inputs": {
+      "ckpt_name": "21862-seele_pop3.safetensors"
+    },
+    "class_type": "CheckpointLoaderSimple",
+    "_meta": {
+      "title": "Load Checkpoint"
+    }
+  },
+  "7": {
+    "inputs": {
+      "text": "1girl, chen bin, yoneyama mai, [as109|fkey], [sweetonedollar:11], agm, full body, white hair, albino, makeup, blush, eyeshadow, pink choker, colored eyelashes, hair between eyes, hair over eyes, sidelocks, low-tied long hair, hair over shoulder, long hair, messy hair, pale skin, red eyes, standing, long legs, detailed eyes, white pants, yoga pants, tight pants, cropped sweater, white sweater, single off shoulder, simple background, black background, white theme, chiaroscuro, best quality, masterpiece, very awa, absurdres",
+      "clip": [
+        "6",
+        1
+      ]
+    },
+    "class_type": "CLIPTextEncode",
+    "_meta": {
+      "title": "CLIP Text Encode (Prompt)"
+    }
+  },
+  "8": {
+    "inputs": {
+      "text": "worst quality, low quality, lowres, artist name, pubic hair, signature, bad anatomy, large breasts",
+      "clip": [
+        "6",
+        1
+      ]
+    },
+    "class_type": "CLIPTextEncode",
+    "_meta": {
+      "title": "CLIP Text Encode (Prompt)"
+    }
+  },
+  "9": {
+    "inputs": {
+      "add_noise": true,
+      "noise_seed": 680304484034177,
+      "cfg": 5.2,
+      "model": [
+        "16",
+        0
+      ],
+      "positive": [
+        "7",
+        0
+      ],
+      "negative": [
+        "8",
+        0
+      ],
+      "sampler": [
+        "10",
+        0
+      ],
+      "sigmas": [
+        "12",
+        0
+      ],
+      "latent_image": [
+        "13",
+        0
+      ]
+    },
+    "class_type": "SamplerCustom",
+    "_meta": {
+      "title": "SamplerCustom"
+    }
+  },
+  "10": {
+    "inputs": {
+      "noise_sampler_type": "gaussian",
+      "momentum": 0,
+      "momentum_strategy": "cosine",
+      "denoise_to_zero": true,
+      "ita": 0.25,
+      "c2": 0.5
+    },
+    "class_type": "SamplerRES_Momentumized_v4",
+    "_meta": {
+      "title": "SamplerRES_Momentumized_v4"
+    }
+  },
+  "12": {
+    "inputs": {
+      "steps": 28,
+      "alpha": 0.6,
+      "beta": 0.6,
+      "denoise": 1,
+      "model": [
+        "16",
+        0
+      ]
+    },
+    "class_type": "BetaSchedulerV2C",
+    "_meta": {
+      "title": "Beta Scheduler V2C"
+    }
+  },
+  "13": {
+    "inputs": {
+      "width": 1024,
+      "height": 1536,
+      "batch_size": 1
+    },
+    "class_type": "EmptyLatentImage",
+    "_meta": {
+      "title": "Empty Latent Image"
+    }
+  },
+  "14": {
+    "inputs": {
+      "filename_prefix": "ComfyUI",
+      "images": [
+        "15",
+        0
+      ]
+    },
+    "class_type": "SaveImage",
+    "_meta": {
+      "title": "Save Image"
+    }
+  },
+  "15": {
+    "inputs": {
+      "samples": [
+        "9",
+        1
+      ],
+      "vae": [
+        "6",
+        2
+      ]
+    },
+    "class_type": "VAEDecode",
+    "_meta": {
+      "title": "VAE Decode"
+    }
+  },
+  "16": {
+    "inputs": {
+      "sampling": "v_prediction",
+      "zsnr": true,
+      "model": [
+        "6",
+        0
+      ]
+    },
+    "class_type": "ModelSamplingDiscrete",
+    "_meta": {
+      "title": "ModelSamplingDiscrete"
+    }
+  },
+  "27": {
+    "inputs": {
+      "model_name": "2x-AnimeSharpV4_RCAN.safetensors"
+    },
+    "class_type": "UpscaleModelLoader",
+    "_meta": {
+      "title": "Load Upscale Model"
+    }
+  },
+  "28": {
+    "inputs": {
+      "upscale_method": "lanczos",
+      "width": 2048,
+      "height": 3072,
+      "crop": "disabled",
+      "image": [
+        "31",
+        0
+      ]
+    },
+    "class_type": "ImageScale",
+    "_meta": {
+      "title": "Upscale Image"
+    }
+  },
+  "31": {
+    "inputs": {
+      "upscale_model": [
+        "27",
+        0
+      ]
+    },
+    "class_type": "ImageUpscaleWithModel",
+    "_meta": {
+      "title": "Upscale Image (using Model)"
+    }
+  }
+}

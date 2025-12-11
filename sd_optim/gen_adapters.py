@@ -10,6 +10,7 @@ from abc import ABC, abstractmethod
 from typing import Dict, AsyncGenerator, Optional, List, Any
 from pathlib import Path
 from PIL import Image
+from hydra.utils import get_original_cwd
 
 logger = logging.getLogger(__name__)
 
@@ -92,15 +93,15 @@ class A1111Adapter(BackendAdapter):
 
 class ComfyUIAdapter(BackendAdapter):
     """
-    Adapter for ComfyUI.
-    Uses WebSocket for execution and HTTP for history/uploads.
-    Requires 'workflow_json' in the payload pointing to an API-format JSON file.
+    Adapter for ComfyUI using WebSocket streaming.
+    Dynamically swaps 'SaveImage' nodes for 'SaveImageWebsocket' to avoid disk I/O.
     """
     
     def __init__(self, base_url: str):
         super().__init__(base_url)
         self.client_id = str(uuid.uuid4())
         self.current_model_filename: Optional[str] = None
+        self.websocket_save_nodes: List[str] = [] # <<< NEW: Track save nodes
 
     async def load_model(self, model_path: Path, session: aiohttp.ClientSession, **kwargs):
         # In Comfy, we just store the filename. It gets injected into the workflow later.
@@ -116,9 +117,17 @@ class ComfyUIAdapter(BackendAdapter):
                 logger.warning(f"ComfyUI Free Memory Warning {resp.status}")
 
     async def generate(self, payload: Dict, session: aiohttp.ClientSession) -> AsyncGenerator[Image.Image, None]:
-        template_path = payload.get("workflow_json")
-        if not template_path:
+        template_path_str = payload.get("workflow_json")
+        if not template_path_str:
             raise ValueError("ComfyUI payload missing 'workflow_json' path")
+
+        # --- NEW: Path Resolution ---
+        template_path = Path(template_path_str)
+        if not template_path.is_absolute():
+            # Resolve relative paths against the ORIGINAL project root, not the Hydra log dir
+            project_root = get_original_cwd()
+            template_path = Path(project_root) / template_path
+        # --- END NEW ---
 
         # Load Template
         try:
@@ -127,50 +136,84 @@ class ComfyUIAdapter(BackendAdapter):
         except FileNotFoundError:
             raise FileNotFoundError(f"ComfyUI workflow template not found: {template_path}")
 
-        # Inject Parameters
+        # 1. Inject Optimization Parameters (Model, Prompt, Seed)
         self._inject_parameters(workflow, payload)
+        
+        # 2. Hot-Swap: Enable Zero-Disk Mode
+        # We find nodes saving to disk and make them stream to WebSocket instead.
+        self._enable_websocket_streaming(workflow)
 
-        # Connect WebSocket
         ws_url = self.base_url.replace("http://", "ws://").replace("https://", "wss://")
         ws_url = f"{ws_url}/ws?clientId={self.client_id}"
 
-        async with session.ws_connect(ws_url) as ws:
-            # Submit Prompt
-            api_payload = {"prompt": workflow, "client_id": self.client_id}
-            async with session.post(f"{self.base_url}/prompt", json=api_payload) as resp:
-                if resp.status != 200:
-                    err = await resp.text()
-                    raise RuntimeError(f"ComfyUI Prompt Error {resp.status}: {err}")
-                resp_json = await resp.json()
-                prompt_id = resp_json['prompt_id']
+        try:
+            async with session.ws_connect(ws_url) as ws:
+                # Submit Prompt
+                api_payload = {"prompt": workflow, "client_id": self.client_id}
+                async with session.post(f"{self.base_url}/prompt", json=api_payload) as resp:
+                    if resp.status != 200:
+                        err = await resp.text()
+                        raise RuntimeError(f"ComfyUI Prompt Error {resp.status}: {err}")
+                    resp_json = await resp.json()
+                    prompt_id = resp_json['prompt_id']
 
-            # Wait for Execution
-            while True:
-                msg = await ws.receive_json()
-                if msg['type'] == 'executing':
-                    data = msg['data']
-                    if data['node'] is None and data['prompt_id'] == prompt_id:
-                        break # Done
-            
-            # Fetch History & Images
-            async with session.get(f"{self.base_url}/history/{prompt_id}") as resp:
-                history = await resp.json()
+                # Execution Loop
+                current_node_id = None
+                
+                async for msg in ws:
+                    if msg.type == aiohttp.WSMsgType.TEXT:
+                        data = msg.json()
+                        if data['type'] == 'executing':
+                            exec_data = data['data']
+                            if exec_data['prompt_id'] == prompt_id:
+                                # If node is None, execution is finished
+                                if exec_data['node'] is None:
+                                    break 
+                                current_node_id = exec_data['node']
 
-            outputs = history[prompt_id]['outputs']
-            for node_id, output_data in outputs.items():
-                if 'images' in output_data:
-                    for img_meta in output_data['images']:
-                        fname = img_meta['filename']
-                        subfolder = img_meta['subfolder']
-                        img_type = img_meta['type']
-                        
-                        img_url = f"{self.base_url}/view"
-                        params = {"filename": fname, "subfolder": subfolder, "type": img_type}
-                        
-                        async with session.get(img_url, params=params) as img_resp:
-                            if img_resp.status == 200:
-                                img_bytes = await img_resp.read()
-                                yield Image.open(io.BytesIO(img_bytes))
+                    elif msg.type == aiohttp.WSMsgType.BINARY:
+                        # --- NEW LOGIC ---
+                        # Only process the image if it comes from a node we're watching
+                        if current_node_id in self.websocket_save_nodes:
+                            image_data = msg.data[8:] 
+                            try:
+                                image = Image.open(io.BytesIO(image_data))
+                                image.load()
+                                logger.debug(f"Identified FINAL image from save node {current_node_id}")
+                                yield image
+                            except Exception as e:
+                                logger.error(f"Failed to decode streaming image: {e}")
+                        else:
+                            logger.debug(f"Ignoring preview image from node {current_node_id}")
+                            
+        except asyncio.CancelledError:
+            # This is the key: When the Optimizer cancels us, we log it cleanly and exit.
+            logger.debug("ComfyUI Generator was cancelled by the consumer. This is expected.")
+        finally:
+            # This ensures we don't leave the generator in a suspended state.
+            pass
+
+    def _enable_websocket_streaming(self, workflow: Dict):
+        """
+        Finds all 'SaveImage' and 'SaveImageWebsocket' nodes, converts the former,
+        and records all their IDs for intelligent listening.
+        """
+        self.websocket_save_nodes = [] # Reset for this run
+        for node_id, node in workflow.items():
+            class_type = node.get("class_type")
+            if class_type == "SaveImage":
+                logger.debug(f"Swapping Node {node_id} (SaveImage) -> SaveImageWebsocket")
+                node["class_type"] = "SaveImageWebsocket"
+                if "filename_prefix" in node["inputs"]:
+                    del node["inputs"]["filename_prefix"]
+                self.websocket_save_nodes.append(node_id)
+            elif class_type == "SaveImageWebsocket":
+                self.websocket_save_nodes.append(node_id)
+        
+        if not self.websocket_save_nodes:
+            logger.warning("No SaveImage or SaveImageWebsocket nodes found in workflow. May not receive any final images.")
+        else:
+            logger.debug(f"Listening for final images from nodes: {self.websocket_save_nodes}")
 
     def _inject_parameters(self, workflow: Dict, payload: Dict):
         """

@@ -3,8 +3,3 @@ defaults:
     - comfy_test
     
 score_weight: 1.0
-
-# Global settings for Comfy
-adapter:
-  type: comfy
-  base_url: "http://127.0.0.1:8188"

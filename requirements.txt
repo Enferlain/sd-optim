@@ -11,7 +11,7 @@ hydra-core               # Core Hydra library for configuration
 sd-mecha                 # Use the latest compatible version, or specify one explicitly like >=0.1.0 if known
 
 # --- Optimization Libraries ---
-bayesian-optimization==1.5.1  # Keep if you want to retain BayesOpt as an option
+bayesian-optimization==3.2.0  # Keep if you want to retain BayesOpt as an option
 optuna                   # ADDED: For Optuna optimizer support
 optuna-dashboard         # Realtime dashboard for optuna
 optuna-fast-fanova       # Recommended Optuna dependency

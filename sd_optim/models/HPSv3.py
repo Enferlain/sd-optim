@@ -9,13 +9,16 @@ import tempfile
 try:
     from hpsv3 import HPSv3RewardInferencer
 except ImportError:
-    raise ImportError("hpsv3 is not installed. Please install it by running: pip install git+https://github.com/MizzenAI/HPSv3.git")
+    raise ImportError(
+        "hpsv3 is not installed. Please install it by running: pip install git+https://github.com/MizzenAI/HPSv3.git"
+    )
+
 
 class HPSv3Scorer:
     def __init__(self, model_path: str, device: str = "cuda"):
         """
         Initializes the HPSv3Scorer.
-        
+
         Args:
             model_path (str): Path to the HPSv3 model file (e.g., .safetensors).
             device (str): The device to run the model on ('cuda' or 'cpu').
@@ -25,20 +28,27 @@ class HPSv3Scorer:
         # to load a local model file instead of downloading from the Hub.
         try:
             from hpsv3 import HPSv3RewardInferencer
-            self.model = HPSv3RewardInferencer(model_name_or_path=model_path, device=self.device)
+
+            self.model = HPSv3RewardInferencer(
+                model_name_or_path=model_path, device=self.device
+            )
         except ImportError:
-            raise ImportError("hpsv3 is not installed. Please install it by running: pip install git+https://github.com/MizzenAI/HPSv3.git")
+            raise ImportError(
+                "hpsv3 is not installed. Please install it by running: pip install git+https://github.com/MizzenAI/HPSv3.git"
+            )
         except Exception as e:
-            raise RuntimeError(f"Failed to initialize HPSv3RewardInferencer with model_path='{model_path}': {e}")
-        
+            raise RuntimeError(
+                f"Failed to initialize HPSv3RewardInferencer with model_path='{model_path}': {e}"
+            )
+
     def score(self, prompt: str, image: Image.Image) -> tuple[float, float]:
         """
         Scores an image-text pair using HPSv3.
-        
+
         Args:
             prompt: Text prompt associated with the image.
             image: PIL Image object (RGB format).
-            
+
         Returns:
             tuple[float, float]: A tuple containing the clamped mu score (0-10) and the sigma value.
         """
@@ -54,11 +64,11 @@ class HPSv3Scorer:
             with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as temp_file:
                 temp_filepath = temp_file.name
                 pil_image.save(temp_filepath)
-            
+
             with torch.inference_mode():
                 # The reward method expects lists of image paths and prompts.
                 rewards = self.model.reward([temp_filepath], [prompt])
-            
+
             # The reward method returns a list of tuples, where each tuple is (mu, sigma).
             # - mu is the mean preference score.
             # - sigma is the uncertainty (standard deviation).
@@ -75,5 +85,5 @@ class HPSv3Scorer:
         # maintain consistency with other scorers in this project (e.g., HPSv21),
         # we clamp the score to the [0, 10] interval.
         clamped_mu = max(0.0, min(mu_score, 10.0))
-        
+
         return clamped_mu, sigma_score

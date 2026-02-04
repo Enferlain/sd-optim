@@ -1,28 +1,26 @@
 import asyncio
 import inspect
-import io
 import platform
 import subprocess
 import threading
 
-import numpy as np
 import requests
 import logging
 
-from rembg import new_session, remove
-from sklearn.cluster import KMeans
-import joblib  # <<< ADDED JOBLIB
+from rembg import new_session
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple, Any
+from typing import Dict, List, Optional, Any
 
 from hydra.core.hydra_config import HydraConfig
 from omegaconf import DictConfig, open_dict, ListConfig
-from PIL import Image, PngImagePlugin
+from PIL import Image
 from sd_optim.models.Laion import Laion as AES
+
 # from sd_optim.models.ImageReward import ImageReward as IMGR
 from sd_optim.models.CLIPScore import CLIPScore as CLP
+
 # from sd_optim.models.BLIPScore import BLIPScore as BLP
 # from sd_optim.models.HPSv21 import HPSv21Scorer as HPS
 # from sd_optim.models.HPSv3 import HPSv3Scorer as HPS3
@@ -33,6 +31,7 @@ from sd_optim.models.CafeScore import CafeScore as CAFE
 from sd_optim.models.NoAIScore import NoAIScore as NOAI
 from sd_optim.models.CityAesthetics import CityAestheticsScorer as CITY
 from sd_optim.models.AestheticV25 import AestheticV25 as AES25
+
 # from sd_optim.models.LumiAnatomy import HybridAnatomyScorer as LUMI
 from sd_optim.models.LumiAnatomyv2 import Dinov3AnatomyScorer as LUMI
 from sd_optim.models.SimpleQuality import SimpleQualityScorer as SQ
@@ -121,17 +120,16 @@ MODEL_DATA = {
         "url": None,
         "file_name": "AnatomyFlaws-v15.5_dinov3_7b_bnb_fl_s3K_best_val.safetensors",
         "config_name": "AnatomyFlaws-v15.5_dinov3_7b_bnb_fl.config.json",
-
     },
     "lumidinov2l": {
         "url": None,
         "file_name": "AnatomyFlaws-v6.3_adabeleif_fl_sigmoid_dinov2_large_efinal_s10K_final.safetensors",
-        "config_name": "AnatomyFlaws-v6.3_adabeleif_fl_sigmoid_dinov2_large.config.json"
+        "config_name": "AnatomyFlaws-v6.3_adabeleif_fl_sigmoid_dinov2_large.config.json",
     },
     "lumidinov2g": {
         "url": None,
         "file_name": "AnatomyFlaws-v6.4_adabeleif_fl_sigmoid_dinov2_giant_efinal_s10K_final.safetensors",
-        "config_name": "AnatomyFlaws-v6.4_adabeleif_fl_sigmoid_dinov2_giant.config.json"
+        "config_name": "AnatomyFlaws-v6.4_adabeleif_fl_sigmoid_dinov2_giant.config.json",
     },
     "simplequality": {
         "url": None,  # No download needed - uses OpenCV/numpy
@@ -164,15 +162,22 @@ class AestheticScorer:
     def __post_init__(self):
         # Initialize instance attributes
         self.model: Dict[str, Any] = {}  # Dictionary to hold loaded scorer instances
-        self.model_path: Dict[str, Path] = {}  # Dictionary to hold Path objects for models
+        self.model_path: Dict[
+            str, Path
+        ] = {}  # Dictionary to hold Path objects for models
 
         self.rembg_session = None
         # Unified rembg session initialization
         # If any scorer that needs it is configured, create the session.
-        scorers_needing_rembg = {'hybridnoise', 'backgroundblackness'}
-        if any(s.lower() in scorers_needing_rembg for s in self.cfg.get("scorer_method", [])):
-            logger.info("A configured scorer requires background removal. Initializing rembg session...")
-            self.rembg_session = new_session(providers=['CPUExecutionProvider'])
+        scorers_needing_rembg = {"hybridnoise", "backgroundblackness"}
+        if any(
+            s.lower() in scorers_needing_rembg
+            for s in self.cfg.get("scorer_method", [])
+        ):
+            logger.info(
+                "A configured scorer requires background removal. Initializing rembg session..."
+            )
+            self.rembg_session = new_session(providers=["CPUExecutionProvider"])
         else:
             self.rembg_session = None
 
@@ -190,16 +195,19 @@ class AestheticScorer:
     def unload_lazy_models(self):
         """Unloads models that were loaded on-demand."""
         lazy_load_list = [s.lower() for s in self.cfg.get("scorer_lazy_load_list", [])]
-        models_to_unload = [model_name for model_name in self.model if model_name in lazy_load_list]
+        models_to_unload = [
+            model_name for model_name in self.model if model_name in lazy_load_list
+        ]
 
         for model_name in models_to_unload:
             logger.info(f"Unloading lazy-loaded scorer model: '{model_name}'")
             del self.model[model_name]
-        
+
         # Optional: Add garbage collection for immediate memory release
         if models_to_unload:
             import gc
             import torch
+
             gc.collect()
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
@@ -218,7 +226,9 @@ class AestheticScorer:
                 self.imgs_dir = Path(HydraConfig.get().runtime.output_dir, "imgs")
             except ValueError:
                 # Fallback if Hydra context not available
-                logger.warning("Hydra context not available, saving images to ./imgs_fallback")
+                logger.warning(
+                    "Hydra context not available, saving images to ./imgs_fallback"
+                )
                 self.imgs_dir = Path("./imgs_fallback").resolve()
 
             self.imgs_dir.mkdir(parents=True, exist_ok=True)
@@ -238,74 +248,95 @@ class AestheticScorer:
         # --- Use open_dict context manager ---
         with open_dict(self.cfg):
             # Ensure scorer_device and scorer_weight exist as dicts, create if missing/null
-            if not isinstance(self.cfg.get('scorer_device'), DictConfig):
+            if not isinstance(self.cfg.get("scorer_device"), DictConfig):
                 self.cfg.scorer_device = {}
-            if not isinstance(self.cfg.get('scorer_weight'), DictConfig):
+            if not isinstance(self.cfg.get("scorer_weight"), DictConfig):
                 self.cfg.scorer_weight = {}
             # Now self.cfg.scorer_device and self.cfg.scorer_weight are modifiable
 
             # Make sure self.cfg.scorer_method is iterable (list or ListConfig)
-            configured_scorers = self.cfg.get('scorer_method', [])
+            configured_scorers = self.cfg.get("scorer_method", [])
             if not isinstance(configured_scorers, (list, ListConfig)):
-                logger.warning("scorer_method is not a list, cannot process evaluators.")
+                logger.warning(
+                    "scorer_method is not a list, cannot process evaluators."
+                )
                 configured_scorers = []
 
             for evaluator in configured_scorers:
                 # Use .lower() for case-insensitive matching
                 evaluator_lower = str(evaluator).lower()  # Ensure it's a string first
-                if evaluator_lower == 'manual': continue
+                if evaluator_lower == "manual":
+                    continue
 
                 model_data_entry = MODEL_DATA.get(evaluator_lower)
                 if not model_data_entry:
-                    logger.warning(f"No MODEL_DATA entry for '{evaluator}'. Cannot set path or defaults.")
+                    logger.warning(
+                        f"No MODEL_DATA entry for '{evaluator}'. Cannot set path or defaults."
+                    )
                     continue
 
                 # --- Handle Alternative Locations ---
-                alt_location = self.cfg.get("scorer_alt_location", {}) or {}  # Default to empty dict
+                alt_location = (
+                    self.cfg.get("scorer_alt_location", {}) or {}
+                )  # Default to empty dict
                 evaluator_alt_config = alt_location.get(evaluator_lower)
                 current_model_dir = scorer_model_dir_path
                 primary_filename = model_data_entry.get("file_name")
 
-                if isinstance(evaluator_alt_config, (dict, DictConfig)):  # Check if it's dict-like
-                    alt_name = evaluator_alt_config.get('model_name')
-                    alt_dir_str = evaluator_alt_config.get('model_dir')
+                if isinstance(
+                    evaluator_alt_config, (dict, DictConfig)
+                ):  # Check if it's dict-like
+                    alt_name = evaluator_alt_config.get("model_name")
+                    alt_dir_str = evaluator_alt_config.get("model_dir")
                     if alt_name and alt_dir_str:
                         logger.info(
-                            f"Using alternative location for '{evaluator}': Dir='{alt_dir_str}', File='{alt_name}'")
+                            f"Using alternative location for '{evaluator}': Dir='{alt_dir_str}', File='{alt_name}'"
+                        )
                         try:
                             current_model_dir = Path(alt_dir_str)
                             primary_filename = alt_name
                         except Exception as e_path:
-                            logger.warning(f"Invalid alternative path for '{evaluator}': {e_path}. Using default path.")
+                            logger.warning(
+                                f"Invalid alternative path for '{evaluator}': {e_path}. Using default path."
+                            )
                     else:
-                        logger.warning(f"Alternative location config for '{evaluator}' incomplete. Using default path.")
+                        logger.warning(
+                            f"Alternative location config for '{evaluator}' incomplete. Using default path."
+                        )
                 # --- End Alt Location Handling ---
 
                 # Set path in self.model_path (only if a filename exists)
                 if primary_filename and evaluator_lower != "aestheticv25":
                     try:
-                        self.model_path[evaluator_lower] = current_model_dir / primary_filename
+                        self.model_path[evaluator_lower] = (
+                            current_model_dir / primary_filename
+                        )
                     except TypeError as e_path_join:
                         logger.error(
-                            f"Error creating path for '{evaluator}': {e_path_join}. Ensure directory and filename are valid.")
+                            f"Error creating path for '{evaluator}': {e_path_join}. Ensure directory and filename are valid."
+                        )
                         continue  # Skip defaults if path fails
                 elif evaluator_lower == "aestheticv25":
                     logger.debug(f"No file path needed for '{evaluator}'.")
                 else:
-                    logger.warning(f"MODEL_DATA for '{evaluator}' missing primary 'file_name'. Cannot set base path.")
+                    logger.warning(
+                        f"MODEL_DATA for '{evaluator}' missing primary 'file_name'. Cannot set base path."
+                    )
                     # Continue to set defaults even if path missing? Or skip? Let's continue for now.
 
                 # --- Set defaults (safe now due to open_dict) ---
                 try:
                     # Use .get() on the main cfg object for the default device
-                    default_device = self.cfg.get('scorer_default_device', 'cpu')
+                    default_device = self.cfg.get("scorer_default_device", "cpu")
                     # Set default device for this evaluator
                     self.cfg.scorer_device.setdefault(evaluator_lower, default_device)
                     # Set default weight for this evaluator
                     self.cfg.scorer_weight.setdefault(evaluator_lower, 1.0)
                 except Exception as e_setdefault:
                     # Catch potential errors during setdefault if keys are weird
-                    logger.error(f"Error setting default config for '{evaluator}': {e_setdefault}")
+                    logger.error(
+                        f"Error setting default config for '{evaluator}': {e_setdefault}"
+                    )
             # --- End Loop ---
         # --- End open_dict context ---
 
@@ -324,27 +355,30 @@ class AestheticScorer:
         scorer_model_dir_path = Path(self.cfg.scorer_model_dir)
 
         # --- Files needed by specific scorers explicitly ---
-        med_config_path = scorer_model_dir_path / 'med_config.json'
-        if any(x.lower() in ['blip', 'imagereward'] for x in self.cfg.scorer_method):
+        med_config_path = scorer_model_dir_path / "med_config.json"
+        if any(x.lower() in ["blip", "imagereward"] for x in self.cfg.scorer_method):
             if not med_config_path.is_file():
                 logger.info("Downloading med_config.json (needed for BLIP/ImageReward)")
                 self.download_file(
                     "https://huggingface.co/THUDM/ImageReward/resolve/main/med_config.json?download=true",
-                    med_config_path)
+                    med_config_path,
+                )
 
         clip_l_path = scorer_model_dir_path / "CLIP-ViT-L-14.pt"
-        if any(x.lower() in ['laion', 'chad'] for x in self.cfg.scorer_method):
+        if any(x.lower() in ["laion", "chad"] for x in self.cfg.scorer_method):
             if not clip_l_path.is_file():
                 logger.info("Downloading CLIP ViT-L-14 model (required for Laion/Chad)")
                 self.download_file(
                     "https://openaipublic.azureedge.net/clip/models/b8cca3fd41ae0c99ba7e8951adf17d267cdb84cd88be6f7c2e0eca1737a03836/ViT-L-14.pt?raw=true",
-                    clip_l_path)
+                    clip_l_path,
+                )
 
         clip_b_path = scorer_model_dir_path / "CLIP-ViT-B-32.safetensors"
-        if any(x.lower() in ['wdaes'] for x in self.cfg.scorer_method):
+        if any(x.lower() in ["wdaes"] for x in self.cfg.scorer_method):
             if not clip_b_path.is_file():
                 logger.warning(
-                    f"CLIP ViT-B-32 model needed by WDAes not found at {clip_b_path}. Please ensure it exists or WDAes might fail.")
+                    f"CLIP ViT-B-32 model needed by WDAes not found at {clip_b_path}. Please ensure it exists or WDAes might fail."
+                )
                 # Add download logic if a reliable URL is found
         # --- End explicit file checks ---
 
@@ -352,29 +386,39 @@ class AestheticScorer:
         downloaded_this_run = set()  # Track downloads per run to avoid repeats
         for evaluator in self.cfg.scorer_method:
             evaluator_lower = evaluator.lower()
-            if evaluator_lower in ['manual', 'aestheticv25']: continue
+            if evaluator_lower in ["manual", "aestheticv25"]:
+                continue
 
             model_data_entry = MODEL_DATA.get(evaluator_lower)
-            if not model_data_entry: continue
+            if not model_data_entry:
+                continue
 
             # Get all potential filenames associated with this scorer from MODEL_DATA
             filenames_to_check = []
             for key, value in model_data_entry.items():
-                if key.endswith("_name") or key == "file_name" or key in ['class', 'real', 'anime']:
+                if (
+                    key.endswith("_name")
+                    or key == "file_name"
+                    or key in ["class", "real", "anime"]
+                ):
                     if isinstance(value, str):  # Ensure it's a filename string
                         filenames_to_check.append(value)
 
             # Check and download each unique required filename
             for filename in set(filenames_to_check):  # Use set for uniqueness
-                if not filename or filename in downloaded_this_run: continue  # Skip empty or already handled
+                if not filename or filename in downloaded_this_run:
+                    continue  # Skip empty or already handled
 
                 file_path = scorer_model_dir_path / filename
                 if not file_path.is_file():
                     # Find URL associated with this filename (might only be on primary key like 'url')
                     url = model_data_entry.get("url")  # Try default 'url' key first
-                    if filename != model_data_entry.get("file_name"):  # If it's not the primary file
-                        url = model_data_entry.get(f"url_{filename.split('.')[0].lower()}",
-                                                   url)  # Try url_key (e.g., url_class) or fallback to main url
+                    if filename != model_data_entry.get(
+                        "file_name"
+                    ):  # If it's not the primary file
+                        url = model_data_entry.get(
+                            f"url_{filename.split('.')[0].lower()}", url
+                        )  # Try url_key (e.g., url_class) or fallback to main url
 
                     if url:
                         logger.info(f"Downloading {evaluator} file: {filename}")
@@ -382,7 +426,8 @@ class AestheticScorer:
                         downloaded_this_run.add(filename)
                     else:
                         logger.warning(
-                            f"Required file '{filename}' for scorer '{evaluator}' not found and no download URL could be determined. Please place it manually in '{scorer_model_dir_path}'.")
+                            f"Required file '{filename}' for scorer '{evaluator}' not found and no download URL could be determined. Please place it manually in '{scorer_model_dir_path}'."
+                        )
                 else:
                     downloaded_this_run.add(filename)  # Mark as checked
 
@@ -394,7 +439,7 @@ class AestheticScorer:
             # Use stream=True for potentially large files
             with requests.get(url, stream=True, timeout=60) as r:  # Add timeout
                 r.raise_for_status()  # Check for HTTP errors
-                total_size = int(r.headers.get('content-length', 0))
+                total_size = int(r.headers.get("content-length", 0))
                 # Basic progress indication (can be replaced with tqdm if preferred)
                 chunk_size = 8192
                 downloaded = 0
@@ -410,62 +455,83 @@ class AestheticScorer:
         except requests.exceptions.RequestException as req_err:
             logger.error(f"Failed to download {url}: {req_err}")
             # Optionally delete partial file if it exists
-            if path.exists(): path.unlink(missing_ok=True)
+            if path.exists():
+                path.unlink(missing_ok=True)
         except Exception as e:
             logger.error(f"An unexpected error occurred during download: {e}")
-            if path.exists(): path.unlink(missing_ok=True)
+            if path.exists():
+                path.unlink(missing_ok=True)
 
     def _load_model(self, evaluator_lower: str):
         """Loads a single scorer model instance on demand."""
         if evaluator_lower in self.model:
             logger.debug(f"Model '{evaluator_lower}' is already loaded.")
             return True
-        
+
         logger.info(f"Lazy loading scorer model: '{evaluator_lower}'")
         scorer_model_dir_path = Path(self.cfg.scorer_model_dir)
-        med_config_path = scorer_model_dir_path / 'med_config.json'
+        med_config_path = scorer_model_dir_path / "med_config.json"
         clip_l_path = scorer_model_dir_path / "CLIP-ViT-L-14.pt"
         clip_b_path = scorer_model_dir_path / "CLIP-ViT-B-32.safetensors"
 
         scorer_factory = {
-            "laion": {"class": AES, "files": {"model_path": "file_name"},
-                      "extra_args": {"clip_model_path": str(clip_l_path)}},
-            "chad": {"class": AES, "files": {"model_path": "file_name"},
-                     "extra_args": {"clip_model_path": str(clip_l_path)}},
-            "wdaes": {"class": WDA, "files": {"model_path": "file_name"},
-                      "extra_args": {"clip_path": str(clip_b_path)}},
+            "laion": {
+                "class": AES,
+                "files": {"model_path": "file_name"},
+                "extra_args": {"clip_model_path": str(clip_l_path)},
+            },
+            "chad": {
+                "class": AES,
+                "files": {"model_path": "file_name"},
+                "extra_args": {"clip_model_path": str(clip_l_path)},
+            },
+            "wdaes": {
+                "class": WDA,
+                "files": {"model_path": "file_name"},
+                "extra_args": {"clip_path": str(clip_b_path)},
+            },
             "clip": {"class": CLP, "files": {"model_path": "file_name"}},
             "pick": {"class": PICK, "files": {"model_path": "file_name"}},
             "shadowv2": {"class": SS, "files": {"model_path": "file_name"}},
             "cafe": {"class": CAFE, "files": {"model_path": "file_name"}},
-            "noai": {"class": NOAI,
-                     "files": {"model_path_class": "class", "model_path_real": "real", "model_path_anime": "anime"}},
+            "noai": {
+                "class": NOAI,
+                "files": {
+                    "model_path_class": "class",
+                    "model_path_real": "real",
+                    "model_path_anime": "anime",
+                },
+            },
             "cityaes": {"class": CITY, "files": {"pathname": "file_name"}},
             "aestheticv25": {"class": AES25, "files": {"model_path": "file_name"}},
-            "luminaflex": {"class": LUMI, "files": {"model_path": "file_name", "config_path": "config_name"}},
-            "lumidinov3": {"class": LUMI, "files": {"model_path": "file_name", "config_path": "config_name"}},
-            "lumidinov2l": {"class": LUMI, "files": {"model_path": "file_name", "config_path": "config_name"}},
-            "lumidinov2g": {"class": LUMI, "files": {"model_path": "file_name", "config_path": "config_name"}},
-            "simplequality": {
-                "class": SQ,
-                "files": {},
-                "extra_args": {}
+            "luminaflex": {
+                "class": LUMI,
+                "files": {"model_path": "file_name", "config_path": "config_name"},
             },
+            "lumidinov3": {
+                "class": LUMI,
+                "files": {"model_path": "file_name", "config_path": "config_name"},
+            },
+            "lumidinov2l": {
+                "class": LUMI,
+                "files": {"model_path": "file_name", "config_path": "config_name"},
+            },
+            "lumidinov2g": {
+                "class": LUMI,
+                "files": {"model_path": "file_name", "config_path": "config_name"},
+            },
+            "simplequality": {"class": SQ, "files": {}, "extra_args": {}},
             "hybridnoise": {
                 "class": HNS,
                 "files": {},
-                "extra_args": {"rembg_session": "self.rembg_session"}
+                "extra_args": {"rembg_session": "self.rembg_session"},
             },
             "backgroundblackness": {
                 "class": BBS,
                 "files": {},
-                "extra_args": {"rembg_session": "self.rembg_session"}
+                "extra_args": {"rembg_session": "self.rembg_session"},
             },
-            "pcascorer": {
-                "class": PCA,
-                "files": {},
-                "extra_args": {}
-            },
+            "pcascorer": {"class": PCA, "files": {}, "extra_args": {}},
         }
 
         if evaluator_lower not in scorer_factory:
@@ -482,8 +548,10 @@ class AestheticScorer:
         constructor_args = {}
         file_paths_ok = True
 
-        if 'device' in inspect.signature(ScorerClass.__init__).parameters:
-            constructor_args["device"] = self.cfg.scorer_device.get(evaluator_lower, self.cfg.scorer_default_device)
+        if "device" in inspect.signature(ScorerClass.__init__).parameters:
+            constructor_args["device"] = self.cfg.scorer_device.get(
+                evaluator_lower, self.cfg.scorer_default_device
+            )
 
         if "files" in config:
             for arg_name, model_data_key in config["files"].items():
@@ -492,17 +560,22 @@ class AestheticScorer:
                     logger.error(f"MODEL_DATA entry missing for '{evaluator_lower}'.")
                     file_paths_ok = False
                     break
-                
+
                 filename = model_data_entry.get(model_data_key)
                 if not filename:
-                    if evaluator_lower == "aestheticv25": continue
-                    logger.error(f"Filename key '{model_data_key}' not found for '{evaluator_lower}'.")
+                    if evaluator_lower == "aestheticv25":
+                        continue
+                    logger.error(
+                        f"Filename key '{model_data_key}' not found for '{evaluator_lower}'."
+                    )
                     file_paths_ok = False
                     break
 
                 file_path = scorer_model_dir_path / filename
                 if not file_path.is_file():
-                    logger.error(f"Required file for '{evaluator_lower}' not found: {file_path}")
+                    logger.error(
+                        f"Required file for '{evaluator_lower}' not found: {file_path}"
+                    )
                     file_paths_ok = False
                     break
                 constructor_args[arg_name] = str(file_path)
@@ -522,10 +595,15 @@ class AestheticScorer:
 
         try:
             self.model[evaluator_lower] = ScorerClass(**constructor_args)
-            logger.info(f"Successfully lazy-loaded instance for scorer: '{evaluator_lower}'")
+            logger.info(
+                f"Successfully lazy-loaded instance for scorer: '{evaluator_lower}'"
+            )
             return True
         except Exception as e_init:
-            logger.error(f"Failed to initialize lazy-loaded instance for '{evaluator_lower}': {e_init}", exc_info=True)
+            logger.error(
+                f"Failed to initialize lazy-loaded instance for '{evaluator_lower}': {e_init}",
+                exc_info=True,
+            )
             return False
 
     def _load_all_models(self):
@@ -533,35 +611,62 @@ class AestheticScorer:
         logger.info("Loading scorer model instances...")
         lazy_load_list = [s.lower() for s in self.cfg.get("scorer_lazy_load_list", [])]
         scorer_model_dir_path = Path(self.cfg.scorer_model_dir)
-        med_config_path = scorer_model_dir_path / 'med_config.json'
+        med_config_path = scorer_model_dir_path / "med_config.json"
         clip_l_path = scorer_model_dir_path / "CLIP-ViT-L-14.pt"
         clip_b_path = scorer_model_dir_path / "CLIP-ViT-B-32.safetensors"
 
         # --- Scorer Factory Configuration ---
         scorer_factory = {
-            "laion": {"class": AES, "files": {"model_path": "file_name"},
-                      "extra_args": {"clip_model_path": str(clip_l_path)}},
-            "chad": {"class": AES, "files": {"model_path": "file_name"},
-                     "extra_args": {"clip_model_path": str(clip_l_path)}},
-            "wdaes": {"class": WDA, "files": {"model_path": "file_name"},
-                      "extra_args": {"clip_path": str(clip_b_path)}},
+            "laion": {
+                "class": AES,
+                "files": {"model_path": "file_name"},
+                "extra_args": {"clip_model_path": str(clip_l_path)},
+            },
+            "chad": {
+                "class": AES,
+                "files": {"model_path": "file_name"},
+                "extra_args": {"clip_model_path": str(clip_l_path)},
+            },
+            "wdaes": {
+                "class": WDA,
+                "files": {"model_path": "file_name"},
+                "extra_args": {"clip_path": str(clip_b_path)},
+            },
             "clip": {"class": CLP, "files": {"model_path": "file_name"}},
-#             "blip": {"class": BLP, "files": {"model_path": "file_name"}, "extra_args": {"med_config": med_config_path}},
-#             "imagereward": {"class": IMGR, "files": {"model_path": "file_name"},
-#                             "extra_args": {"med_config": med_config_path}},
-#            "hpsv21": {"class": HPS, "files": {"pathname": "file_name"}},
-#            "hpsv3": {"class": HPS3, "files": {"model_path": "file_name"}},
+            #             "blip": {"class": BLP, "files": {"model_path": "file_name"}, "extra_args": {"med_config": med_config_path}},
+            #             "imagereward": {"class": IMGR, "files": {"model_path": "file_name"},
+            #                             "extra_args": {"med_config": med_config_path}},
+            #            "hpsv21": {"class": HPS, "files": {"pathname": "file_name"}},
+            #            "hpsv3": {"class": HPS3, "files": {"model_path": "file_name"}},
             "pick": {"class": PICK, "files": {"model_path": "file_name"}},
             "shadowv2": {"class": SS, "files": {"model_path": "file_name"}},
             "cafe": {"class": CAFE, "files": {"model_path": "file_name"}},
-            "noai": {"class": NOAI,
-                     "files": {"model_path_class": "class", "model_path_real": "real", "model_path_anime": "anime"}},
+            "noai": {
+                "class": NOAI,
+                "files": {
+                    "model_path_class": "class",
+                    "model_path_real": "real",
+                    "model_path_anime": "anime",
+                },
+            },
             "cityaes": {"class": CITY, "files": {"pathname": "file_name"}},
             "aestheticv25": {"class": AES25, "files": {"model_path": "file_name"}},
-            "luminaflex": {"class": LUMI, "files": {"model_path": "file_name", "config_path": "config_name"}},
-            "lumidinov3": {"class": LUMI, "files": {"model_path": "file_name", "config_path": "config_name"}},
-            "lumidinov2l": {"class": LUMI, "files": {"model_path": "file_name", "config_path": "config_name"}},
-            "lumidinov2g": {"class": LUMI, "files": {"model_path": "file_name", "config_path": "config_name"}},
+            "luminaflex": {
+                "class": LUMI,
+                "files": {"model_path": "file_name", "config_path": "config_name"},
+            },
+            "lumidinov3": {
+                "class": LUMI,
+                "files": {"model_path": "file_name", "config_path": "config_name"},
+            },
+            "lumidinov2l": {
+                "class": LUMI,
+                "files": {"model_path": "file_name", "config_path": "config_name"},
+            },
+            "lumidinov2g": {
+                "class": LUMI,
+                "files": {"model_path": "file_name", "config_path": "config_name"},
+            },
             # --- Add other custom scorers like LumiStyle here ---
             # "lumistyle": {
             #     "class": AnatomyScorer if LUMI_ANATOMY_AVAILABLE else None, # Or a different StyleScorer class
@@ -573,48 +678,51 @@ class AestheticScorer:
             "simplequality": {
                 "class": SQ,
                 "files": {},  # No files needed
-                "extra_args": {}  # No extra arguments needed
+                "extra_args": {},  # No extra arguments needed
             },
             "hybridnoise": {
                 "class": HNS,
                 "files": {},
-                "extra_args": {"rembg_session": "self.rembg_session"}
+                "extra_args": {"rembg_session": "self.rembg_session"},
             },
             "backgroundblackness": {
                 "class": BBS,
                 "files": {},
-                "extra_args": {"rembg_session": "self.rembg_session"} # Special key to pass session
+                "extra_args": {
+                    "rembg_session": "self.rembg_session"
+                },  # Special key to pass session
             },
-            "pcascorer": {
-                "class": PCA,
-                "files": {},
-                "extra_args": {}
-            },
+            "pcascorer": {"class": PCA, "files": {}, "extra_args": {}},
         }
         # --- End Factory Config ---
 
         # --- Instantiation Loop ---
         for evaluator in self.cfg.scorer_method:
             evaluator_lower = evaluator.lower()
-            if evaluator_lower in ['manual', 'background_blackness']:
+            if evaluator_lower in ["manual", "background_blackness"]:
                 continue
-            
+
             if evaluator_lower in lazy_load_list:
-                logger.info(f"Deferring loading of scorer '{evaluator}' due to lazy load list.")
+                logger.info(
+                    f"Deferring loading of scorer '{evaluator}' due to lazy load list."
+                )
                 continue
 
             logger.info(f"Loading instance for scorer: '{evaluator}'")
 
             if evaluator_lower not in scorer_factory:
                 logger.error(
-                    f"Unknown scorer '{evaluator}' defined in config but not found in scorer_factory. Skipping.")
+                    f"Unknown scorer '{evaluator}' defined in config but not found in scorer_factory. Skipping."
+                )
                 continue
 
             config = scorer_factory[evaluator_lower]
             ScorerClass = config.get("class")
 
             if ScorerClass is None:
-                logger.error(f"Scorer class for '{evaluator}' not available (possibly failed import). Skipping.")
+                logger.error(
+                    f"Scorer class for '{evaluator}' not available (possibly failed import). Skipping."
+                )
                 continue
 
             # Prepare constructor arguments
@@ -622,9 +730,11 @@ class AestheticScorer:
             file_paths_ok = True
 
             # 1. Add device
-            if 'device' in inspect.signature(ScorerClass.__init__).parameters:
+            if "device" in inspect.signature(ScorerClass.__init__).parameters:
                 try:
-                    constructor_args["device"] = self.cfg.scorer_device.get(evaluator_lower, self.cfg.scorer_default_device)
+                    constructor_args["device"] = self.cfg.scorer_device.get(
+                        evaluator_lower, self.cfg.scorer_default_device
+                    )
                 except KeyError:
                     logger.error(f"Device config missing for '{evaluator}'. Skipping.")
                     continue
@@ -635,56 +745,76 @@ class AestheticScorer:
                     try:
                         # Derive filename from MODEL_DATA using the key
                         model_data_entry = MODEL_DATA.get(evaluator_lower)
-                        if not model_data_entry: raise KeyError("MODEL_DATA entry missing")
+                        if not model_data_entry:
+                            raise KeyError("MODEL_DATA entry missing")
 
                         filename = None
                         if model_data_key == "file_name":
                             filename = model_data_entry.get("file_name")
                         elif model_data_key == "config_name":
                             filename = model_data_entry.get("config_name")
-                        elif model_data_key in ['class', 'real', 'anime']:
+                        elif model_data_key in ["class", "real", "anime"]:
                             filename = model_data_entry.get(model_data_key)
                         else:
                             filename = model_data_entry.get(model_data_key)
 
                         if not filename:
                             # Special case: aestheticv25 has no file
-                            if evaluator_lower == "aestheticv25" and not config["files"]:
-                                logger.debug(f"No file needed for {evaluator_lower}, arg '{arg_name}'.")
+                            if (
+                                evaluator_lower == "aestheticv25"
+                                and not config["files"]
+                            ):
+                                logger.debug(
+                                    f"No file needed for {evaluator_lower}, arg '{arg_name}'."
+                                )
                                 continue  # Skip adding this arg if no file needed
                             else:
                                 raise KeyError(
-                                    f"Filename key '{model_data_key}' not found in MODEL_DATA for '{evaluator_lower}'")
+                                    f"Filename key '{model_data_key}' not found in MODEL_DATA for '{evaluator_lower}'"
+                                )
 
                         # Use the Path object stored in self.model_path if it's the primary file, otherwise construct path
-                        if arg_name in ["model_path", "pathname"] and evaluator_lower in self.model_path:
+                        if (
+                            arg_name in ["model_path", "pathname"]
+                            and evaluator_lower in self.model_path
+                        ):
                             # Use the primary path object already created
                             file_path = self.model_path[evaluator_lower]
                             # Verify filename matches if needed (optional sanity check)
                             if file_path.name != filename:
                                 logger.warning(
-                                    f"Filename mismatch for {evaluator_lower} arg {arg_name}: Expected {filename}, Path has {file_path.name}. Using path.")
+                                    f"Filename mismatch for {evaluator_lower} arg {arg_name}: Expected {filename}, Path has {file_path.name}. Using path."
+                                )
                         else:
                             # Construct path for secondary files (like config, or NOAI parts)
                             file_path = scorer_model_dir_path / filename
 
                         # Check existence
                         if not file_path.is_file():
-                            logger.error(f"Required file for '{evaluator}', arg '{arg_name}' not found: {file_path}")
+                            logger.error(
+                                f"Required file for '{evaluator}', arg '{arg_name}' not found: {file_path}"
+                            )
                             file_paths_ok = False
                             break
-                        constructor_args[arg_name] = str(file_path)  # Pass path as string
+                        constructor_args[arg_name] = str(
+                            file_path
+                        )  # Pass path as string
 
                     except KeyError as e:
-                        logger.error(f"Config error resolving file for '{evaluator}', arg '{arg_name}': {e}")
+                        logger.error(
+                            f"Config error resolving file for '{evaluator}', arg '{arg_name}': {e}"
+                        )
                         file_paths_ok = False
                         break
                     except Exception as e_path:
-                        logger.error(f"Error resolving path for '{evaluator}', arg '{arg_name}': {e_path}")
+                        logger.error(
+                            f"Error resolving path for '{evaluator}', arg '{arg_name}': {e_path}"
+                        )
                         file_paths_ok = False
                         break
 
-            if not file_paths_ok: continue  # Skip if files missing
+            if not file_paths_ok:
+                continue  # Skip if files missing
 
             # 3. Add extra arguments
             if "extra_args" in config:
@@ -695,27 +825,44 @@ class AestheticScorer:
                         if self.rembg_session:
                             resolved_extra_args[k] = self.rembg_session
                         else:
-                            logger.warning(f"rembg_session not available for '{evaluator}', but it was requested.")
+                            logger.warning(
+                                f"rembg_session not available for '{evaluator}', but it was requested."
+                            )
                     else:
                         # Original logic for other args
                         resolved_extra_args[k] = str(v) if isinstance(v, Path) else v
                 constructor_args.update(resolved_extra_args)
-            
-            if evaluator_lower == 'hybridnoise':
-                constructor_args['kernel_size'] = self.cfg.get("hybridnoise_kernel_size", 3)
-                constructor_args['noise_threshold'] = self.cfg.get("hybridnoise_noise_threshold", 20.0)
-                constructor_args['color_tolerance'] = self.cfg.get("hybridnoise_color_tolerance", 30)
+
+            if evaluator_lower == "hybridnoise":
+                constructor_args["kernel_size"] = self.cfg.get(
+                    "hybridnoise_kernel_size", 3
+                )
+                constructor_args["noise_threshold"] = self.cfg.get(
+                    "hybridnoise_noise_threshold", 20.0
+                )
+                constructor_args["color_tolerance"] = self.cfg.get(
+                    "hybridnoise_color_tolerance", 30
+                )
 
             # 4. Instantiate
             try:
-                logger.debug(f"Instantiating {ScorerClass.__name__} with args: {constructor_args}")
-                self.model[evaluator_lower] = ScorerClass(**constructor_args)  # Store instance using lowercase key
+                logger.debug(
+                    f"Instantiating {ScorerClass.__name__} with args: {constructor_args}"
+                )
+                self.model[evaluator_lower] = ScorerClass(
+                    **constructor_args
+                )  # Store instance using lowercase key
                 logger.info(f"Successfully loaded instance for scorer: '{evaluator}'")
             except Exception as e_init:
-                logger.error(f"Failed to initialize instance for '{evaluator}': {e_init}", exc_info=True)
+                logger.error(
+                    f"Failed to initialize instance for '{evaluator}': {e_init}",
+                    exc_info=True,
+                )
         # --- End Instantiation Loop ---
 
-    async def score(self, image: Image.Image, prompt: str, name: Optional[str] = None) -> float:
+    async def score(
+        self, image: Image.Image, prompt: str, name: Optional[str] = None
+    ) -> float:
         values: List[float] = []
         scorer_weights: List[float] = []
         logger.info("Entering score method.")
@@ -729,10 +876,11 @@ class AestheticScorer:
         # --- Scoring Loop ---
         for evaluator in self.cfg.scorer_method:
             # --- Manual Scoring Path ---
-            if evaluator == 'manual':
+            if evaluator == "manual":
                 threading.Thread(target=show_image, daemon=True).start()
                 individual_eval_score = await asyncio.to_thread(self.get_user_score)
-                if individual_eval_score == -1.0: return -1.0
+                if individual_eval_score == -1.0:
+                    return -1.0
 
                 weight = self.cfg.scorer_weight.get(evaluator, 1.0)
                 values.append(individual_eval_score)
@@ -754,50 +902,70 @@ class AestheticScorer:
                     exclude_list = filter_config.get("exclude")
                     if exclude_list and name in exclude_list:
                         run_scorer = False
-                
+
                 if not run_scorer:
-                    logger.debug(f"Skipping scorer '{evaluator}' for payload '{name}' due to exclude filter.")
+                    logger.debug(
+                        f"Skipping scorer '{evaluator}' for payload '{name}' due to exclude filter."
+                    )
                     continue
                 # --- End Filtering Logic ---
 
                 individual_eval_score = 0.0  # Default score
 
                 try:
-                    lazy_load_list = [s.lower() for s in self.cfg.get("scorer_lazy_load_list", [])]
+                    lazy_load_list = [
+                        s.lower() for s in self.cfg.get("scorer_lazy_load_list", [])
+                    ]
                     scorer_instance = self.model.get(evaluator_lower)
 
                     if scorer_instance is None and evaluator_lower in lazy_load_list:
-                        logger.info(f"'{evaluator}' is in lazy load list and not loaded. Attempting to load now.")
+                        logger.info(
+                            f"'{evaluator}' is in lazy load list and not loaded. Attempting to load now."
+                        )
                         if self._load_model(evaluator_lower):
                             scorer_instance = self.model.get(evaluator_lower)
                         else:
-                            logger.error(f"Failed to lazy-load model for '{evaluator}'. Skipping scoring.")
+                            logger.error(
+                                f"Failed to lazy-load model for '{evaluator}'. Skipping scoring."
+                            )
                             continue
 
                     if scorer_instance is None:
-                        logger.error(f"Scorer instance for '{evaluator}' not found and not lazy-loadable. Skipping.")
+                        logger.error(
+                            f"Scorer instance for '{evaluator}' not found and not lazy-loadable. Skipping."
+                        )
                         continue
 
-                    elif evaluator_lower == 'pcascorer':
+                    elif evaluator_lower == "pcascorer":
                         # This scorer has extra parameters for analysis
-                        score_args = {'image': image}
+                        score_args = {"image": image}
                         # Read PCA settings from config, with defaults
-                        score_args['component'] = self.cfg.get("pcascorer_component", 1)
-                        score_args['mode'] = self.cfg.get("pcascorer_mode", 'projection')
-                        score_args['input_type'] = self.cfg.get("pcascorer_input_type", 'color')
-                        score_args['linearize'] = self.cfg.get("pcascorer_linearize", False)
-                        score_args['invert'] = self.cfg.get("pcascorer_invert", False)
-                        score_args['enhancement'] = self.cfg.get("pcascorer_enhancement", 'equalize')
-                        score_args['gamma'] = self.cfg.get("pcascorer_gamma", 1.0)
-                        
+                        score_args["component"] = self.cfg.get("pcascorer_component", 1)
+                        score_args["mode"] = self.cfg.get(
+                            "pcascorer_mode", "projection"
+                        )
+                        score_args["input_type"] = self.cfg.get(
+                            "pcascorer_input_type", "color"
+                        )
+                        score_args["linearize"] = self.cfg.get(
+                            "pcascorer_linearize", False
+                        )
+                        score_args["invert"] = self.cfg.get("pcascorer_invert", False)
+                        score_args["enhancement"] = self.cfg.get(
+                            "pcascorer_enhancement", "equalize"
+                        )
+                        score_args["gamma"] = self.cfg.get("pcascorer_gamma", 1.0)
+
                         individual_eval_score = scorer_instance.score(**score_args)
 
                         if self.cfg.scorer_print_individual:
                             print(f"{evaluator}:{individual_eval_score:.4f}")
 
-                    elif evaluator_lower == 'hpsv3':
+                    elif evaluator_lower == "hpsv3":
                         # HPSv3 returns a tuple (mu, sigma)
-                        mu_score, sigma_score = scorer_instance.score(image=image, prompt=prompt)
+                        mu_score, sigma_score = scorer_instance.score(
+                            image=image, prompt=prompt
+                        )
 
                         # Print individual mu and sigma
                         if self.cfg.scorer_print_individual:
@@ -812,14 +980,18 @@ class AestheticScorer:
                         individual_eval_score = mu_score - (k * sigma_score)
 
                         if self.cfg.scorer_print_individual:
-                            print(f"  {evaluator} (processed final): {individual_eval_score:.4f}")
+                            print(
+                                f"  {evaluator} (processed final): {individual_eval_score:.4f}"
+                            )
 
                     else:
                         # Standard scoring for other models
-                        score_args = {'image': image}
-                        score_params = inspect.signature(scorer_instance.score).parameters
-                        if 'prompt' in score_params:
-                            score_args['prompt'] = prompt
+                        score_args = {"image": image}
+                        score_params = inspect.signature(
+                            scorer_instance.score
+                        ).parameters
+                        if "prompt" in score_params:
+                            score_args["prompt"] = prompt
                         individual_eval_score = scorer_instance.score(**score_args)
 
                         # Print its own score for other models
@@ -846,7 +1018,9 @@ class AestheticScorer:
         fake_score = 0.0
         while True:
             # Use a slightly different prompt to indicate context
-            fake_score_input = input("\tOVERRIDE: Enter the final average score for this entire iteration (0-10): ")
+            fake_score_input = input(
+                "\tOVERRIDE: Enter the final average score for this entire iteration (0-10): "
+            )
             if fake_score_input:
                 try:
                     fake_score = float(fake_score_input)
@@ -854,17 +1028,22 @@ class AestheticScorer:
                         logger.info(f"Using fake average score: {fake_score:.4f}")
                         return fake_score  # Return the validated fake score
                     else:
-                        print("\tInvalid score. Please enter a number between 0 and 10.")
+                        print(
+                            "\tInvalid score. Please enter a number between 0 and 10."
+                        )
                 except ValueError:
                     print("\tInvalid input. Please enter a number.")
             else:
                 print("\tInput cannot be empty.")
 
-    def average_calc(self, values: List[float], scorer_weights: List[float], average_type: str) -> float:
+    def average_calc(
+        self, values: List[float], scorer_weights: List[float], average_type: str
+    ) -> float:
         # Ensure weights and values match length
         if len(values) != len(scorer_weights):
             logger.error(
-                f"Score calculation error: Mismatched values ({len(values)}) and weights ({len(scorer_weights)}). Using default weights.")
+                f"Score calculation error: Mismatched values ({len(values)}) and weights ({len(scorer_weights)}). Using default weights."
+            )
             # Fallback to equal weights if lengths mismatch
             scorer_weights = [1.0] * len(values)
 
@@ -878,22 +1057,29 @@ class AestheticScorer:
         if norm == 0:
             return 0.0  # Avoid division by zero
 
-        if average_type == 'geometric':
+        if average_type == "geometric":
             # Avoid log(0) or negative numbers for geometric mean
             product = 1.0
             total_weight = 0.0
             for value, weight in zip(values, scorer_weights):
                 if value > 0:
-                    product *= value ** weight
+                    product *= value**weight
                     total_weight += weight
                 else:  # Handle non-positive scores - maybe skip or use a floor? Skipping is safer.
-                    logger.warning(f"Skipping non-positive score {value} in geometric mean calculation.")
+                    logger.warning(
+                        f"Skipping non-positive score {value} in geometric mean calculation."
+                    )
             return product ** (1 / total_weight) if total_weight > 0 else 0.0
-        elif average_type == 'arithmetic':
-            return sum(value * weight for value, weight in zip(values, scorer_weights)) / norm
-        elif average_type == 'quadratic':
+        elif average_type == "arithmetic":
+            return (
+                sum(value * weight for value, weight in zip(values, scorer_weights))
+                / norm
+            )
+        elif average_type == "quadratic":
             # Ensure values are non-negative for quadratic mean if that's intended
-            avg_sq = sum((value ** 2) * weight for value, weight in zip(values, scorer_weights))
+            avg_sq = sum(
+                (value**2) * weight for value, weight in zip(values, scorer_weights)
+            )
             return (avg_sq / norm) ** 0.5  # Use 0.5 for square root
         else:
             raise ValueError(f"Invalid average type: {average_type}")
@@ -910,7 +1096,9 @@ class AestheticScorer:
                         print(
                             "Make sure to install xdg-open-wsl from here: https://github.com/cpbotha/xdg-open-wsl otherwise the images will NOT open."
                         )
-                        self.wsl_instructions_printed = True  # Set a flag to avoid printing multiple times
+                        self.wsl_instructions_printed = (
+                            True  # Set a flag to avoid printing multiple times
+                        )
                 subprocess.run(["xdg-open", str(image_path)], check=True)
             elif system == "Darwin":  # macOS
                 subprocess.run(["open", str(image_path)], check=True)
@@ -920,7 +1108,8 @@ class AestheticScorer:
                 )
         except FileNotFoundError:
             print(
-                f"Error: Could not find the default image viewer. Please ensure it's installed and configured correctly.")
+                "Error: Could not find the default image viewer. Please ensure it's installed and configured correctly."
+            )
         except (subprocess.CalledProcessError, OSError) as e:
             print(f"Error opening image: {e}")
             print(f"Please try opening the image manually: {image_path}")
@@ -929,7 +1118,7 @@ class AestheticScorer:
     def get_user_score() -> float:
         while True:
             user_input = input(
-                f"\n\tPlease enter the score for the shown image (a number between 0 and 10)\n\t> "
+                "\n\tPlease enter the score for the shown image (a number between 0 and 10)\n\t> "
             )
 
             # Cheat code handling

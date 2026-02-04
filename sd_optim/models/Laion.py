@@ -7,14 +7,15 @@
 * Based on improved-aesthetic-predictor code base
 * https://github.com/christophschuhmann/improved-aesthetic-predictor
 """
+
 import os
 
-import open_clip
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from PIL import Image
 import clip
+
 
 class MLP(nn.Module):
     def __init__(self, input_size):
@@ -30,11 +31,9 @@ class MLP(nn.Module):
             nn.Linear(128, 64),
             # nn.ReLU(),
             nn.Dropout(0.1),
-
             nn.Linear(64, 16),
             # nn.ReLU(),
-
-            nn.Linear(16, 1)
+            nn.Linear(16, 1),
         )
 
     def forward(self, x):
@@ -45,9 +44,11 @@ class Laion(nn.Module):
     def __init__(self, pathname, clip_path, device):
         super().__init__()
         self.device = device
-        self.clip_model, self.preprocess = clip.load(clip_path, device=self.device, jit=False)
+        self.clip_model, self.preprocess = clip.load(
+            clip_path, device=self.device, jit=False
+        )
         self.mlp = MLP(768)
-        state_dict = torch.load(pathname, map_location='cpu')
+        state_dict = torch.load(pathname, map_location="cpu")
         self.mlp.load_state_dict(state_dict, strict=False)
         self.mlp = self.mlp.to(self.device)
         self.mlp.eval()
@@ -56,14 +57,14 @@ class Laion(nn.Module):
             self.clip_model.float()
         else:
             clip.model.convert_weights(
-                self.clip_model)  # Actually this line is unnecessary since clip by default already on float16
+                self.clip_model
+            )  # Actually this line is unnecessary since clip by default already on float16
 
         # have clip.logit_scale require no grad.
         self.clip_model.logit_scale.requires_grad_(False)
 
     def score(self, prompt, image):
-
-        if (type(image).__name__ == 'list'):
+        if type(image).__name__ == "list":
             _, rewards = self.inference_rank(prompt, image)
             return rewards
             # image encode
@@ -82,7 +83,6 @@ class Laion(nn.Module):
         return rewards.detach().cpu().numpy().item()
 
     def inference_rank(self, prompt, generations_list):
-
         img_set = []
         for generations in generations_list:
             # image encode
@@ -99,4 +99,7 @@ class Laion(nn.Module):
         _, indices = torch.sort(rank, dim=0)
         indices = indices + 1
 
-        return indices.detach().cpu().numpy().tolist(), rewards.detach().cpu().numpy().tolist()
+        return (
+            indices.detach().cpu().numpy().tolist(),
+            rewards.detach().cpu().numpy().tolist(),
+        )

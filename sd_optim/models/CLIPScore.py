@@ -1,4 +1,4 @@
-'''
+"""
 @File       :   CLIPScore.py
 @Time       :   2023/02/12 13:14:00
 @Auther     :   Jiazheng Xu
@@ -6,7 +6,8 @@
 @Description:   CLIPScore.
 * Based on CLIP code base
 * https://github.com/openai/CLIP
-'''
+"""
+
 import os
 
 import torch
@@ -17,23 +18,25 @@ import clip
 
 
 class CLIPScore(nn.Module):
-    def __init__(self, pathname, device='cpu'):
+    def __init__(self, pathname, device="cpu"):
         super().__init__()
         self.device = device
-        self.clip_model, self.preprocess = clip.load(pathname, device=self.device, jit=False)
+        self.clip_model, self.preprocess = clip.load(
+            pathname, device=self.device, jit=False
+        )
 
         if device == "cpu":
             self.clip_model.float()
         else:
             clip.model.convert_weights(
-                self.clip_model)  # Actually this line is unnecessary since clip by default already on float16
+                self.clip_model
+            )  # Actually this line is unnecessary since clip by default already on float16
 
         # have clip.logit_scale require no grad.
         self.clip_model.logit_scale.requires_grad_(False)
 
     def score(self, prompt, image):
-
-        if (type(image).__name__ == 'list'):
+        if type(image).__name__ == "list":
             _, rewards = self.inference_rank(prompt, image)
             return rewards
 
@@ -51,7 +54,9 @@ class CLIPScore(nn.Module):
         image_features = F.normalize(self.clip_model.encode_image(image))
 
         # score
-        rewards = torch.sum(torch.mul(txt_features, image_features), dim=1, keepdim=True)
+        rewards = torch.sum(
+            torch.mul(txt_features, image_features), dim=1, keepdim=True
+        )
 
         score = rewards.detach().cpu().numpy().item()
         score += 1
@@ -59,7 +64,6 @@ class CLIPScore(nn.Module):
         return score
 
     def inference_rank(self, prompt, generations_list):
-
         text = clip.tokenize(prompt, truncate=True).to(self.device)
         txt_feature = F.normalize(self.clip_model.encode_text(text))
 
@@ -82,10 +86,12 @@ class CLIPScore(nn.Module):
         _, indices = torch.sort(rank, dim=0)
         indices = indices + 1
 
-        return indices.detach().cpu().numpy().tolist(), rewards.detach().cpu().numpy().tolist()
+        return (
+            indices.detach().cpu().numpy().tolist(),
+            rewards.detach().cpu().numpy().tolist(),
+        )
 
-    def features(self, prompt, image, aes_type='v2'):
-
+    def features(self, prompt, image, aes_type="v2"):
         # text encode
         text = clip.tokenize(prompt, truncate=True).to(self.device)
         txt_features = F.normalize(self.clip_model.encode_text(text))

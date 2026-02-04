@@ -29,19 +29,25 @@ class Classifier(torch.nn.Module):
 
 
 class WDAes(nn.Module):
-    def __init__(self, pathname, clip_path, device='cpu'):
+    def __init__(self, pathname, clip_path, device="cpu"):
         super().__init__()
         self.device = device
-        self.preprocess = CLIPImageProcessor.from_pretrained('openai/clip-vit-base-patch32')
-        config = CLIPConfig.from_pretrained(pretrained_model_name_or_path="openai/clip-vit-base-patch32")
+        self.preprocess = CLIPImageProcessor.from_pretrained(
+            "openai/clip-vit-base-patch32"
+        )
+        config = CLIPConfig.from_pretrained(
+            pretrained_model_name_or_path="openai/clip-vit-base-patch32"
+        )
         state_dict = safetensors.torch.load_file(clip_path)
-        self.clip_model = CLIPModel.from_pretrained(pretrained_model_name_or_path=None, state_dict=state_dict, config=config)
+        self.clip_model = CLIPModel.from_pretrained(
+            pretrained_model_name_or_path=None, state_dict=state_dict, config=config
+        )
         self.clip_model = self.clip_model.to(self.device)
         self.clip_model.eval()
         self.mlp = Classifier(512, 256, 1)
-        state_dict = torch.load(pathname, map_location='cpu')
+        state_dict = torch.load(pathname, map_location="cpu")
         self.mlp.load_state_dict(state_dict, strict=False)
-        self.mlp = self.mlp.to('cpu')
+        self.mlp = self.mlp.to("cpu")
         self.mlp.eval()
 
         if self.device == "cpu":
@@ -51,8 +57,7 @@ class WDAes(nn.Module):
         self.clip_model.logit_scale.requires_grad_(False)
 
     def score(self, prompt, image):
-
-        if (type(image).__name__ == 'list'):
+        if type(image).__name__ == "list":
             _, rewards = self.inference_rank(prompt, image)
             return rewards
 
@@ -63,9 +68,16 @@ class WDAes(nn.Module):
             elif isinstance(image, str):
                 if os.path.isfile(image):
                     pil_image = Image.open(image)
-            image = self.preprocess(images=pil_image, return_tensors='pt')['pixel_values']
+            image = self.preprocess(images=pil_image, return_tensors="pt")[
+                "pixel_values"
+            ]
             image = image.to(self.device)
-            image_features = self.clip_model.get_image_features(pixel_values=image).cpu().detach().numpy()
+            image_features = (
+                self.clip_model.get_image_features(pixel_values=image)
+                .cpu()
+                .detach()
+                .numpy()
+            )
 
             rewards = (image_features / np.linalg.norm(image_features)).squeeze(axis=0)
             reward = self.mlp(torch.from_numpy(rewards)).float().item()
@@ -74,7 +86,6 @@ class WDAes(nn.Module):
             return reward
 
     def inference_rank(self, prompt, generations_list):
-
         img_set = []
         for generations in generations_list:
             # image encode
@@ -91,4 +102,7 @@ class WDAes(nn.Module):
         _, indices = torch.sort(rank, dim=0)
         indices = indices + 1
 
-        return indices.detach().cpu().numpy().tolist(), rewards.detach().cpu().numpy().tolist()
+        return (
+            indices.detach().cpu().numpy().tolist(),
+            rewards.detach().cpu().numpy().tolist(),
+        )

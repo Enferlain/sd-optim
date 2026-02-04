@@ -10,6 +10,7 @@ from omegaconf import DictConfig, ListConfig, OmegaConf
 
 logger = logging.getLogger(__name__)
 
+
 class CardDealer:
     def __init__(self, wildcards_dir: str):
         self.wildcards_dir = Path(wildcards_dir)
@@ -27,7 +28,7 @@ class CardDealer:
                 # Relative path for ID: "character/protagonist" from "character/protagonist.txt"
                 relative_path = file.relative_to(self.wildcards_dir)
                 wildcard_name = str(relative_path.with_suffix("")).replace(os.sep, "_")
-                
+
                 with open(file, "r", encoding="utf-8") as f:
                     lines = [line.strip() for line in f.readlines() if line.strip()]
                     if lines:
@@ -42,20 +43,23 @@ class CardDealer:
         return f"__{wildcard_name}__"
 
     def replace_wildcards(self, prompt: str) -> str:
-        if not prompt: return ""
-        
+        if not prompt:
+            return ""
+
         # Regex to find __wildcard_name__
         def replace_match(match):
-            key = match.group(1) # content inside underscores
+            key = match.group(1)  # content inside underscores
             return self.sample_wildcard(key)
 
         # Iteratively replace until no wildcards remain (handles nested wildcards if needed)
         # Using a loop limit to prevent infinite recursion
-        for _ in range(3): 
-            if "__" not in prompt: break
+        for _ in range(3):
+            if "__" not in prompt:
+                break
             prompt = re.sub(r"__([a-zA-Z0-9_/\-\\]+)__", replace_match, prompt)
-            
+
         return prompt
+
 
 # --- CHANGED: Simplified Assembly Logic ---
 def assemble_payload(defaults: Dict, payload: Dict) -> Dict:
@@ -64,7 +68,7 @@ def assemble_payload(defaults: Dict, payload: Dict) -> Dict:
     Now WebUI-agnostic: returns a flat dict. Adapters handle API formatting.
     """
     final_payload = defaults.copy()
-    
+
     # Payload overrides defaults
     for k, v in payload.items():
         # Hydra/OmegaConf compatibility: unwrap if needed
@@ -72,16 +76,17 @@ def assemble_payload(defaults: Dict, payload: Dict) -> Dict:
             final_payload[k] = OmegaConf.to_container(v, resolve=True)
         else:
             final_payload[k] = v
-            
+
     return final_payload
+
 
 def unpack_cargo(cargo: DictConfig) -> Tuple[Dict, Dict]:
     defaults = {}
     payloads = {}
-    
+
     # Convert entire config to container once to avoid repeated conversions
     cargo_container = OmegaConf.to_container(cargo, resolve=True)
-    
+
     for k, v in cargo_container.items():
         if k == "cargo":
             # These are the specific test cases
@@ -95,8 +100,9 @@ def unpack_cargo(cargo: DictConfig) -> Tuple[Dict, Dict]:
         else:
             # These are global defaults (steps, cfg, workflow_json, etc.)
             defaults[k] = v
-            
+
     return defaults, payloads
+
 
 @dataclass
 class Prompter:
@@ -108,42 +114,52 @@ class Prompter:
 
     def load_payloads(self) -> None:
         self.raw_payloads = {}
-        
+
         # --- FIX: Direct Access ---
         # Hydra has already merged the selected cargo file (e.g., cargo_comfy.yaml)
         # into self.cfg.payloads. We just use it.
         cargo_data = self.cfg.payloads
-        
+
         defaults, payloads = unpack_cargo(cargo_data)
-        
+
         if not payloads:
-            logger.error("No payloads found in configuration! Check conf/payloads/ structure.")
+            logger.error(
+                "No payloads found in configuration! Check conf/payloads/ structure."
+            )
             # Debug tip for user
-            logger.debug(f"Current 'payloads' config keys: {list(cargo_data.keys()) if cargo_data else 'Empty'}")
-        
+            logger.debug(
+                f"Current 'payloads' config keys: {list(cargo_data.keys()) if cargo_data else 'Empty'}"
+            )
+
         for payload_name, payload in payloads.items():
             self.raw_payloads[payload_name] = assemble_payload(defaults, payload)
 
     def render_payloads(self, batch_size: int = 0) -> Tuple[List[Dict], List[str]]:
         payloads = []
         paths = []
-        
+
         for p_name, p in self.raw_payloads.items():
             # In optimization, batch_size is strictly controlled by the Optimizer loop,
             # but we allow generating multiple variations of the *same* payload if needed.
             # Usually batch_size=1 from config.
-            
+
             iterations = max(1, batch_size)
-            
+
             for _ in range(iterations):
                 rendered = p.copy()
-                
+
                 # Process Wildcards in Prompts
                 if "prompt" in rendered and isinstance(rendered["prompt"], str):
-                    rendered["prompt"] = self.dealer.replace_wildcards(rendered["prompt"])
-                
-                if "negative_prompt" in rendered and isinstance(rendered["negative_prompt"], str):
-                    rendered["negative_prompt"] = self.dealer.replace_wildcards(rendered["negative_prompt"])
+                    rendered["prompt"] = self.dealer.replace_wildcards(
+                        rendered["prompt"]
+                    )
+
+                if "negative_prompt" in rendered and isinstance(
+                    rendered["negative_prompt"], str
+                ):
+                    rendered["negative_prompt"] = self.dealer.replace_wildcards(
+                        rendered["negative_prompt"]
+                    )
 
                 # Handle specific logic for Forge Extensions (vpred)
                 # This could arguably move to the Adapter, but it's pure data manipulation
@@ -152,12 +168,12 @@ class Prompter:
                     # Only add if not already present
                     if "alwayson_scripts" not in rendered:
                         rendered["alwayson_scripts"] = {}
-                    
+
                     rendered["alwayson_scripts"][ext_name] = {
-                        "args": [True, False, 0, 0, 0, 0, 'default', 'v_prediction']
+                        "args": [True, False, 0, 0, 0, 0, "default", "v_prediction"]
                     }
 
                 paths.append(p_name)
                 payloads.append(rendered)
-                
+
         return payloads, paths

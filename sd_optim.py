@@ -5,25 +5,26 @@ import hydra
 import asyncio
 import logging
 import sys
-import os
 from pathlib import Path
 
 # Import main config/utility helpers
-from omegaconf import DictConfig, OmegaConf  # Using OmegaConf for cleaner config logging
+from omegaconf import (
+    DictConfig,
+)  # Using OmegaConf for cleaner config logging
 from sd_optim import utils  # Import utils (needs to exist)
 from sd_optim import BayesOptimizer, OptunaOptimizer
 
 # Configure logging level and format early. Can be overridden by Hydra later.
 logging.basicConfig(
     level=logging.INFO,  # Default level
-    format='%(asctime)s [%(levelname)s] %(name)s: %(message)s',
-    datefmt='%Y-%m-%d %H:%M:%S'
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
 )
 
 # Suppress noisy third-party loggers - ADD THIS HERE
-logging.getLogger('choreographer').setLevel(logging.WARNING)
-logging.getLogger('kaleido').setLevel(logging.WARNING)
-logging.getLogger('plotly').setLevel(logging.WARNING)  # Just in case
+logging.getLogger("choreographer").setLevel(logging.WARNING)
+logging.getLogger("kaleido").setLevel(logging.WARNING)
+logging.getLogger("plotly").setLevel(logging.WARNING)  # Just in case
 
 # Use a logger specific to this main script
 logger = logging.getLogger(__name__)  # Hydra often configures this further
@@ -44,7 +45,7 @@ def main(cfg: DictConfig) -> None:
         # logger.debug(f"Full configuration:\n{OmegaConf.to_yaml(cfg)}")
         logger.info(f"Selected WebUI: {cfg.get('webui', 'N/A')}")
         logger.info(f"Optimization Mode: {cfg.get('optimization_mode', 'N/A')}")
-        if cfg.get('optimization_mode') == 'merge':
+        if cfg.get("optimization_mode") == "merge":
             logger.info(f"Merge Method: {cfg.get('merge_method', 'N/A')}")
     except Exception as log_cfg_e:
         logger.warning(f"Could not log initial config details: {log_cfg_e}")
@@ -61,20 +62,31 @@ def main(cfg: DictConfig) -> None:
         default_conversion_dir = project_root / "sd_optim" / "model_configs"
 
         # Get paths from config, falling back to defaults if null or missing
-        configs_dir_str = cfg.get('configs_dir')  # Returns None if key is missing/null
-        conversion_dir_str = cfg.get('conversion_dir')
+        configs_dir_str = cfg.get("configs_dir")  # Returns None if key is missing/null
+        conversion_dir_str = cfg.get("conversion_dir")
 
         # Resolve paths: Use config path if specified, otherwise use default. Convert to absolute Path.
-        custom_configs_path = Path(configs_dir_str).resolve() if configs_dir_str else default_configs_dir
-        custom_conversion_path = Path(conversion_dir_str).resolve() if conversion_dir_str else default_conversion_dir
+        custom_configs_path = (
+            Path(configs_dir_str).resolve() if configs_dir_str else default_configs_dir
+        )
+        custom_conversion_path = (
+            Path(conversion_dir_str).resolve()
+            if conversion_dir_str
+            else default_conversion_dir
+        )
 
         logger.info(
-            f"Using custom configs directory: {custom_configs_path} {'(Default)' if not configs_dir_str else '(User Specified)'}")
+            f"Using custom configs directory: {custom_configs_path} {'(Default)' if not configs_dir_str else '(User Specified)'}"
+        )
         logger.info(
-            f"Using custom conversion directory: {custom_conversion_path} {'(Default)' if not conversion_dir_str else '(User Specified)'}")
+            f"Using custom conversion directory: {custom_conversion_path} {'(Default)' if not conversion_dir_str else '(User Specified)'}"
+        )
 
     except Exception as path_e:
-        logger.error(f"CRITICAL ERROR determining custom extension paths: {path_e}", exc_info=True)
+        logger.error(
+            f"CRITICAL ERROR determining custom extension paths: {path_e}",
+            exc_info=True,
+        )
         logger.error("Ensure sd_optim.py is in the project root or adjust path logic.")
         sys.exit(1)
 
@@ -84,7 +96,9 @@ def main(cfg: DictConfig) -> None:
         logger.info("--- Loading Custom ModelConfigs ---")
         utils.load_and_register_custom_configs(custom_configs_path)
     except Exception as config_load_e:
-        logger.error(f"CRITICAL ERROR loading custom configs: {config_load_e}", exc_info=True)
+        logger.error(
+            f"CRITICAL ERROR loading custom configs: {config_load_e}", exc_info=True
+        )
         logger.error("Halting execution due to config loading failure.")
         sys.exit(1)
 
@@ -95,7 +109,10 @@ def main(cfg: DictConfig) -> None:
         logger.info("--- Loading Custom Converters/MergeMethods ---")
         utils.load_and_register_custom_conversion(custom_conversion_path)
     except Exception as converter_load_e:
-        logger.error(f"CRITICAL ERROR loading/registering custom converters: {converter_load_e}", exc_info=True)
+        logger.error(
+            f"CRITICAL ERROR loading/registering custom converters: {converter_load_e}",
+            exc_info=True,
+        )
         logger.error("Halting execution due to converter loading failure.")
         sys.exit(1)
 
@@ -116,7 +133,8 @@ def main(cfg: DictConfig) -> None:
         # Try to list available boolean flags under optimizer section
         possible_opts = [k for k, v in cfg.optimizer.items() if isinstance(v, bool)]
         logger.error(
-            f"No optimizer selected! Please set one of {possible_opts} to True in config.yaml under 'optimizer'.")
+            f"No optimizer selected! Please set one of {possible_opts} to True in config.yaml under 'optimizer'."
+        )
         sys.exit(1)
     logger.info(f"Using Optimizer: {optimizer_name}")
 
@@ -134,19 +152,28 @@ def main(cfg: DictConfig) -> None:
         logger.info("Optimizer configuration validated.")
 
         # --- Launch Dashboard BEFORE Optimization ---
-        if isinstance(optim_instance, OptunaOptimizer) and cfg.optimizer.optuna_config.get("launch_dashboard", False):
+        if isinstance(
+            optim_instance, OptunaOptimizer
+        ) and cfg.optimizer.optuna_config.get("launch_dashboard", False):
             dashboard_port = cfg.optimizer.optuna_config.get("dashboard_port", 8080)
-            logger.info(f"--- Attempting to launch Optuna Dashboard in background (Port: {dashboard_port}) ---")
-            dashboard_process = optim_instance.start_dashboard_background(port=dashboard_port)
+            logger.info(
+                f"--- Attempting to launch Optuna Dashboard in background (Port: {dashboard_port}) ---"
+            )
+            dashboard_process = optim_instance.start_dashboard_background(
+                port=dashboard_port
+            )
             if dashboard_process is None:
-                logger.warning("Failed to start dashboard process. Continuing without background dashboard.")
+                logger.warning(
+                    "Failed to start dashboard process. Continuing without background dashboard."
+                )
             else:
                 logger.info("Background dashboard process launch initiated.")
 
-        init_points = cfg.optimizer.get('init_points', 0)
-        n_iters = cfg.optimizer.get('n_iters', 0)
+        init_points = cfg.optimizer.get("init_points", 0)
+        n_iters = cfg.optimizer.get("n_iters", 0)
         logger.info(
-            f"--- Starting Optimization Loop ({init_points} init + {n_iters} iters = {init_points + n_iters} total) ---")
+            f"--- Starting Optimization Loop ({init_points} init + {n_iters} iters = {init_points + n_iters} total) ---"
+        )
 
         # Run the main optimization loop
         asyncio.run(optim_instance.optimize())
@@ -166,8 +193,10 @@ def main(cfg: DictConfig) -> None:
         # Let finally block handle postprocessing attempt (if instance exists)
         # sys.exit(1) # Consider if you truly want to exit *before* finally
 
-    except Exception as e:
-        logger.error("--- An Unexpected Error Occurred During Optimization ---", exc_info=True)
+    except Exception:
+        logger.error(
+            "--- An Unexpected Error Occurred During Optimization ---", exc_info=True
+        )
         # Let finally block handle postprocessing attempt
 
     finally:
@@ -175,7 +204,9 @@ def main(cfg: DictConfig) -> None:
         logger.info("--- Attempting Postprocessing (Finally Block) ---")
         if optim_instance is not None:
             # Check if the specific optimizer subclass needs postprocessing visuals
-            if isinstance(optim_instance, (OptunaOptimizer, BayesOptimizer)):  # Add other types if needed
+            if isinstance(
+                optim_instance, (OptunaOptimizer, BayesOptimizer)
+            ):  # Add other types if needed
                 try:
                     # Check for results before calling postprocess
                     should_run_postprocess = False
@@ -183,35 +214,54 @@ def main(cfg: DictConfig) -> None:
                         if optim_instance.study and optim_instance.study.trials:
                             should_run_postprocess = True
                         else:
-                            logger.warning("Optuna study has no trials, skipping postprocessing.")
+                            logger.warning(
+                                "Optuna study has no trials, skipping postprocessing."
+                            )
                     elif isinstance(optim_instance, BayesOptimizer):
-                        if optim_instance.optimizer and hasattr(optim_instance.optimizer,
-                                                                'res') and optim_instance.optimizer.res:
+                        if (
+                            optim_instance.optimizer
+                            and hasattr(optim_instance.optimizer, "res")
+                            and optim_instance.optimizer.res
+                        ):
                             should_run_postprocess = True
                         else:
-                            logger.warning("Bayes optimizer has no results, skipping postprocessing.")
+                            logger.warning(
+                                "Bayes optimizer has no results, skipping postprocessing."
+                            )
                     # Add checks for other optimizer types here if necessary
 
                     if should_run_postprocess:
-                        logger.info(f"Running postprocess for {type(optim_instance).__name__}...")
+                        logger.info(
+                            f"Running postprocess for {type(optim_instance).__name__}..."
+                        )
                         # Use asyncio.run since postprocess is async
                         asyncio.run(optim_instance.postprocess())
-                        logger.info(f"Postprocessing for {type(optim_instance).__name__} finished.")
+                        logger.info(
+                            f"Postprocessing for {type(optim_instance).__name__} finished."
+                        )
                     else:
                         logger.info("No results found for postprocessing.")
 
                 except Exception as e_post:
-                    logger.error(f"Error during postprocessing in finally block: {e_post}", exc_info=True)
+                    logger.error(
+                        f"Error during postprocessing in finally block: {e_post}",
+                        exc_info=True,
+                    )
             else:
-                logger.info("Optimizer type does not require specific postprocessing visuals.")
+                logger.info(
+                    "Optimizer type does not require specific postprocessing visuals."
+                )
         else:
-            logger.warning("Optimizer instance was not created, cannot run postprocessing.")
+            logger.warning(
+                "Optimizer instance was not created, cannot run postprocessing."
+            )
         # --- END Added Postprocessing Section ---
 
         # --- Dashboard Termination (Improved) ---
         if dashboard_process is not None:
             logger.info(
-                f"Attempting to terminate background dashboard process (PID: {dashboard_process.pid}) launched by this run...")
+                f"Attempting to terminate background dashboard process (PID: {dashboard_process.pid}) launched by this run..."
+            )
             try:
                 # Check if process hasn't already finished using poll()
                 if dashboard_process.poll() is None:
@@ -219,19 +269,26 @@ def main(cfg: DictConfig) -> None:
                     try:
                         dashboard_process.wait(timeout=3)  # Wait briefly
                         logger.info(
-                            f"Dashboard process terminated gracefully with code: {dashboard_process.returncode}")
+                            f"Dashboard process terminated gracefully with code: {dashboard_process.returncode}"
+                        )
                     except subprocess.TimeoutExpired:
-                        logger.warning("Dashboard process did not terminate after 3s, sending kill signal (SIGKILL).")
+                        logger.warning(
+                            "Dashboard process did not terminate after 3s, sending kill signal (SIGKILL)."
+                        )
                         dashboard_process.kill()  # Force kill
                         dashboard_process.wait()  # Wait for kill
                         logger.info("Dashboard process killed.")
                 else:
                     # Log if it already finished before finally block reached it
                     logger.info(
-                        f"Dashboard process already exited before termination attempt with code: {dashboard_process.returncode}")
+                        f"Dashboard process already exited before termination attempt with code: {dashboard_process.returncode}"
+                    )
             except Exception as e_term:
                 # Catch errors during terminate/wait/kill
-                logger.error(f"Error during dashboard process termination: {e_term}", exc_info=True)
+                logger.error(
+                    f"Error during dashboard process termination: {e_term}",
+                    exc_info=True,
+                )
         else:
             # Log if no dashboard was launched by this specific run
             logger.info("No dashboard process was launched by this run to terminate.")

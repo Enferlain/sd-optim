@@ -6,13 +6,11 @@
 
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 from functools import partial
 
-from timm.models.vision_transformer import _cfg, PatchEmbed
-from timm.models.registry import register_model
+from timm.models.vision_transformer import PatchEmbed
 from timm.models.layers import trunc_normal_, DropPath
-from timm.models.helpers import named_apply, adapt_input_conv
+from timm.models.helpers import adapt_input_conv
 
 from fairscale.nn.checkpoint.checkpoint_activations import checkpoint_wrapper
 
@@ -50,19 +48,19 @@ class Attention(nn.Module):
         self.proj_drop = nn.Dropout(proj_drop)
         self.attn_gradients = None
         self.attention_map = None
-        
+
     def save_attn_gradients(self, attn_gradients):
         self.attn_gradients = attn_gradients
-        
+
     def get_attn_gradients(self):
         return self.attn_gradients
-    
+
     def save_attention_map(self, attention_map):
         self.attention_map = attention_map
-        
+
     def get_attention_map(self):
         return self.attention_map
-    
+
     def forward(self, x, register_hook=False):
         B, N, C = x.shape
         qkv = self.qkv(x).reshape(B, N, 3, self.num_heads, C // self.num_heads).permute(2, 0, 3, 1, 4)
@@ -71,10 +69,10 @@ class Attention(nn.Module):
         attn = (q @ k.transpose(-2, -1)) * self.scale
         attn = attn.softmax(dim=-1)
         attn = self.attn_drop(attn)
-                
+
         if register_hook:
             self.save_attention_map(attn)
-            attn.register_hook(self.save_attn_gradients)        
+            attn.register_hook(self.save_attn_gradients)
 
         x = (attn @ v).transpose(1, 2).reshape(B, N, C)
         x = self.proj(x)
@@ -105,7 +103,7 @@ class Block(nn.Module):
         x = x + self.drop_path(self.mlp(self.norm2(x)))
         return x
 
-    
+
 class VisionTransformer(nn.Module):
     """ Vision Transformer
     A PyTorch impl of : `An Image is Worth 16x16 Words: Transformers for Image Recognition at Scale`  -
@@ -113,7 +111,7 @@ class VisionTransformer(nn.Module):
     """
     def __init__(self, img_size=224, patch_size=16, in_chans=3, num_classes=1000, embed_dim=768, depth=12,
                  num_heads=12, mlp_ratio=4., qkv_bias=True, qk_scale=None, representation_size=None,
-                 drop_rate=0., attn_drop_rate=0., drop_path_rate=0., norm_layer=None, 
+                 drop_rate=0., attn_drop_rate=0., drop_path_rate=0., norm_layer=None,
                  use_grad_checkpointing=False, ckpt_layer=0):
         """
         Args:
@@ -179,20 +177,20 @@ class VisionTransformer(nn.Module):
 
         cls_tokens = self.cls_token.expand(B, -1, -1)  # stole cls_tokens impl from Phil Wang, thanks
         x = torch.cat((cls_tokens, x), dim=1)
-  
+
         x = x + self.pos_embed[:,:x.size(1),:]
         x = self.pos_drop(x)
 
         for i,blk in enumerate(self.blocks):
             x = blk(x, register_blk==i)
         x = self.norm(x)
-        
+
         return x
 
     @torch.jit.ignore()
     def load_pretrained(self, checkpoint_path, prefix=''):
         _load_weights(self, checkpoint_path, prefix)
-        
+
 
 @torch.no_grad()
 def _load_weights(model: VisionTransformer, checkpoint_path: str, prefix: str = ''):
@@ -273,8 +271,8 @@ def _load_weights(model: VisionTransformer, checkpoint_path: str, prefix: str = 
         block.norm2.weight.copy_(_n2p(w[f'{block_prefix}LayerNorm_2/scale']))
         block.norm2.bias.copy_(_n2p(w[f'{block_prefix}LayerNorm_2/bias']))
 
-            
-def interpolate_pos_embed(pos_embed_checkpoint, visual_encoder):        
+
+def interpolate_pos_embed(pos_embed_checkpoint, visual_encoder):
     # interpolate position embedding
     embedding_size = pos_embed_checkpoint.shape[-1]
     num_patches = visual_encoder.patch_embed.num_patches
@@ -295,7 +293,7 @@ def interpolate_pos_embed(pos_embed_checkpoint, visual_encoder):
         pos_tokens = pos_tokens.permute(0, 2, 3, 1).flatten(1, 2)
         new_pos_embed = torch.cat((extra_tokens, pos_tokens), dim=1)
         print('reshape position embedding from %d to %d'%(orig_size ** 2,new_size ** 2))
-        
-        return new_pos_embed    
+
+        return new_pos_embed
     else:
         return pos_embed_checkpoint

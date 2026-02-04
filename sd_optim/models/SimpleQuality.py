@@ -10,7 +10,7 @@ class SimpleQualityScorer:
         # v1.1: Added configurable thresholds and weights
         sharpness_threshold: float = 100.0,
         contrast_threshold: float = 50.0,
-        weights: dict = None
+        weights: dict = None,
     ):
         """
         Simple quality scorer - no external models needed.
@@ -24,10 +24,10 @@ class SimpleQualityScorer:
         if weights is None:
             # Default weights from your original code! They're good!
             self.weights = {
-                'saturation': 0.35,
-                'sharpness': 0.30,
-                'contrast': 0.20,
-                'range': 0.15
+                "saturation": 0.35,
+                "sharpness": 0.30,
+                "contrast": 0.20,
+                "range": 0.15,
             }
         else:
             self.weights = weights
@@ -42,7 +42,7 @@ class SimpleQualityScorer:
         Lower = poor quality (grey, blurry, washed out)
         """
         # Ensure the image is in RGB format for consistency
-        rgb_image = image.convert('RGB')
+        rgb_image = image.convert("RGB")
         rgb_array = np.array(rgb_image)
 
         # Convert to different color spaces for analysis
@@ -63,7 +63,9 @@ class SimpleQualityScorer:
         else:
             # Scale score from 4.0 to 10.0 for sharp images
             # We map a range of [threshold, threshold + 400] to [4.0, 10.0]
-            sharpness_score = 4.0 + min((laplacian_var - self.sharpness_threshold) / 400.0 * 6.0, 6.0)
+            sharpness_score = 4.0 + min(
+                (laplacian_var - self.sharpness_threshold) / 400.0 * 6.0, 6.0
+            )
 
         # 3. Contrast check (0.0 - 10.0)
         # Measures the range of dark to light. Low score for flat/dull images.
@@ -77,10 +79,10 @@ class SimpleQualityScorer:
 
         # Weighted combination of all scores
         final_score = (
-            saturation_score * self.weights['saturation'] +
-            sharpness_score * self.weights['sharpness'] +
-            contrast_score * self.weights['contrast'] +
-            range_score * self.weights['range']
+            saturation_score * self.weights["saturation"]
+            + sharpness_score * self.weights["sharpness"]
+            + contrast_score * self.weights["contrast"]
+            + range_score * self.weights["range"]
         )
 
         # Clip the final score to be strictly within the 0.0 to 10.0 range

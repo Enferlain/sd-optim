@@ -1,8 +1,8 @@
 # artist.py - Version 1.1 - Use Plotly for convergence plot
 
 import logging
+
 # REMOVE: import matplotlib.pyplot as plt # No longer using matplotlib here
-import os
 from pathlib import Path
 from dataclasses import dataclass, field
 from typing import List, Dict, TYPE_CHECKING
@@ -22,7 +22,8 @@ logger = logging.getLogger(__name__)
 @dataclass
 class Artist:
     """Handles plotting and visualization of optimization results."""
-    optimizer: 'Optimizer'  # Reference to the main optimizer instance
+
+    optimizer: "Optimizer"  # Reference to the main optimizer instance
     # Data storage (kept for now, mainly for BayesOpt path)
     iterations: List[int] = field(default_factory=list)
     scores: List[float] = field(default_factory=list)
@@ -33,7 +34,9 @@ class Artist:
         self.output_dir = Path(HydraConfig.get().runtime.output_dir)
         self.vis_dir = self.output_dir / "visualizations"
         self.vis_dir.mkdir(exist_ok=True)
-        logger.info(f"Artist initialized. Visualizations will be saved to: {self.vis_dir}")
+        logger.info(
+            f"Artist initialized. Visualizations will be saved to: {self.vis_dir}"
+        )
 
     # collect_data remains the same
     def collect_data(self, score: float, params: Dict):
@@ -43,7 +46,7 @@ class Artist:
             self.iterations.append(iteration_num)
             self.scores.append(score)
             # Ensure best_rolling_score exists, default to score if not
-            current_best = getattr(self.optimizer, 'best_rolling_score', score)
+            current_best = getattr(self.optimizer, "best_rolling_score", score)
             self.best_scores.append(current_best)
             self.parameters.append(params.copy())
         except Exception as e:
@@ -67,54 +70,70 @@ class Artist:
             fig = go.Figure()
 
             # Plot individual trial scores
-            fig.add_trace(go.Scatter(
-                x=self.iterations,
-                y=self.scores,
-                mode='lines+markers',
-                name='Current Iteration Score',
-                marker=dict(size=4),
-                line=dict(width=1),
-                opacity=0.7
-            ))
+            fig.add_trace(
+                go.Scatter(
+                    x=self.iterations,
+                    y=self.scores,
+                    mode="lines+markers",
+                    name="Current Iteration Score",
+                    marker=dict(size=4),
+                    line=dict(width=1),
+                    opacity=0.7,
+                )
+            )
 
             # Plot the best score found so far
             if self.best_scores:
-                fig.add_trace(go.Scatter(
-                    x=self.iterations,
-                    y=self.best_scores,
-                    mode='lines',
-                    name='Best Score Found',
-                    line=dict(color='red', width=2)
-                ))
+                fig.add_trace(
+                    go.Scatter(
+                        x=self.iterations,
+                        y=self.best_scores,
+                        mode="lines",
+                        name="Best Score Found",
+                        line=dict(color="red", width=2),
+                    )
+                )
 
             # Update layout
-            plot_title = f'Optimization Convergence ({getattr(self.optimizer.cfg, "run_name", "Unknown Run")})'
+            plot_title = f"Optimization Convergence ({getattr(self.optimizer.cfg, 'run_name', 'Unknown Run')})"
             fig.update_layout(
                 title=plot_title,
-                xaxis_title='Iteration / Trial Number',
-                yaxis_title='Score',
+                xaxis_title="Iteration / Trial Number",
+                yaxis_title="Score",
                 # yaxis_range=[min_y, max_y], # Optional: Set dynamic range if needed
-                legend_title_text='Legend',
-                template="plotly_white"  # Use a clean template
+                legend_title_text="Legend",
+                template="plotly_white",  # Use a clean template
             )
-            fig.update_yaxes(rangemode='tozero')  # Ensure y-axis starts at 0 or below min score
+            fig.update_yaxes(
+                rangemode="tozero"
+            )  # Ensure y-axis starts at 0 or below min score
 
             # Save the plot
-            plot_path = self.vis_dir / f"convergence_{getattr(self.optimizer.cfg, 'run_name', 'Unknown Run')}.png"
+            plot_path = (
+                self.vis_dir
+                / f"convergence_{getattr(self.optimizer.cfg, 'run_name', 'Unknown Run')}.png"
+            )
             try:
                 fig.write_image(str(plot_path))
                 logger.info(f"Artist: Convergence plot saved to {plot_path}")
             except ValueError as ve:
                 if "kaleido" in str(ve).lower():
                     logger.error(
-                        "Artist: Failed to save Plotly plot: Kaleido engine not found or not functional. Install with 'pip install -U kaleido'. Skipping save.")
+                        "Artist: Failed to save Plotly plot: Kaleido engine not found or not functional. Install with 'pip install -U kaleido'. Skipping save."
+                    )
                 else:
-                    logger.error(f"Artist: ValueError saving Plotly plot: {ve}. Skipping save.")
+                    logger.error(
+                        f"Artist: ValueError saving Plotly plot: {ve}. Skipping save."
+                    )
             except Exception as e_write:
-                logger.error(f"Artist: Unexpected error saving Plotly plot: {e_write}. Skipping save.")
+                logger.error(
+                    f"Artist: Unexpected error saving Plotly plot: {e_write}. Skipping save."
+                )
 
         except Exception as e:
-            logger.error(f"Artist: Failed to generate convergence plot: {e}", exc_info=True)
+            logger.error(
+                f"Artist: Failed to generate convergence plot: {e}", exc_info=True
+            )
 
     # --- MODIFIED: visualize_optimization calls the new plot_convergence ---
     async def visualize_optimization(self):

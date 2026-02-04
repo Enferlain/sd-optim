@@ -1,37 +1,20 @@
-import re
 import sys
-import warnings
 
-import pywt
-import sd_mecha
 import functools
-import pathlib
-import gc
 import enum
 import operator
 import torch
 import math
-import safetensors.torch
 import torch.nn.functional as F
-import numpy as np
 import fnmatch
-import geoopt
 
-from collections import defaultdict
-from dataclasses import dataclass
-from enum import Enum, auto
-from scipy.linalg import sqrtm
-from scipy.stats import binom, rankdata
-from torch import Tensor, polar
-from torch.utils import checkpoint
-from typing import Optional, Callable, Dict, Tuple, TypeVar, Generic, get_type_hints, get_origin, Union, get_args, List,  Set, Iterable
+from torch import Tensor
+from typing import Optional, Dict, Tuple, List
 from pytorch_wavelets import DWTForward, DWTInverse
 from sd_mecha import Parameter, Return, merge_method  # Import Parameter and Return
 
-from sd_optim.TALON import TALON
 from sd_optim.svd import torch_svd_lowrank  # you need to make your own or use the one from mecha
-from sd_mecha.extensions.builtin.merge_methods.svd import svd_lowrank, stiefel_interpolate, fractional_orthogonal_matrix_power
-from torch import Tensor  # Import Tensor
+from sd_mecha.extensions.builtin.merge_methods.svd import svd_lowrank, stiefel_interpolate
 
 try:
     import cupy as cp
@@ -7020,7 +7003,7 @@ class MergeMethods:
         if not valid_core_indices:
             valid_core_indices = list(range(num_deltas))
 
-        print(f"=== DELTA INDEX MAPPING ===")
+        print("=== DELTA INDEX MAPPING ===")
         print(f"Total deltas: {num_deltas}")
         print(f"Core indices: {valid_core_indices}")
         outlier_indices = [i for i in range(num_deltas) if i not in valid_core_indices]
@@ -7053,14 +7036,14 @@ class MergeMethods:
             MergeMethods.track_tensor_quality(parallel, f"PARALLEL_{i}", key)
 
             if torch.isnan(parallel).any():
-                print(f"NaN detected in parallel projection, using zero instead")
+                print("NaN detected in parallel projection, using zero instead")
                 parallel = torch.zeros_like(outlier)
 
             perpendicular = outlier - parallel
             MergeMethods.track_tensor_quality(perpendicular, f"PERPENDICULAR_{i}", key)
 
             if torch.isnan(perpendicular).any():
-                print(f"NaN detected in perpendicular, using original outlier")
+                print("NaN detected in perpendicular, using original outlier")
                 perpendicular = outlier
                 parallel = torch.zeros_like(outlier)
 

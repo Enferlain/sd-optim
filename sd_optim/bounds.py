@@ -650,6 +650,75 @@ class ParameterHandler:
         # Return the full metadata (with updated bounds) AND the specific bounds for the optimizer
         return params_info, optimizer_pbounds
 
+    def validate_dependencies(
+        self,
+        params_info: BoundsInfo,
+        dependencies_cfg: Optional[List[Dict[str, Any]]] = None,
+    ) -> Dict[str, Dict[str, Any]]:
+        """
+        Validates the dependencies config and pre-calculates the full parameter name mapping.
+        Returns a mapping of {child_full_name: {'parent': parent_full_name, ...}}
+        """
+        if not dependencies_cfg:
+            return {}
+
+        logger.info("Validating parameter dependencies...")
+        child_to_parent_map: Dict[str, Dict[str, Any]] = {}
+
+        # Create a lookup for items: item_name -> {base_param: full_param_name}
+        item_param_map: Dict[str, Dict[str, str]] = {}
+        valid_base_params = set()
+
+        for p_name, info in params_info.items():
+            item = info.get("item_name") or info.get("group_name")
+            base = info.get("base_param")
+            if base:
+                valid_base_params.add(base)
+            if item and base:
+                item_param_map.setdefault(item, {})[base] = p_name
+
+        for dep_idx, dep in enumerate(dependencies_cfg):
+            parent_base = dep.get("parent")
+            child_base = dep.get("child")
+            condition_str = dep.get("condition", "!= 0")
+            default_val = dep.get("default", 1.0)
+
+            if not parent_base or not child_base:
+                logger.warning(
+                    f"Dependency at index {dep_idx} missing 'parent' or 'child'. Skipping."
+                )
+                continue
+
+            if parent_base not in valid_base_params:
+                logger.warning(
+                    f"Dependency parent base parameter '{parent_base}' not found in any component. Skipping."
+                )
+                continue
+
+            # Map the base dependency to all item-specific parameters
+            mapped_count = 0
+            for item, params_dict in item_param_map.items():
+                if parent_base in params_dict and child_base in params_dict:
+                    parent_full = params_dict[parent_base]
+                    child_full = params_dict[child_base]
+                    child_to_parent_map[child_full] = {
+                        "parent": parent_full,
+                        "condition": condition_str,
+                        "default": default_val,
+                    }
+                    mapped_count += 1
+
+            if mapped_count > 0:
+                logger.info(
+                    f"  Mapped dependency '{parent_base}' -> '{child_base}' for {mapped_count} items/groups."
+                )
+            else:
+                logger.debug(
+                    f"  No pairs found for dependency '{parent_base}' -> '{child_base}' across any item/group."
+                )
+
+        return child_to_parent_map
+
     # V1.2 - Better validation, more types and conflict warnings
     @staticmethod
     def validate_custom_bounds(

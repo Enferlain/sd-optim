@@ -97,6 +97,11 @@ class OptunaOptimizer(Optimizer):
         # Initialize logger for trials
         self.logger = self._setup_trial_logger()
 
+        # Pre-calculate parameter dependencies
+        self.child_to_parent = self.bounds_initializer.validate_dependencies(
+            self.param_info, self.cfg.optimization_guide.get("dependencies", [])
+        )
+
     def _setup_trial_logger(self):
         """Setup logging for optimization trials."""
 
@@ -641,6 +646,7 @@ class OptunaOptimizer(Optimizer):
         """
         Objective function for Optuna, supporting advanced parameter suggestions like
         log scale, step, categorical, and continuous ranges.
+        Supports conditional parameter sampling based on 'dependencies' config.
         """
         params: Dict[str, Any] = {}
         if not self.optimizer_pbounds:
@@ -649,7 +655,60 @@ class OptunaOptimizer(Optimizer):
             )
             raise optuna.exceptions.TrialPruned("Bounds not available")
 
-        for param_name, bound_config in self.optimizer_pbounds.items():
+        def evaluate_condition(val, cond_str):
+            try:
+                # Basic safety check and support for common operators
+                import operator
+
+                ops = {
+                    "!=": operator.ne,
+                    "==": operator.eq,
+                    ">": operator.gt,
+                    "<": operator.lt,
+                    ">=": operator.ge,
+                    "<=": operator.le,
+                }
+                parts = cond_str.split()
+                if len(parts) == 2:
+                    op_func = ops.get(parts[0])
+                    threshold = float(parts[1])
+                    if op_func:
+                        return op_func(val, threshold)
+                return True  # Default to true if unparseable
+            except Exception as e_eval:
+                logger.warning(
+                    f"Error evaluating condition '{cond_str}' for value {val}: {e_eval}"
+                )
+                return True
+
+        # Process parameters, ensuring parents are handled before children
+        all_param_names = list(self.optimizer_pbounds.keys())
+        suggested_params = set()
+
+        def suggest_param(name):
+            if name in suggested_params:
+                return params[name]
+
+            # Check for parent dependency
+            if name in self.child_to_parent:
+                dep_info = self.child_to_parent[name]
+                parent_name = dep_info["parent"]
+
+                # Ensure parent is suggested first (recursive)
+                parent_val = suggest_param(parent_name)
+
+                # Check condition
+                if not evaluate_condition(parent_val, dep_info["condition"]):
+                    # Parent condition not met, use default and skip trial suggestion
+                    params[name] = dep_info["default"]
+                    logger.debug(
+                        f"Skipping suggest for '{name}': parent '{parent_name}'={parent_val} did not meet '{dep_info['condition']}'. Using default {dep_info['default']}."
+                    )
+                    suggested_params.add(name)
+                    return params[name]
+
+            # Standard suggestion logic
+            bound_config = self.optimizer_pbounds[name]
             try:
                 # Case 1: Rich dictionary format (e.g., {"range": (0, 1), "log": True})
                 # This is for our new advanced settings.
@@ -666,29 +725,25 @@ class OptunaOptimizer(Optimizer):
                     )
 
                     if is_integer_range:
-                        params[param_name] = trial.suggest_int(
-                            param_name, low, high, step=step or 1, log=log
+                        params[name] = trial.suggest_int(
+                            name, low, high, step=step or 1, log=log
                         )
                         logger.debug(
-                            f"Suggesting for '{param_name}': Int range [{low}-{high}], Step={step or 1}, Log={log}"
+                            f"Suggesting for '{name}': Int range [{low}-{high}], Step={step or 1}, Log={log}"
                         )
                     else:  # Otherwise, it's a float
-                        params[param_name] = trial.suggest_float(
-                            param_name, float(low), float(high), step=step, log=log
+                        params[name] = trial.suggest_float(
+                            name, float(low), float(high), step=step, log=log
                         )
                         logger.debug(
-                            f"Suggesting for '{param_name}': Float range [{low}-{high}], Step={step}, Log={log}"
+                            f"Suggesting for '{name}': Float range [{low}-{high}], Step={step}, Log={log}"
                         )
 
                 # Case 2: List format (always for categorical choices)
                 # In YAML: `param: [value1, value2, value3]`
                 elif isinstance(bound_config, list):
-                    params[param_name] = trial.suggest_categorical(
-                        param_name, bound_config
-                    )
-                    logger.debug(
-                        f"Suggesting for '{param_name}': Categorical {bound_config}"
-                    )
+                    params[name] = trial.suggest_categorical(name, bound_config)
+                    logger.debug(f"Suggesting for '{name}': Categorical {bound_config}")
 
                 # Case 3: Tuple format (for simple continuous ranges, backward compatibility)
                 # In YAML: `param: (0.0, 1.0)`
@@ -697,36 +752,41 @@ class OptunaOptimizer(Optimizer):
                         raise ValueError("Range tuple must have 2 values.")
                     low, high = bound_config
                     if isinstance(low, int) and isinstance(high, int):
-                        params[param_name] = trial.suggest_int(param_name, low, high)
+                        params[name] = trial.suggest_int(name, low, high)
                         logger.debug(
-                            f"Suggesting for '{param_name}': Simple Int range [{low}-{high}]"
+                            f"Suggesting for '{name}': Simple Int range [{low}-{high}]"
                         )
                     else:
-                        params[param_name] = trial.suggest_float(
-                            param_name, float(low), float(high)
+                        params[name] = trial.suggest_float(
+                            name, float(low), float(high)
                         )
                         logger.debug(
-                            f"Suggesting for '{param_name}': Simple Float range [{low}-{high}]"
+                            f"Suggesting for '{name}': Simple Float range [{low}-{high}]"
                         )
 
                 # Case 4: Single number (fixed parameter, not optimized)
                 elif isinstance(bound_config, (int, float)):
-                    params[param_name] = bound_config
-                    logger.debug(
-                        f"Using fixed value for '{param_name}': {bound_config}"
-                    )
+                    params[name] = bound_config
+                    logger.debug(f"Using fixed value for '{name}': {bound_config}")
 
                 else:
                     raise ValueError(
-                        f"Unsupported bounds format for '{param_name}': {bound_config}"
+                        f"Unsupported bounds format for '{name}': {bound_config}"
                     )
 
             except Exception as e_suggest:
                 logger.error(
-                    f"Error during parameter suggestion for '{param_name}' with config {bound_config}: {e_suggest}",
+                    f"Error during parameter suggestion for '{name}' with config {bound_config}: {e_suggest}",
                     exc_info=True,
                 )
                 raise  # Re-raise to stop the trial, as it's a config error.
+
+            suggested_params.add(name)
+            return params[name]
+
+        # Call the recursive suggest function for all parameters
+        for param_name in all_param_names:
+            suggest_param(param_name)
 
         try:
             # Run the async function in a synchronous context

@@ -157,3 +157,7 @@ TEST.py
 !README.md
 !LICENSE
 # Add other essential scripts or files if necessary
+
+# --- etc ---
+*.7z
+*.png

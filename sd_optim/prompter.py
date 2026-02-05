@@ -81,27 +81,47 @@ def assemble_payload(defaults: Dict, payload: Dict) -> Dict:
 
 
 def unpack_cargo(cargo: DictConfig) -> Tuple[Dict, Dict]:
+    """
+    Unpacks a cargo structure into a flat dictionary of case payloads
+    and a shared dictionary of defaults.
+    """
     defaults = {}
     payloads = {}
 
-    # Convert entire config to container once to avoid repeated conversions
+    # Convert entire config to container
     cargo_container = OmegaConf.to_container(cargo, resolve=True)
+
+    def distribute_content(content: dict):
+        """Helper to separate payloads (dicts) from settings (non-dicts)."""
+        for k, v in content.items():
+            if isinstance(v, dict):
+                payloads[k] = v
+            else:
+                defaults[k] = v
 
     for k, v in cargo_container.items():
         if k == "cargo":
-            # These are the specific test cases
-            if isinstance(v, list):
-                # Handle list format if cargo is a list of dicts (rare but possible)
+            if isinstance(v, dict):
+                distribute_content(v)
+            elif isinstance(v, list):
                 for item in v:
-                    payloads.update(item)
-            elif isinstance(v, dict):
-                # Standard dict format
-                payloads = v
+                    if isinstance(item, dict):
+                        distribute_content(item)
+                    else:
+                        logger.warning(f"Skipping non-dict item in cargo list: {item}")
+        elif isinstance(v, dict):
+            # Auto-detect: dicts at the top level are payloads
+            payloads[k] = v
         else:
-            # These are global defaults (steps, cfg, workflow_json, etc.)
+            # Shared setting for all payloads
             defaults[k] = v
 
-    return defaults, payloads
+    # --- SAFETY CHECK ---
+    # Ensure no non-dict items accidentally slipped into payloads
+    # (e.g., if 'cargo' contained a string, or if update merged something wrong)
+    safe_payloads = {k: v for k, v in payloads.items() if isinstance(v, dict)}
+
+    return defaults, safe_payloads
 
 
 @dataclass

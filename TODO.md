@@ -1,0 +1,1 @@
+- [ ] Comfy gens are missing the comfy metadata

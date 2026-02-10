@@ -25,6 +25,8 @@ logging.basicConfig(
 logging.getLogger("choreographer").setLevel(logging.WARNING)
 logging.getLogger("kaleido").setLevel(logging.WARNING)
 logging.getLogger("plotly").setLevel(logging.WARNING)  # Just in case
+logging.getLogger("PIL.PngImagePlugin").setLevel(logging.WARNING)
+logging.getLogger("PIL.Image").setLevel(logging.WARNING)
 
 # Use a logger specific to this main script
 logger = logging.getLogger(__name__)  # Hydra often configures this further

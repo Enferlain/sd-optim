@@ -1,1 +1,4 @@
 - [ ] Comfy gens are missing the comfy metadata
+- [ ] HybridNoiseScorer: reduce mask-size sensitivity and avoid saturating to 0.0 too often (boundary artifacts + threshold)
+- [ ] ComfyUI: confirm seed is always explicit (avoid `seed=-1` random fallback) and ensure generation fingerprint uses the post-injection workflow
+- [ ] Deterministic image reuse + incremental rescoring: implement per `conductor/tracks/image_reuse_p1_20260210/plan.md`

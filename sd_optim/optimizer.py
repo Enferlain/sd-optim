@@ -7,6 +7,8 @@ import aiohttp
 import asyncio  # <<< Import asyncio
 import time  # <<< Import time for logging durations
 import torch
+import hashlib
+import json
 
 from contextlib import suppress
 from abc import abstractmethod
@@ -16,6 +18,7 @@ from typing import Dict, List, Tuple, Optional, Any, Union
 from hydra.core.hydra_config import HydraConfig
 from omegaconf import DictConfig
 from PIL import Image, PngImagePlugin
+from hydra import utils as hydra_utils
 
 import sd_mecha
 
@@ -28,6 +31,9 @@ from sd_optim.prompter import Prompter
 from sd_optim.scorer import AestheticScorer
 
 logger = logging.getLogger(__name__)
+
+# Suppress PIL's verbose debug logging when scanning PNG metadata
+logging.getLogger("PIL.PngImagePlugin").setLevel(logging.WARNING)
 
 PathT = os.PathLike
 
@@ -138,6 +144,13 @@ class Optimizer:
         self.best_model_path = None
         self.cache = {}
 
+        # --- REUSE CACHE SETUP ---
+        # Maps image hash -> {full_path, scores, final_score}
+        self.history_cache: Dict[str, Dict] = {}
+        # Maps image hash -> {path (relative), scores, final_score} for current run
+        self.current_run_manifest: Dict[str, Dict] = {}
+        self._load_history_cache()
+
     #        from sd_optim.artist import Artist
     #        self.artist = Artist(self)
 
@@ -167,6 +180,147 @@ class Optimizer:
         logger.info(
             f"Prepared {len(self.optimizer_pbounds)} parameters for the optimizer with specific bounds."
         )
+
+    # =========================================================================
+    # UNIVERSAL IMAGE REUSE METHODS
+    # =========================================================================
+
+    def _load_history_cache(self):
+        """
+        Scans logs/ for run_manifest.json files and builds an in-memory lookup.
+        Also checks PNG metadata for legacy runs without manifests.
+        """
+        import time as _time  # Local import to avoid shadowing
+
+        try:
+            project_root = Path(hydra_utils.get_original_cwd())
+        except ValueError:
+            # Hydra not initialized yet (e.g., during testing)
+            project_root = Path.cwd()
+
+        logs_dir = project_root / "logs"
+        if not logs_dir.exists():
+            logger.debug("No logs directory found, skipping history cache load.")
+            return
+
+        start_time = _time.time()
+        logger.info("Universal Reuse: Scanning logs for cached results...")
+
+        manifest_hits = 0
+        png_hits = 0
+        legacy_dirs = []
+
+        # Phase 1: High-fidelity manifests (preferred) - sorted newest first
+        manifest_paths = sorted(
+            logs_dir.rglob("run_manifest.json"),
+            key=lambda p: p.stat().st_mtime,
+            reverse=True,  # Newest first
+        )
+        for manifest_path in manifest_paths:
+            try:
+                run_dir = manifest_path.parent
+                with open(manifest_path, "r", encoding="utf-8") as f:
+                    manifest_data = json.load(f)
+                for img_hash, data in manifest_data.items():
+                    if img_hash in self.history_cache:
+                        continue  # Skip duplicates (newer already found)
+                    rel_path = data.get("path")
+                    if rel_path:
+                        abs_path = run_dir / rel_path
+                        if abs_path.exists():
+                            data["full_path"] = abs_path
+                            self.history_cache[img_hash] = data
+                            manifest_hits += 1
+            except Exception as e:
+                logger.debug(f"Could not load manifest {manifest_path}: {e}")
+
+        # Phase 2: Legacy PNG scan - DISABLED by default (old PNGs don't have our hash)
+        # Enable via config if needed: reuse_scan_legacy_pngs: true
+        if self.cfg.get("reuse_scan_legacy_pngs", False):
+            legacy_dirs = []
+            for img_dir in logs_dir.rglob("imgs"):
+                run_dir = img_dir.parent
+                if not (run_dir / "run_manifest.json").exists():
+                    legacy_dirs.append(img_dir)
+
+            if legacy_dirs:
+                legacy_dirs.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+                logger.info(
+                    f"  Scanning {len(legacy_dirs)} legacy run(s) for PNG metadata..."
+                )
+                for img_dir in legacy_dirs:
+                    for png_path in img_dir.glob("*.png"):
+                        try:
+                            with Image.open(png_path) as img:
+                                meta_hash = img.info.get("sd_optim_hash")
+                                if meta_hash and meta_hash not in self.history_cache:
+                                    self.history_cache[meta_hash] = {
+                                        "full_path": png_path,
+                                        "scores": json.loads(
+                                            img.info.get("sd_optim_scores", "{}")
+                                        ),
+                                        "final_score": float(
+                                            img.info.get("sd_optim_final_score", 0)
+                                        ),
+                                    }
+                                    png_hits += 1
+                        except Exception:
+                            continue
+
+        elapsed = _time.time() - start_time
+        total = manifest_hits + png_hits
+        if total > 0:
+            logger.info(
+                f"Universal Reuse: Loaded {total} cached results in {elapsed:.2f}s"
+            )
+        else:
+            logger.info(f"Universal Reuse: No cached results found ({elapsed:.2f}s)")
+
+    def _save_run_manifest(self):
+        """Writes current run's manifest to the Hydra output directory."""
+        if not self.current_run_manifest:
+            return
+
+        try:
+            output_dir = Path(HydraConfig.get().runtime.output_dir)
+            manifest_path = output_dir / "run_manifest.json"
+            with open(manifest_path, "w", encoding="utf-8") as f:
+                json.dump(self.current_run_manifest, f, indent=2, sort_keys=True)
+            logger.debug(
+                f"Saved run manifest with {len(self.current_run_manifest)} entries to {manifest_path}"
+            )
+        except Exception as e:
+            logger.warning(f"Could not save run manifest: {e}")
+
+    @staticmethod
+    def calculate_image_hash(params: Dict, payload: Dict) -> str:
+        """
+        Creates a deterministic SHA256 hash from generation recipe.
+        This fingerprint uniquely identifies an image based on:
+        - Merge/optimization parameters
+        - Key generation settings (prompt, seed, dimensions, etc.)
+        """
+        # Keys that affect the generated image
+        gen_keys = [
+            "prompt",
+            "negative_prompt",
+            "seed",
+            "steps",
+            "cfg",
+            "sampler_name",
+            "scheduler",
+            "width",
+            "height",
+            "workflow_json",  # For ComfyUI
+        ]
+
+        # Build stable representation
+        stable_params = {k: params[k] for k in sorted(params.keys())}
+        stable_payload = {k: payload.get(k) for k in gen_keys if k in payload}
+
+        recipe = {"params": stable_params, "payload": stable_payload}
+        recipe_json = json.dumps(recipe, sort_keys=True, default=str)
+        return hashlib.sha256(recipe_json.encode("utf-8")).hexdigest()
 
     # --- ADDED: Sequential Producer Coroutine ---
     async def _sequential_producer(
@@ -261,6 +415,138 @@ class Optimizer:
 
         logger.info(f"\n--- {iteration_type} - Iteration: {effective_iteration} ---")
         logger.info(f"Optimizer proposed parameters: {params}")
+
+        # =========================================================================
+        # EARLY CACHE CHECK - 3 tiers:
+        #   1. FULL HIT:    hash found + scorers match → return cached score
+        #   2. PARTIAL HIT: hash found + image exists but scorers differ → re-score only
+        #   3. FULL MISS:   hash not found → merge + generate + score
+        # =========================================================================
+        payloads, target_paths = self.prompter.render_payloads(self.cfg.batch_size)
+        if not payloads:
+            logger.error("Prompter generated no payloads.")
+            raise RuntimeError("Prompter failed to generate any payloads.")
+
+        # Determine current scorer set for validation
+        current_scorers = set(s.lower() for s in self.cfg.scorer_method)
+
+        # Calculate hashes and check cache for all payloads
+        cache_results = []  # list of (hash, cached_data, tier) tuples
+        overall_tier = "full_hit"  # optimistic, downgrade as needed
+
+        for i, payload in enumerate(payloads):
+            img_hash = self.calculate_image_hash(params, payload)
+            cached = self.history_cache.get(img_hash)
+
+            if cached and cached.get("final_score") is not None:
+                # Hash found — check if scorers match
+                cached_scorers = set(cached.get("scores", {}).keys()) - {"combined"}
+                if cached_scorers and cached_scorers == current_scorers:
+                    cache_results.append((img_hash, cached, payload, "full_hit"))
+                elif cached.get("full_path") and Path(cached["full_path"]).exists():
+                    # Image exists but scorer data doesn't match — need re-scoring
+                    cache_results.append((img_hash, cached, payload, "partial_hit"))
+                    overall_tier = "partial_hit"
+                else:
+                    overall_tier = "full_miss"
+                    break
+            elif (
+                cached
+                and cached.get("full_path")
+                and Path(cached["full_path"]).exists()
+            ):
+                # Hash found, no score, but image exists — re-score
+                cache_results.append((img_hash, cached, payload, "partial_hit"))
+                overall_tier = "partial_hit"
+            else:
+                overall_tier = "full_miss"
+                break
+
+        # --- Tier 1: FULL HIT — all images cached with matching scorers ---
+        if overall_tier == "full_hit" and cache_results:
+            cached_scores = [c[1]["final_score"] for c in cache_results]
+            cached_weights = [c[2].get("score_weight", 1.0) for c in cache_results]
+            avg_score = self.scorer.average_calc(
+                cached_scores, cached_weights, self.cfg.img_average_type
+            )
+            elapsed = time.time() - iteration_start_time
+            logger.info(
+                f"CACHE HIT: All {len(cached_scores)} images reused. "
+                f"Score: {avg_score:.4f} ({elapsed:.2f}s)"
+            )
+            return avg_score
+
+        # --- Tier 2: PARTIAL HIT — images exist but need re-scoring ---
+        if overall_tier == "partial_hit" and cache_results:
+            logger.info(
+                f"PARTIAL CACHE HIT: {len(cache_results)} images found, "
+                f"re-scoring with current scorers ({', '.join(sorted(current_scorers))})"
+            )
+            rescored_scores = []
+            rescored_weights = []
+            for img_hash, cached, payload, tier in cache_results:
+                if tier == "full_hit":
+                    # This one already has matching scores
+                    rescored_scores.append(cached["final_score"])
+                    rescored_weights.append(payload.get("score_weight", 1.0))
+                    continue
+
+                # Load image from disk and re-score
+                try:
+                    image = Image.open(cached["full_path"])
+                    prompt_for_scorer = payload.get("prompt", "")
+                    individual_score = await self.scorer.score(
+                        image,
+                        prompt_for_scorer,
+                        name=target_paths[0] if target_paths else "rescore",
+                    )
+                    rescored_scores.append(individual_score)
+                    rescored_weights.append(payload.get("score_weight", 1.0))
+
+                    # Update cache entry with new scorer results
+                    scorer_results = dict(self.scorer.last_scorer_results)
+                    scorer_results["combined"] = individual_score
+                    cached["scores"] = scorer_results
+                    cached["final_score"] = individual_score
+
+                    # Update manifest for this run
+                    try:
+                        output_dir = Path(HydraConfig.get().runtime.output_dir)
+                        self.current_run_manifest[img_hash] = {
+                            "path": str(
+                                Path(cached["full_path"]).relative_to(output_dir)
+                            ),
+                            "scores": scorer_results,
+                            "final_score": individual_score,
+                        }
+                    except Exception:
+                        # Image from different run dir — store absolute
+                        self.current_run_manifest[img_hash] = {
+                            "path": str(cached["full_path"]),
+                            "scores": scorer_results,
+                            "final_score": individual_score,
+                        }
+
+                    logger.info(f"  Re-scored: {individual_score:.4f}")
+                    image.close()
+                except Exception as e:
+                    logger.warning(f"Failed to re-score cached image: {e}")
+                    overall_tier = "full_miss"
+                    break
+
+            if overall_tier == "partial_hit" and rescored_scores:
+                avg_score = self.scorer.average_calc(
+                    rescored_scores, rescored_weights, self.cfg.img_average_type
+                )
+                elapsed = time.time() - iteration_start_time
+                logger.info(
+                    f"PARTIAL HIT complete: Score: {avg_score:.4f} "
+                    f"(re-scored in {elapsed:.2f}s, skipped merge+gen)"
+                )
+                self._save_run_manifest()
+                return avg_score
+
+        # --- Tier 3: FULL MISS — proceed with merge + generation + scoring ---
 
         # --- NEW: Configure Session for the entire trial ---
         concurrency_limit = self.cfg.get("generator_concurrency_limit", 2)
@@ -376,11 +662,7 @@ class Optimizer:
             start_gen_score_time = time.time()
             scores = []
             norm_weights = []
-            payloads, target_paths = self.prompter.render_payloads(self.cfg.batch_size)
-
-            if not payloads:
-                logger.error("Prompter generated no payloads.")
-                raise RuntimeError("Prompter failed to generate any payloads.")
+            # NOTE: payloads and target_paths already rendered in early cache check section
 
             # Determine queue size: number of concurrent generators + maybe 1 buffer slot
             image_queue = asyncio.Queue(maxsize=concurrency_limit)
@@ -499,6 +781,9 @@ class Optimizer:
 
                         if self.cfg.save_imgs:
                             effective_iteration = self.iteration + self.completed_trials
+                            # Use individual scorer results from last score() call
+                            scorer_results = dict(self.scorer.last_scorer_results)
+                            scorer_results["combined"] = individual_score
                             self.save_img(
                                 image,
                                 current_target_base_name,
@@ -506,6 +791,8 @@ class Optimizer:
                                 effective_iteration,
                                 i,
                                 current_payload,
+                                params=params,
+                                scorer_results=scorer_results,
                             )
 
                         images_processed += 1
@@ -583,6 +870,9 @@ class Optimizer:
             f"Iteration {self.iteration} finished. Final Score for Optimizer: {avg_score:.4f}. Duration: {iteration_duration:.2f}s"
         )
 
+        # --- Save run manifest (for future reuse) ---
+        self._save_run_manifest()
+
         return avg_score
 
     # --- save_img, image_path, update_best_score remain the same ---
@@ -592,18 +882,59 @@ class Optimizer:
         name: str,  # This is the original payload name base (e.g., 'noob6')
         score: float,
         it: int,
-        img_order_index: int,  # <<< Use the order index here
+        img_order_index: int,
         payload: Dict,
+        params: Optional[Dict] = None,  # Required for hash calculation
+        scorer_results: Optional[Dict[str, float]] = None,  # Individual scorer results
     ) -> Optional[Path]:
-        # Use batch_n as the image index within the iteration
+        """
+        Saves the image with comprehensive metadata:
+        1. Preserves existing backend metadata (ComfyUI workflow, etc.)
+        2. Adds payload generation parameters
+        3. Injects sd_optim hash and scores for future reuse
+        """
         img_path = self.image_path(name, score, it, img_order_index)
 
         pnginfo = PngImagePlugin.PngInfo()
+
+        # --- PHASE 1: Preserve existing metadata (ComfyUI workflow, Swarm data, etc.) ---
+        if hasattr(image, "info") and image.info:
+            for k, v in image.info.items():
+                if isinstance(v, str):
+                    try:
+                        pnginfo.add_text(str(k), v)
+                    except Exception:
+                        pass  # Skip non-serializable keys
+
+        # --- PHASE 2: Add payload generation parameters ---
         for k, v in payload.items():
             try:
                 pnginfo.add_text(str(k), str(v))
             except Exception as e_png:
                 logger.warning(f"Could not add key '{k}' to PNG info: {e_png}")
+
+        # --- PHASE 3: Inject reuse/identity metadata ---
+        if params is not None:
+            img_hash = self.calculate_image_hash(params, payload)
+            pnginfo.add_text("sd_optim_hash", img_hash)
+
+            # Store individual scorer results if available
+            if scorer_results:
+                pnginfo.add_text("sd_optim_scores", json.dumps(scorer_results))
+            pnginfo.add_text("sd_optim_final_score", str(score))
+
+            # Update manifest for this run
+            try:
+                output_dir = Path(HydraConfig.get().runtime.output_dir)
+                self.current_run_manifest[img_hash] = {
+                    "path": str(img_path.relative_to(output_dir)),
+                    "scores": scorer_results or {"combined": score},
+                    "final_score": score,
+                }
+            except Exception:
+                pass  # Non-critical, continue saving
+
+        # --- PHASE 4: Save the image ---
         try:
             img_path.parent.mkdir(parents=True, exist_ok=True)
             image.save(img_path, pnginfo=pnginfo)

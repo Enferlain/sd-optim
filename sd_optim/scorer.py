@@ -38,6 +38,7 @@ from sd_optim.models.SimpleQuality import SimpleQualityScorer as SQ
 from sd_optim.models.BackgroundBlacknessScorer import BackgroundBlacknessScorer as BBS
 from sd_optim.models.PCAScorer import PCAScorer as PCA
 from sd_optim.models.HybridNoiseScorer import HybridNoiseScorer as HNS
+from sd_optim.models.TextureScorer import TextureScorer as TS
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO)
@@ -147,6 +148,10 @@ MODEL_DATA = {
         "url": None,
         "file_name": None,
     },
+    "textureclean": {
+        "url": None,
+        "file_name": None,
+    },
 }
 
 printWSLFlag = 0
@@ -165,11 +170,13 @@ class AestheticScorer:
         self.model_path: Dict[
             str, Path
         ] = {}  # Dictionary to hold Path objects for models
+        # Stores individual scorer results from the last score() call for metadata
+        self.last_scorer_results: Dict[str, float] = {}
 
         self.rembg_session = None
         # Unified rembg session initialization
         # If any scorer that needs it is configured, create the session.
-        scorers_needing_rembg = {"hybridnoise", "backgroundblackness"}
+        scorers_needing_rembg = {"hybridnoise", "backgroundblackness", "textureclean"}
         if any(
             s.lower() in scorers_needing_rembg
             for s in self.cfg.get("scorer_method", [])
@@ -532,6 +539,11 @@ class AestheticScorer:
                 "extra_args": {"rembg_session": "self.rembg_session"},
             },
             "pcascorer": {"class": PCA, "files": {}, "extra_args": {}},
+            "textureclean": {
+                "class": TS,
+                "files": {},
+                "extra_args": {"rembg_session": "self.rembg_session"},
+            },
         }
 
         if evaluator_lower not in scorer_factory:
@@ -693,6 +705,11 @@ class AestheticScorer:
                 },  # Special key to pass session
             },
             "pcascorer": {"class": PCA, "files": {}, "extra_args": {}},
+            "textureclean": {
+                "class": TS,
+                "files": {},
+                "extra_args": {"rembg_session": "self.rembg_session"},
+            },
         }
         # --- End Factory Config ---
 
@@ -865,6 +882,7 @@ class AestheticScorer:
     ) -> float:
         values: List[float] = []
         scorer_weights: List[float] = []
+        self.last_scorer_results = {}  # Reset for this image
         logger.info("Entering score method.")
 
         def show_image():
@@ -1005,6 +1023,7 @@ class AestheticScorer:
                 weight = self.cfg.scorer_weight.get(evaluator_lower, 1.0)
                 values.append(individual_eval_score)
                 scorer_weights.append(weight)
+                self.last_scorer_results[evaluator_lower] = individual_eval_score
         # --- End Scoring Loop ---
 
         score = self.average_calc(values, scorer_weights, self.cfg.scorer_average_type)

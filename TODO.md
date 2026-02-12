@@ -2,3 +2,21 @@
 - [ ] HybridNoiseScorer: reduce mask-size sensitivity and avoid saturating to 0.0 too often (boundary artifacts + threshold)
 - [ ] ComfyUI: confirm seed is always explicit (avoid `seed=-1` random fallback) and ensure generation fingerprint uses the post-injection workflow
 - [ ] Deterministic image reuse + incremental rescoring: implement per `conductor/tracks/image_reuse_p1_20260210/plan.md`
+- [ ] Optuna: fork and fix `PedAnovaImportanceEvaluator` (direction inversion bug) and `optuna-dashboard` (target negation for maximization)
+
+---
+
+- finish implementation_plan_dx_improvement.md
+- work on ui
+- should be able to set a broad goal and umbrella studies under it aka "campaign" with progress tracking, come up with a way that's intuitive and not unfun to interact with. Anything ui is interaction/intuitiveness first as far as data presentation goes, maybe with timelines, branches, etc
+- this will need the backend to support it. images need metadata about where they belong to and what they stand for
+- in general need a unified metadata/info system, whether database or something else, all data needs to be accountable for
+- needs ai features, undecided but the ai having access to the data and being able to execute actions is probably desirable
+- the systems need to be so it's easy to create new payloads or modify existing ones, same for config settings/guide setups
+- one thought for the guide page: canvas-like, double click and type/select to create new items, type can be cycled with clicks on items, color/shape coded depending on what it is, groups, smallest to biggest setup, when adding small item and dragging into another for grouping it gets "merged" up into bigger one. intelligent. preset/undo/redo/search etc. only blind spot is how to adjust bounds. could be node-like as in connect to attributes for types/bounds
+- component is the biggest thing. a single component alone is effectively either the "single" or "all" strategy.
+- per component there can be:
+  - a "selection" of parameters of whatever granularity with their own bounds
+  - a "group" of parameters with their one single bound
+  - if you click the canvas and type a key or a block or a component name, this spawns a single item that functions as a selection. If you do regex, it spawns a group. dragging single items together creates a group or joins them into existing groups.
+- key/block type is self evident. strategy also kind of. bounds is the only thing that needs further thought. 

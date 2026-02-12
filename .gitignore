@@ -135,7 +135,7 @@ optimization-analysis/
 conf/**/*.yaml
 !conf/**/*.tmpl.yaml
 
-*.txt
+!*.txt
 # !wildcards/**/*.txt # Only if wildcards are stored in a tracked dir
 
 *.ipynb # Jupyter notebooks
@@ -161,3 +161,4 @@ TEST.py
 # --- etc ---
 *.7z
 *.png
+analysis_*/

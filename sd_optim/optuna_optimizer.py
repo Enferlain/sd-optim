@@ -792,6 +792,14 @@ class OptunaOptimizer(Optimizer):
             # Run the async function in a synchronous context
             result = asyncio.run(self.sd_target_function(params))
 
+            # --- NEW: Capture and store individual scorer results --- TODO: correct?
+            if (
+                hasattr(self.scorer, "last_scorer_results")
+                and self.scorer.last_scorer_results
+            ):
+                trial.set_user_attr("scorer_results", self.scorer.last_scorer_results)
+                logger.debug(f"Stored scorer_results for trial {trial.number}")
+
             # Update metrics
             self.trial_scores.append(result)
 
@@ -850,6 +858,9 @@ class OptunaOptimizer(Optimizer):
                 else None,
                 "elapsed_seconds": elapsed_time,
             },
+            "scorer_results": trial.user_attrs.get(
+                "scorer_results", {}
+            ),  # Capture from user_attrs
         }
 
         # Write to the JSON logger

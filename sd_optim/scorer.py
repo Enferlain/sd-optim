@@ -1,4 +1,5 @@
 import asyncio
+import importlib
 import inspect
 import platform
 import subprocess
@@ -7,8 +8,6 @@ import threading
 import requests
 import logging
 
-from rembg import new_session
-
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Optional, Any
@@ -16,32 +15,77 @@ from typing import Dict, List, Optional, Any
 from hydra.core.hydra_config import HydraConfig
 from omegaconf import DictConfig, open_dict, ListConfig
 from PIL import Image
-from sd_optim.models.Laion import Laion as AES
-
-# from sd_optim.models.ImageReward import ImageReward as IMGR
-from sd_optim.models.CLIPScore import CLIPScore as CLP
-
-# from sd_optim.models.BLIPScore import BLIPScore as BLP
-# from sd_optim.models.HPSv21 import HPSv21Scorer as HPS
-# from sd_optim.models.HPSv3 import HPSv3Scorer as HPS3
-from sd_optim.models.PickScore import PickScore as PICK
-from sd_optim.models.WDAes import WDAes as WDA
-from sd_optim.models.ShadowScore import ShadowScore as SS
-from sd_optim.models.CafeScore import CafeScore as CAFE
-from sd_optim.models.NoAIScore import NoAIScore as NOAI
-from sd_optim.models.CityAesthetics import CityAestheticsScorer as CITY
-from sd_optim.models.AestheticV25 import AestheticV25 as AES25
-
-# from sd_optim.models.LumiAnatomy import HybridAnatomyScorer as LUMI
-from sd_optim.models.LumiAnatomyv2 import Dinov3AnatomyScorer as LUMI
-from sd_optim.models.SimpleQuality import SimpleQualityScorer as SQ
-from sd_optim.models.BackgroundBlacknessScorer import BackgroundBlacknessScorer as BBS
-from sd_optim.models.PCAScorer import PCAScorer as PCA
-from sd_optim.models.HybridNoiseScorer import HybridNoiseScorer as HNS
-from sd_optim.models.TextureScorer import TextureScorer as TS
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO)
+
+SCORER_CLASS_PATHS = {
+    "laion": ("sd_optim.models.Laion", "Laion"),
+    "chad": ("sd_optim.models.Laion", "Laion"),
+    "clip": ("sd_optim.models.CLIPScore", "CLIPScore"),
+    "pick": ("sd_optim.models.PickScore", "PickScore"),
+    "wdaes": ("sd_optim.models.WDAes", "WDAes"),
+    "shadowv2": ("sd_optim.models.ShadowScore", "ShadowScore"),
+    "cafe": ("sd_optim.models.CafeScore", "CafeScore"),
+    "noai": ("sd_optim.models.NoAIScore", "NoAIScore"),
+    "cityaes": ("sd_optim.models.CityAesthetics", "CityAestheticsScorer"),
+    "aestheticv25": ("sd_optim.models.AestheticV25", "AestheticV25"),
+    "luminaflex": ("sd_optim.models.LumiAnatomyv2", "Dinov3AnatomyScorer"),
+    "lumidinov3": ("sd_optim.models.LumiAnatomyv2", "Dinov3AnatomyScorer"),
+    "lumidinov2l": ("sd_optim.models.LumiAnatomyv2", "Dinov3AnatomyScorer"),
+    "lumidinov2g": ("sd_optim.models.LumiAnatomyv2", "Dinov3AnatomyScorer"),
+    "simplequality": ("sd_optim.models.SimpleQuality", "SimpleQualityScorer"),
+    "hybridnoise": ("sd_optim.models.HybridNoiseScorer", "HybridNoiseScorer"),
+    "backgroundblackness": (
+        "sd_optim.models.BackgroundBlacknessScorer",
+        "BackgroundBlacknessScorer",
+    ),
+    "pcascorer": ("sd_optim.models.PCAScorer", "PCAScorer"),
+    "textureclean": ("sd_optim.models.TextureScorer", "TextureScorer"),
+}
+_SCORER_CLASS_CACHE: Dict[str, Any] = {}
+
+
+def _import_attr(module_path: str, attr_name: str):
+    try:
+        module = importlib.import_module(module_path)
+    except ImportError as exc:
+        logger.warning(
+            "Optional scorer dependency missing while importing %s.%s: %s",
+            module_path,
+            attr_name,
+            exc,
+        )
+        return None
+    except Exception as exc:
+        logger.error(
+            "Unexpected error while importing %s.%s: %s",
+            module_path,
+            attr_name,
+            exc,
+        )
+        return None
+
+    try:
+        return getattr(module, attr_name)
+    except AttributeError:
+        logger.error("Scorer class '%s' not found in module '%s'.", attr_name, module_path)
+        return None
+
+
+def _get_scorer_class(scorer_name: str):
+    scorer_key = scorer_name.lower()
+    if scorer_key in _SCORER_CLASS_CACHE:
+        return _SCORER_CLASS_CACHE[scorer_key]
+
+    class_path = SCORER_CLASS_PATHS.get(scorer_key)
+    if not class_path:
+        return None
+
+    module_path, attr_name = class_path
+    scorer_class = _import_attr(module_path, attr_name)
+    _SCORER_CLASS_CACHE[scorer_key] = scorer_class
+    return scorer_class
 
 MODEL_DATA = {
     "laion": {
@@ -184,7 +228,17 @@ class AestheticScorer:
             logger.info(
                 "A configured scorer requires background removal. Initializing rembg session..."
             )
-            self.rembg_session = new_session(providers=["CPUExecutionProvider"])
+            try:
+                from rembg import new_session
+
+                self.rembg_session = new_session(providers=["CPUExecutionProvider"])
+            except ImportError as exc:
+                raise ImportError(
+                    "A configured scorer requires 'rembg', but it is not installed. "
+                    "Install the corresponding scorer extra (for example "
+                    "'scorer-textureclean', 'scorer-hybridnoise', or "
+                    "'scorer-backgroundblackness')."
+                ) from exc
         else:
             self.rembg_session = None
 
@@ -469,6 +523,98 @@ class AestheticScorer:
             if path.exists():
                 path.unlink(missing_ok=True)
 
+    def _build_scorer_factory(self, clip_l_path: Path, clip_b_path: Path):
+        return {
+            "laion": {
+                "class_ref": "laion",
+                "files": {"model_path": "file_name"},
+                "extra_args": {"clip_model_path": str(clip_l_path)},
+            },
+            "chad": {
+                "class_ref": "chad",
+                "files": {"model_path": "file_name"},
+                "extra_args": {"clip_model_path": str(clip_l_path)},
+            },
+            "wdaes": {
+                "class_ref": "wdaes",
+                "files": {"model_path": "file_name"},
+                "extra_args": {"clip_path": str(clip_b_path)},
+            },
+            "clip": {
+                "class_ref": "clip",
+                "files": {"model_path": "file_name"},
+            },
+            "pick": {
+                "class_ref": "pick",
+                "files": {"model_path": "file_name"},
+            },
+            "shadowv2": {
+                "class_ref": "shadowv2",
+                "files": {"model_path": "file_name"},
+            },
+            "cafe": {
+                "class_ref": "cafe",
+                "files": {"model_path": "file_name"},
+            },
+            "noai": {
+                "class_ref": "noai",
+                "files": {
+                    "model_path_class": "class",
+                    "model_path_real": "real",
+                    "model_path_anime": "anime",
+                },
+            },
+            "cityaes": {
+                "class_ref": "cityaes",
+                "files": {"pathname": "file_name"},
+            },
+            "aestheticv25": {
+                "class_ref": "aestheticv25",
+                "files": {"model_path": "file_name"},
+            },
+            "luminaflex": {
+                "class_ref": "luminaflex",
+                "files": {"model_path": "file_name", "config_path": "config_name"},
+            },
+            "lumidinov3": {
+                "class_ref": "lumidinov3",
+                "files": {"model_path": "file_name", "config_path": "config_name"},
+            },
+            "lumidinov2l": {
+                "class_ref": "lumidinov2l",
+                "files": {"model_path": "file_name", "config_path": "config_name"},
+            },
+            "lumidinov2g": {
+                "class_ref": "lumidinov2g",
+                "files": {"model_path": "file_name", "config_path": "config_name"},
+            },
+            "simplequality": {
+                "class_ref": "simplequality",
+                "files": {},
+                "extra_args": {},
+            },
+            "hybridnoise": {
+                "class_ref": "hybridnoise",
+                "files": {},
+                "extra_args": {"rembg_session": "self.rembg_session"},
+            },
+            "backgroundblackness": {
+                "class_ref": "backgroundblackness",
+                "files": {},
+                "extra_args": {"rembg_session": "self.rembg_session"},
+            },
+            "pcascorer": {
+                "class_ref": "pcascorer",
+                "files": {},
+                "extra_args": {},
+            },
+            "textureclean": {
+                "class_ref": "textureclean",
+                "files": {},
+                "extra_args": {"rembg_session": "self.rembg_session"},
+            },
+        }
+
     def _load_model(self, evaluator_lower: str):
         """Loads a single scorer model instance on demand."""
         if evaluator_lower in self.model:
@@ -477,81 +623,16 @@ class AestheticScorer:
 
         logger.info(f"Lazy loading scorer model: '{evaluator_lower}'")
         scorer_model_dir_path = Path(self.cfg.scorer_model_dir)
-        med_config_path = scorer_model_dir_path / "med_config.json"
         clip_l_path = scorer_model_dir_path / "CLIP-ViT-L-14.pt"
         clip_b_path = scorer_model_dir_path / "CLIP-ViT-B-32.safetensors"
-
-        scorer_factory = {
-            "laion": {
-                "class": AES,
-                "files": {"model_path": "file_name"},
-                "extra_args": {"clip_model_path": str(clip_l_path)},
-            },
-            "chad": {
-                "class": AES,
-                "files": {"model_path": "file_name"},
-                "extra_args": {"clip_model_path": str(clip_l_path)},
-            },
-            "wdaes": {
-                "class": WDA,
-                "files": {"model_path": "file_name"},
-                "extra_args": {"clip_path": str(clip_b_path)},
-            },
-            "clip": {"class": CLP, "files": {"model_path": "file_name"}},
-            "pick": {"class": PICK, "files": {"model_path": "file_name"}},
-            "shadowv2": {"class": SS, "files": {"model_path": "file_name"}},
-            "cafe": {"class": CAFE, "files": {"model_path": "file_name"}},
-            "noai": {
-                "class": NOAI,
-                "files": {
-                    "model_path_class": "class",
-                    "model_path_real": "real",
-                    "model_path_anime": "anime",
-                },
-            },
-            "cityaes": {"class": CITY, "files": {"pathname": "file_name"}},
-            "aestheticv25": {"class": AES25, "files": {"model_path": "file_name"}},
-            "luminaflex": {
-                "class": LUMI,
-                "files": {"model_path": "file_name", "config_path": "config_name"},
-            },
-            "lumidinov3": {
-                "class": LUMI,
-                "files": {"model_path": "file_name", "config_path": "config_name"},
-            },
-            "lumidinov2l": {
-                "class": LUMI,
-                "files": {"model_path": "file_name", "config_path": "config_name"},
-            },
-            "lumidinov2g": {
-                "class": LUMI,
-                "files": {"model_path": "file_name", "config_path": "config_name"},
-            },
-            "simplequality": {"class": SQ, "files": {}, "extra_args": {}},
-            "hybridnoise": {
-                "class": HNS,
-                "files": {},
-                "extra_args": {"rembg_session": "self.rembg_session"},
-            },
-            "backgroundblackness": {
-                "class": BBS,
-                "files": {},
-                "extra_args": {"rembg_session": "self.rembg_session"},
-            },
-            "pcascorer": {"class": PCA, "files": {}, "extra_args": {}},
-            "textureclean": {
-                "class": TS,
-                "files": {},
-                "extra_args": {"rembg_session": "self.rembg_session"},
-            },
-        }
+        scorer_factory = self._build_scorer_factory(clip_l_path, clip_b_path)
 
         if evaluator_lower not in scorer_factory:
             logger.error(f"Unknown scorer '{evaluator_lower}' cannot be lazy-loaded.")
             return False
 
         config = scorer_factory[evaluator_lower]
-        ScorerClass = config.get("class")
+        ScorerClass = _get_scorer_class(config.get("class_ref", evaluator_lower))
 
         if ScorerClass is None:
             logger.error(f"Scorer class for '{evaluator_lower}' not available.")
@@ -623,94 +704,11 @@ class AestheticScorer:
         logger.info("Loading scorer model instances...")
         lazy_load_list = [s.lower() for s in self.cfg.get("scorer_lazy_load_list", [])]
         scorer_model_dir_path = Path(self.cfg.scorer_model_dir)
-        med_config_path = scorer_model_dir_path / "med_config.json"
         clip_l_path = scorer_model_dir_path / "CLIP-ViT-L-14.pt"
         clip_b_path = scorer_model_dir_path / "CLIP-ViT-B-32.safetensors"
 
         # --- Scorer Factory Configuration ---
-        scorer_factory = {
-            "laion": {
-                "class": AES,
-                "files": {"model_path": "file_name"},
-                "extra_args": {"clip_model_path": str(clip_l_path)},
-            },
-            "chad": {
-                "class": AES,
-                "files": {"model_path": "file_name"},
-                "extra_args": {"clip_model_path": str(clip_l_path)},
-            },
-            "wdaes": {
-                "class": WDA,
-                "files": {"model_path": "file_name"},
-                "extra_args": {"clip_path": str(clip_b_path)},
-            },
-            "clip": {"class": CLP, "files": {"model_path": "file_name"}},
-            #             "blip": {"class": BLP, "files": {"model_path": "file_name"}, "extra_args": {"med_config": med_config_path}},
-            #             "imagereward": {"class": IMGR, "files": {"model_path": "file_name"},
-            #                             "extra_args": {"med_config": med_config_path}},
-            #            "hpsv21": {"class": HPS, "files": {"pathname": "file_name"}},
-            #            "hpsv3": {"class": HPS3, "files": {"model_path": "file_name"}},
-            "pick": {"class": PICK, "files": {"model_path": "file_name"}},
-            "shadowv2": {"class": SS, "files": {"model_path": "file_name"}},
-            "cafe": {"class": CAFE, "files": {"model_path": "file_name"}},
-            "noai": {
-                "class": NOAI,
-                "files": {
-                    "model_path_class": "class",
-                    "model_path_real": "real",
-                    "model_path_anime": "anime",
-                },
-            },
-            "cityaes": {"class": CITY, "files": {"pathname": "file_name"}},
-            "aestheticv25": {"class": AES25, "files": {"model_path": "file_name"}},
-            "luminaflex": {
-                "class": LUMI,
-                "files": {"model_path": "file_name", "config_path": "config_name"},
-            },
-            "lumidinov3": {
-                "class": LUMI,
-                "files": {"model_path": "file_name", "config_path": "config_name"},
-            },
-            "lumidinov2l": {
-                "class": LUMI,
-                "files": {"model_path": "file_name", "config_path": "config_name"},
-            },
-            "lumidinov2g": {
-                "class": LUMI,
-                "files": {"model_path": "file_name", "config_path": "config_name"},
-            },
-            # --- Add other custom scorers like LumiStyle here ---
-            # "lumistyle": {
-            #     "class": AnatomyScorer if LUMI_ANATOMY_AVAILABLE else None, # Or a different StyleScorer class
-            #     "files": {
-            #         "model_path": "file_name", # Needs 'file_name' in MODEL_DATA["lumistyle"]
-            #         "config_path": "config_name"    # Needs 'config_name' in MODEL_DATA["lumistyle"]
-            #      }
-            # },
-            "simplequality": {
-                "class": SQ,
-                "files": {},  # No files needed
-                "extra_args": {},  # No extra arguments needed
-            },
-            "hybridnoise": {
-                "class": HNS,
-                "files": {},
-                "extra_args": {"rembg_session": "self.rembg_session"},
-            },
-            "backgroundblackness": {
-                "class": BBS,
-                "files": {},
-                "extra_args": {
-                    "rembg_session": "self.rembg_session"
-                },  # Special key to pass session
-            },
-            "pcascorer": {"class": PCA, "files": {}, "extra_args": {}},
-            "textureclean": {
-                "class": TS,
-                "files": {},
-                "extra_args": {"rembg_session": "self.rembg_session"},
-            },
-        }
+        scorer_factory = self._build_scorer_factory(clip_l_path, clip_b_path)
         # --- End Factory Config ---
 
         # --- Instantiation Loop ---
@@ -734,7 +732,7 @@ class AestheticScorer:
                 continue
 
             config = scorer_factory[evaluator_lower]
-            ScorerClass = config.get("class")
+            ScorerClass = _get_scorer_class(config.get("class_ref", evaluator_lower))
 
             if ScorerClass is None:
                 logger.error(

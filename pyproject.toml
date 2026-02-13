@@ -1,0 +1,269 @@
+[build-system]
+requires = ["hatchling>=1.25.0"]
+build-backend = "hatchling.build"
+
+[project]
+name = "sd-optim"
+version = "1.0.0"
+description = "Stable Diffusion merge optimization toolkit."
+readme = "README.md"
+requires-python = ">=3.11,<3.14"
+dependencies = [
+  "numpy>=1.26,<2; python_version < '3.13'",
+  "numpy>=2.1; python_version >= '3.13'",
+  "PyYAML>=6.0.1",
+  "omegaconf>=2.3.0",
+  "hydra-core>=1.3.2",
+  "aiohttp>=3.9.0",
+  "Pillow>=10.0.0",
+  "optuna>=4.7.0",
+  "transformers",
+  "scikit-learn",
+  "scikit-image",
+  "clip",
+  "opencv-python-headless",
+]
+
+[project.optional-dependencies]
+# Torch profiles. Pick exactly one for your machine.
+torch-cu124 = ["torch", "torchvision"]
+torch-cu128 = ["torch", "torchvision"]
+torch-cu129 = ["torch", "torchvision"]
+torch-cu130 = ["torch", "torchvision"]
+
+# ONNX Runtime backend profiles for rembg-based scorers.
+# Pick exactly one when using rembg-based scorer extras.
+onnx-cpu = ["onnxruntime>=1.20"]
+onnx-gpu = ["onnxruntime-gpu>=1.20"]
+
+# Torch version profiles. Pick at most one when you want a fixed torch minor line.
+torch-v29 = ["torch>=2.9,<2.10"]
+torch-v210 = ["torch>=2.10,<2.11"]
+
+# Merge/runtime stack.
+merge = [
+  "safetensors>=0.4.2",
+  "sd-mecha",
+  "scipy>=1.14.0",
+  "tqdm>=4.66.3",
+  "fuzzywuzzy>=0.18.0",
+  "python-Levenshtein",
+  "geoopt",
+  "tensordict",
+]
+
+# Optuna stack.
+optuna = [
+  "optuna",
+  "optuna-dashboard",
+  "optuna-fast-fanova",
+  "cmaes",
+]
+
+# BayesOpt path kept available as optional.
+bayes = [
+  "bayesian-optimization==1.5.1",
+]
+
+# Scorer extras are intentionally granular so only configured scorers need installs.
+# Pick extras to match `scorer_method` entries in conf/config.yaml.
+scorer-pick = ["open_clip_torch"]
+scorer-noai = ["pytorch-lightning", "timm"]
+scorer-aestheticv25 = ["aesthetic-predictor-v2-5"]
+scorer-hybridnoise = [
+  "rembg>=2.0.69,<2.0.72; python_version < '3.13'",
+  "rembg>=2.0.72; python_version >= '3.13'",
+  "joblib",
+  "pymatting>=1.1.14",
+  "numba>=0.62; python_version >= '3.13'",
+]
+scorer-backgroundblackness = [
+  "rembg>=2.0.69,<2.0.72; python_version < '3.13'",
+  "rembg>=2.0.72; python_version >= '3.13'",
+  "joblib",
+  "pymatting>=1.1.14",
+  "numba>=0.62; python_version >= '3.13'",
+]
+scorer-textureclean = [
+  "rembg>=2.0.69,<2.0.72; python_version < '3.13'",
+  "rembg>=2.0.72; python_version >= '3.13'",
+  "pymatting>=1.1.14",
+  "numba>=0.62; python_version >= '3.13'",
+]
+
+# Legacy/optional scorers that are currently commented out in scorer.py.
+scorer-hpsv3 = ["hpsv3"]
+
+# Convenience meta-extra when you explicitly want everything scorer-related.
+scorers-all = [
+  "open_clip_torch",
+  "timm",
+  "hpsv3",
+  "aesthetic-predictor-v2-5",
+  "opencv-python-headless",
+  "rembg>=2.0.69,<2.0.72; python_version < '3.13'",
+  "rembg>=2.0.72; python_version >= '3.13'",
+  "joblib",
+  "pytorch-lightning",
+  "pymatting>=1.1.14",
+  "numba>=0.62; python_version >= '3.13'",
+]
+
+# Local analysis scripts in analysis_2026210/
+analysis = [
+  "pandas>=2.2.0",
+  "plotly",
+  "kaleido",
+  "matplotlib",
+]
+
+[dependency-groups]
+dev = [
+  "pytest>=8.0.0",
+  "pytest-asyncio>=0.23.0",
+  "ruff>=0.6.0",
+]
+
+[tool.uv]
+package = false
+default-groups = ["dev"]
+conflicts = [
+  [
+    { extra = "torch-cu124" },
+    { extra = "torch-cu128" },
+    { extra = "torch-cu129" },
+    { extra = "torch-cu130" },
+  ],
+  [
+    { extra = "torch-v29" },
+    { extra = "torch-v210" },
+  ],
+  [
+    { extra = "onnx-cpu" },
+    { extra = "onnx-gpu" },
+  ],
+  [
+    { extra = "torch-cu124" },
+    { extra = "torch-v29" },
+    { extra = "torch-v210" },
+  ],
+  [
+    { extra = "torch-cu129" },
+    { extra = "torch-v29" },
+    { extra = "torch-v210" },
+  ],
+  [
+    { extra = "torch-cu128" },
+    { extra = "torch-v210" },
+  ],
+]
+
+[[tool.uv.index]]
+name = "pytorch-cu124"
+url = "https://download.pytorch.org/whl/cu124"
+explicit = true
+
+[[tool.uv.index]]
+name = "pytorch-cu128"
+url = "https://download.pytorch.org/whl/cu128"
+explicit = true
+
+[[tool.uv.index]]
+name = "pytorch-cu129"
+url = "https://download.pytorch.org/whl/cu129"
+explicit = true
+
+[[tool.uv.index]]
+name = "pytorch-cu130"
+url = "https://download.pytorch.org/whl/cu130"
+explicit = true
+
+
+[tool.uv.sources]
+torch = [
+  { index = "pytorch-cu124", extra = "torch-cu124" },
+  { index = "pytorch-cu128", extra = "torch-cu128" },
+  { index = "pytorch-cu129", extra = "torch-cu129" },
+  { index = "pytorch-cu130", extra = "torch-cu130" },
+]
+torchvision = [
+  { index = "pytorch-cu124", extra = "torch-cu124" },
+  { index = "pytorch-cu128", extra = "torch-cu128" },
+  { index = "pytorch-cu129", extra = "torch-cu129" },
+  { index = "pytorch-cu130", extra = "torch-cu130" },
+]
+
+# =============================================================================
+# Ruff - Linting and Formatting
+# =============================================================================
+[tool.ruff]
+target-version = "py311"
+line-length = 140
+
+exclude = [
+    ".git",
+    ".uv-cache",
+    ".venv",
+    "venv",
+    "__pycache__",
+    "*.egg-info",
+    "analysis_2026210",
+    "analysis_output",
+    "logs",
+    "optuna_db",
+    "optimization-analysis",
+]
+
+[tool.ruff.lint]
+select = [
+    "E",      # pycodestyle errors
+    "F",      # pyflakes
+    # "I",    # isort - disabled, using custom import ordering
+    "UP",     # pyupgrade
+    "B",      # flake8-bugbear
+    "SIM",    # flake8-simplify
+    "C4",     # flake8-comprehensions
+]
+
+ignore = [
+    "E501",   # line too long (handled by formatter)
+    "E741",   # ambiguous variable name (common in ML code: l, I, O)
+    "B008",   # function call in default argument (dataclasses pattern)
+    "B905",   # zip without strict= (3.10+ only)
+    "SIM108", # ternary operator (sometimes less readable)
+]
+
+fixable = ["ALL"]
+unfixable = []
+
+# isort rules are intentionally disabled for now.
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+skip-magic-trailing-comma = false
+line-ending = "auto"
+
+# =============================================================================
+# ty - Type Checking
+# =============================================================================
+[tool.ty.environment]
+python-version = "3.11"
+python = "./.venv"
+
+[tool.ty.src]
+# Exclude non-runtime, third-party, and exploratory code from type checking.
+exclude = [
+    "analysis_2026210",
+    "analysis_output",
+    "logs",
+    "optuna_db",
+    "optimization-analysis",
+]
+
+[tool.ty.rules]
+# Downgrade noisy rules to warnings for gradual adoption
+possibly-unresolved-reference = "warn"
+invalid-argument-type = "warn"
+possibly-missing-attribute = "warn"
+unresolved-attribute = "warn"

@@ -1,117 +1,122 @@
 # AGENTS.md - Operating Manual
 
-This document provides the essential technical context, architectural overview, and mandatory protocols for working on the `sd-optim` repository.
+This file defines how agents should work in `sd-optim`.
 
-## 1. Project Overview
+## 1) Mission
 
-`sd-optim` is an automated framework for optimizing Stable Diffusion model merging. It uses optimization (via Optuna or BayesOpt) to find the best merge parameters (weights, ratios, etc.) by evaluating generated images against a suite of AI-driven and manual scorers.
+`sd-optim` optimizes Stable Diffusion merges by searching merge parameters (Optuna/Bayes), generating images through WebUI APIs, and scoring results with AI/manual scorers.
 
-### Key Technologies
+Primary goal for agents: deliver correct, reproducible changes with minimal regression risk.
 
-- **Optimization:** [Optuna](file:///d:/stable-diffusion-webui-reForge/extensions/sd-optim/conductor/tech-stack.md#L9) (CMA-ES, TPE, etc.)
-- **Merging Backend:** [sd-mecha](file:///d:/stable-diffusion-webui-reForge/extensions/sd-optim/conductor/tech-stack.md#L6) (Graph-based tensor merging)
-- **Configuration:** Hydra & OmegaConf
-- **WebUI Integration:** A1111/Forge/ComfyUI via custom API adapters.
+## 2) Non-Negotiables
 
----
+- Follow `conductor/workflow.md`.
+- Track work in a relevant `conductor/tracks/*/plan.md`.
+- Use Red-Green-Refactor for behavior changes.
+- Add type hints for new/changed function signatures.
+- Use structured logging (`logger = logging.getLogger(__name__)`).
+- Do not introduce destructive git operations unless explicitly requested.
 
-## 2. Architecture & Flow
+## 3) Repo Orientation
 
-### High-Level Loop
+- `conf/`: Hydra configuration (`config.yaml`, `optimization_guide/`, payloads).
+- `sd_optim/`: core runtime (optimizers, merger, scorer, generator, bounds).
+- `sd_optim/model_configs/`: model block definitions and converters.
+- `scripts/api.py`: WebUI bridge endpoints.
+- `analysis_2026210/`: local analysis scripts and generated reports.
+- `conductor/`: project workflow, tracks, and planning artifacts.
 
-The optimization process follows a modular loop:
+## 4) Architecture Snapshot
 
-```mermaid
-sequenceDiagram
-    participant O as Optimizer (Optuna/Bayes)
-    participant M as Merger (sd-mecha)
-    participant G as Generator (WebUI API)
-    participant S as Scorer (Aesthetic/CLIP/etc.)
+Optimization loop:
 
-    O->>M: Suggest Parameters (e.g., alpha=0.6)
-    M->>M: Build & Execute Recipe (.mecha)
-    M-->>O: Merged Model Path
-    O->>G: Generate Images (Batch)
-    G-->>O: Image Files
-    O->>S: Evaluate Images
-    S-->>O: Numerical Score
-    O->>O: Update Study/Trial
-    Note over O,S: Repeat for N Iterations
-```
+1. Optimizer proposes params.
+2. Merger builds and executes recipe (`sd-mecha`).
+3. Generator creates images via target WebUI API.
+4. Scorer aggregates weighted scores.
+5. Optimizer records trial and repeats.
 
----
+## 5) Environment Assumptions
 
-## 3. Directory Orientation
+- Primary developer environment is Windows + PowerShell.
+- Preferred tooling direction is Astral:
+  - `uv` for environment/package/task execution
+  - `ruff` for lint/format
+  - `ty` for type checking
+- Astral tooling is preferred when available; otherwise use existing project commands.
+- Python dependencies are commonly installed in the WebUI venv:
+  - `D:\stable-diffusion-webui-reForge\venv\Scripts\python.exe`
+- Keep paths and commands platform-aware. Prefer repo-relative paths in docs and avoid `file:///` links.
 
-| Directory                                                                                                         | Purpose                                                                                                     |
-| :---------------------------------------------------------------------------------------------------------------- | :---------------------------------------------------------------------------------------------------------- |
-| [`conf/`](file:///d:/stable-diffusion-webui-reForge/extensions/sd-optim/conf)                                     | **The Brain:** Central Hydra configuration. Includes `config.yaml`, `optimization_guide/`, and `payloads/`. |
-| [`sd_optim/`](file:///d:/stable-diffusion-webui-reForge/extensions/sd-optim/sd_optim)                             | **The Engine:** Core logic. Includes optimizers, mergers, scorers, and prompters.                           |
-| [`sd_optim/model_configs/`](file:///d:/stable-diffusion-webui-reForge/extensions/sd-optim/sd_optim/model_configs) | `sd-mecha` block definitions (SDXL, SD1.5, etc.).                                                           |
-| [`scripts/`](file:///d:/stable-diffusion-webui-reForge/extensions/sd-optim/scripts)                               | **The Bridge:** `api.py` provides custom endpoints for A1111/Forge to handle model loading/unloading.       |
-| [`conductor/`](file:///d:/stable-diffusion-webui-reForge/extensions/sd-optim/conductor)                           | **The Warden:** Project management, tech-stack definitions, tracks, and the mandatory development workflow. |
+## 6) Optuna-Specific Rules
 
----
+- `custom_bounds` list values (e.g. `[0.0, 1.0]`) are treated as categorical choices.
+- `custom_bounds` tuple values (e.g. `(0.0, 1.0)`) are treated as continuous ranges.
+- Use TPE for mostly categorical/binary search spaces.
+- Use CMA-ES for mostly continuous spaces.
+- When reporting importance, clearly label mode:
+  - maximize intent (`--maximize` in analysis helper)
+  - default/min-style view (without `--maximize`)
 
-## 4. Key Component Deep Dives
+## 7) Required Workflow for Code Changes
 
-### [Parameter Handling (`bounds.py`)](file:///d:/stable-diffusion-webui-reForge/extensions/sd-optim/sd_optim/bounds.py)
+1. Pick or create a track plan in `conductor/tracks/.../plan.md`.
+2. Mark task `[~]` before implementation.
+3. Add failing test(s) first when behavior changes.
+4. Implement minimum fix.
+5. Run relevant tests/checks.
+6. Update plan item to `[x]` when complete.
+7. Summarize changed files and rationale.
 
-The `ParameterHandler` translates the `optimization_guide/guide.yaml` into actual search spaces for Optuna. It supports strategies like `all`, `select`, `group`, and `single` to map parameters across different UNET/CLIP blocks.
+If tests cannot run due to environment constraints, state that explicitly in the final report.
 
-### [Merge Backend (`merge_methods.py`)](file:///d:/stable-diffusion-webui-reForge/extensions/sd-optim/sd_optim/merge_methods.py)
+## 8) Command Conventions
 
-This massive library contains specialized merging algorithms (Polar Decomposition, SLERP, Wavelets). Methods are registered with `sd-mecha` using the `@merge_method` decorator.
+- Use `rg` for fast search.
+  - `https://github.com/BurntSushi/ripgrep/blob/master/GUIDE.md`
+- Use non-interactive commands.
+- Keep commands copy-pastable.
+- Prefer PowerShell-friendly commands in examples.
+- Prefer Astral tools when implemented:
+  - `uv run ...`
+  - `ruff check ...` / `ruff format ...`
+  - `ty ...`
+- If Astral tools are unavailable, use current Python/pytest/pip-based equivalents.
 
-### [Scoring System (`scorer.py`)](file:///d:/stable-diffusion-webui-reForge/extensions/sd-optim/sd_optim/scorer.py)
+## 9) High-Value Areas for Caution
 
-The `AestheticScorer` manages multiple evaluation models. It supports lazy loading to save VRAM and allows for complex weighted averaging across multiple scorers.
+- `sd_optim/optuna_optimizer.py`: study resume/fork semantics, sampler config, callback logging.
+- `sd_optim/bounds.py`: parameter-name generation and bounds interpretation.
+- `sd_optim/scorer.py`: weighted averaging and scorer filters/lazy-load behavior.
+- `conf/optimization_guide/guide.yaml`: search-space definition has major behavior impact.
 
----
+## 10) Definition of Done
 
-## 5. Mandatory Agent Protocols
+A change is complete only if:
 
-All agents **MUST** follow the [Project Workflow](file:///d:/stable-diffusion-webui-reForge/extensions/sd-optim/conductor/workflow.md). Failure to do so will result in rejected implementations.
+- Behavior is validated (tests or clearly documented manual verification).
+- Config/docs are updated when behavior or usage changed.
+- Plan tracking is updated.
+- Risks/limitations are called out explicitly.
 
-### Red-Green-Refactor (TDD)
+## 11) Common Operations
 
-1. **Red:** Write a failing test in `tests/` before any implementation.
-2. **Green:** Write the minimum code to pass the test.
-3. **Refactor:** Clean up while keeping tests green.
+### Add a scorer
 
-### Conductor Tasks
+1. Register metadata in scorer registry (`MODEL_DATA` path used by current scorer manager).
+2. Implement scoring path in scorer runtime.
+3. Add config entry in `conf/config.yaml` (method + weight/filter as needed).
+4. Add at least one focused test or fixture-based check.
 
-All work must be tracked in a `plan.md` within a track directory (e.g., `conductor/tracks/modernization_p1_.../`).
+### Add a merge method
 
-- Mark tasks as `[~]` (in progress) and `[x]` (complete).
-- Attach summaries to commits using `git notes`.
+1. Implement method with `@merge_method` and proper type hints.
+2. Ensure loader/import path registers it.
+3. Add a small deterministic validation (unit/integration or analysis script).
 
-### Coding Standards
+## 12) Troubleshooting
 
-- **Type Hints:** Required for all new function/method signatures.
-- **Async:** Use `asyncio` and `aiohttp` for all I/O-bound tasks (Generator, Scorer API).
-- **Logging:** Use the structured logger (`logger = logging.getLogger(__name__)`).
-
----
-
-## 6. Common Operations
-
-### Adding a New Scorer
-
-1. Add model metadata to `MODEL_DATA` in `scorer.py`.
-2. Implement the scoring logic in `AestheticScorer.score()`.
-3. Update `config.yaml` to include the new scorer ID.
-
-### Adding a New Merge Method
-
-1. Define the method in `merge_methods.py` within the `MergeMethods` class.
-2. Decorate it with `@merge_method` and use `Parameter` and `Return` type hints.
-3. It will be automatically registered when `sd_optim.py` loads custom converters.
-
----
-
-## 7. Troubleshooting
-
-- **API Connection:** Ensure the target WebUI is running and matches the `url` in `config.yaml`.
-- **CUDA OOM:** Enable `scorer_lazy_load_list` or use `scorer_default_device: cpu` for heavy scorers.
-- **Config Mismatches:** Run `sd_optim.py` with `hydra.verbose=true` to debug configuration resolution.
+- API connection issues: verify `webui` + `url` in `conf/config.yaml` and endpoint availability.
+- CUDA OOM in scorers: use lazy-load list and/or CPU scorer device defaults.
+- Hydra confusion: run with `hydra.verbose=true` and inspect `.hydra/config.yaml` in run dir.
+- Study confusion: verify whether run was new, resumed, or forked before comparing metrics.

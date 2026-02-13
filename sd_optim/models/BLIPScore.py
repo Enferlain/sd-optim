@@ -68,12 +68,8 @@ class BLIPScore(nn.Module):
             max_length=35,
             return_tensors="pt",
         ).to(self.device)
-        text_output = self.blip.text_encoder(
-            text_input.input_ids, attention_mask=text_input.attention_mask, mode="text"
-        )
-        txt_feature = F.normalize(
-            self.blip.text_proj(text_output.last_hidden_state[:, 0, :])
-        )
+        text_output = self.blip.text_encoder(text_input.input_ids, attention_mask=text_input.attention_mask, mode="text")
+        txt_feature = F.normalize(self.blip.text_proj(text_output.last_hidden_state[:, 0, :]))
 
         # image encode
         if isinstance(image, Image.Image):
@@ -83,9 +79,7 @@ class BLIPScore(nn.Module):
                 pil_image = Image.open(image)
         image = self.preprocess(pil_image).unsqueeze(0).to(self.device)
         image_embeds = self.blip.visual_encoder(image)
-        image_features = F.normalize(
-            self.blip.vision_proj(image_embeds[:, 0, :]), dim=-1
-        )
+        image_features = F.normalize(self.blip.vision_proj(image_embeds[:, 0, :]), dim=-1)
 
         # score
         rewards = torch.sum(torch.mul(txt_feature, image_features), dim=1, keepdim=True)
@@ -107,12 +101,8 @@ class BLIPScore(nn.Module):
             max_length=35,
             return_tensors="pt",
         ).to(self.device)
-        text_output = self.blip.text_encoder(
-            text_input.input_ids, attention_mask=text_input.attention_mask, mode="text"
-        )
-        txt_feature = F.normalize(
-            self.blip.text_proj(text_output.last_hidden_state[:, 0, :])
-        )
+        text_output = self.blip.text_encoder(text_input.input_ids, attention_mask=text_input.attention_mask, mode="text")
+        txt_feature = F.normalize(self.blip.text_proj(text_output.last_hidden_state[:, 0, :]))
 
         txt_set = []
         img_set = []
@@ -122,9 +112,7 @@ class BLIPScore(nn.Module):
             pil_image = Image.open(img_path)
             image = self.preprocess(pil_image).unsqueeze(0).to(self.device)
             image_embeds = self.blip.visual_encoder(image)
-            image_features = F.normalize(
-                self.blip.vision_proj(image_embeds[:, 0, :]), dim=-1
-            )
+            image_features = F.normalize(self.blip.vision_proj(image_embeds[:, 0, :]), dim=-1)
             img_set.append(image_features)
             txt_set.append(txt_feature)
 

@@ -93,9 +93,7 @@ class ImageReward(nn.Module):
     def score_gard(self, prompt_ids, prompt_attention_mask, image):
         image_embeds = self.blip.visual_encoder(image)
         # text encode cross attention with image
-        image_atts = torch.ones(image_embeds.size()[:-1], dtype=torch.long).to(
-            self.device
-        )
+        image_atts = torch.ones(image_embeds.size()[:-1], dtype=torch.long).to(self.device)
         text_output = self.blip.text_encoder(
             prompt_ids,
             attention_mask=prompt_attention_mask,
@@ -131,17 +129,13 @@ class ImageReward(nn.Module):
             if os.path.isfile(image):
                 pil_image = Image.open(image)
         else:
-            raise TypeError(
-                r"This image parameter type has not been supportted yet. Please pass PIL.Image or file path str."
-            )
+            raise TypeError(r"This image parameter type has not been supportted yet. Please pass PIL.Image or file path str.")
 
         image = self.preprocess(pil_image).unsqueeze(0).to(self.device)
         image_embeds = self.blip.visual_encoder(image)
 
         # text encode cross attention with image
-        image_atts = torch.ones(image_embeds.size()[:-1], dtype=torch.long).to(
-            self.device
-        )
+        image_atts = torch.ones(image_embeds.size()[:-1], dtype=torch.long).to(self.device)
         text_output = self.blip.text_encoder(
             text_input.input_ids,
             attention_mask=text_input.attention_mask,
@@ -181,16 +175,12 @@ class ImageReward(nn.Module):
                 if os.path.isfile(generation):
                     pil_image = Image.open(generation)
             else:
-                raise TypeError(
-                    r"This image parameter type has not been supportted yet. Please pass PIL.Image or file path str."
-                )
+                raise TypeError(r"This image parameter type has not been supportted yet. Please pass PIL.Image or file path str.")
             image = self.preprocess(pil_image).unsqueeze(0).to(self.device)
             image_embeds = self.blip.visual_encoder(image)
 
             # text encode cross attention with image
-            image_atts = torch.ones(image_embeds.size()[:-1], dtype=torch.long).to(
-                self.device
-            )
+            image_atts = torch.ones(image_embeds.size()[:-1], dtype=torch.long).to(self.device)
             text_output = self.blip.text_encoder(
                 text_input.input_ids,
                 attention_mask=text_input.attention_mask,

@@ -63,9 +63,7 @@ class SimpleQualityScorer:
         else:
             # Scale score from 4.0 to 10.0 for sharp images
             # We map a range of [threshold, threshold + 400] to [4.0, 10.0]
-            sharpness_score = 4.0 + min(
-                (laplacian_var - self.sharpness_threshold) / 400.0 * 6.0, 6.0
-            )
+            sharpness_score = 4.0 + min((laplacian_var - self.sharpness_threshold) / 400.0 * 6.0, 6.0)
 
         # 3. Contrast check (0.0 - 10.0)
         # Measures the range of dark to light. Low score for flat/dull images.

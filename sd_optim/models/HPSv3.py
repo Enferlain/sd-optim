@@ -9,9 +9,7 @@ import tempfile
 try:
     from hpsv3 import HPSv3RewardInferencer
 except ImportError:
-    raise ImportError(
-        "hpsv3 is not installed. Please install it by running: pip install git+https://github.com/MizzenAI/HPSv3.git"
-    )
+    raise ImportError("hpsv3 is not installed. Please install it by running: pip install git+https://github.com/MizzenAI/HPSv3.git")
 
 
 class HPSv3Scorer:
@@ -29,17 +27,11 @@ class HPSv3Scorer:
         try:
             from hpsv3 import HPSv3RewardInferencer
 
-            self.model = HPSv3RewardInferencer(
-                model_name_or_path=model_path, device=self.device
-            )
+            self.model = HPSv3RewardInferencer(model_name_or_path=model_path, device=self.device)
         except ImportError:
-            raise ImportError(
-                "hpsv3 is not installed. Please install it by running: pip install git+https://github.com/MizzenAI/HPSv3.git"
-            )
+            raise ImportError("hpsv3 is not installed. Please install it by running: pip install git+https://github.com/MizzenAI/HPSv3.git")
         except Exception as e:
-            raise RuntimeError(
-                f"Failed to initialize HPSv3RewardInferencer with model_path='{model_path}': {e}"
-            )
+            raise RuntimeError(f"Failed to initialize HPSv3RewardInferencer with model_path='{model_path}': {e}")
 
     def score(self, prompt: str, image: Image.Image) -> tuple[float, float]:
         """

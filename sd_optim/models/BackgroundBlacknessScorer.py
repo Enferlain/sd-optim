@@ -10,9 +10,7 @@ logger = logging.getLogger(__name__)
 
 
 class BackgroundBlacknessScorer:
-    def __init__(
-        self, rembg_session=None, n_clusters: int = 4, sensitivity: float = 0.008
-    ):
+    def __init__(self, rembg_session=None, n_clusters: int = 4, sensitivity: float = 0.008):
         """
         Scorer for measuring how black the background of an image is.
         A higher score means a blacker background.
@@ -36,9 +34,7 @@ class BackgroundBlacknessScorer:
         background color is to pure black (0, 0, 0).
         """
         if self.rembg_session is None:
-            logger.error(
-                "Rembg session not initialized. Cannot perform blackness scoring."
-            )
+            logger.error("Rembg session not initialized. Cannot perform blackness scoring.")
             return 0.0
 
         target_black = np.array([0, 0, 0])
@@ -58,9 +54,7 @@ class BackgroundBlacknessScorer:
             output_pixels = np.array(output_image_with_alpha)
 
             if output_pixels.shape[2] != 4:
-                logger.warning(
-                    "Blackness score: Image has no alpha channel after background removal."
-                )
+                logger.warning("Blackness score: Image has no alpha channel after background removal.")
                 return 0.0  # Or a neutral score like 5.0
 
             alpha_channel = output_pixels[:, :, 3]
@@ -75,9 +69,7 @@ class BackgroundBlacknessScorer:
             if len(original_background_pixels) < self.n_clusters:
                 dominant_color = np.mean(original_background_pixels, axis=0)
             else:
-                kmeans = KMeans(
-                    n_clusters=self.n_clusters, random_state=42, n_init="auto"
-                )
+                kmeans = KMeans(n_clusters=self.n_clusters, random_state=42, n_init="auto")
                 with joblib.parallel_backend("threading", n_jobs=1):
                     kmeans.fit(original_background_pixels)
 
@@ -92,7 +84,5 @@ class BackgroundBlacknessScorer:
             return float(np.clip(final_score, 0.0, 10.0))
 
         except Exception as e:
-            logger.error(
-                f"An error occurred during blackness scoring: {e}", exc_info=True
-            )
+            logger.error(f"An error occurred during blackness scoring: {e}", exc_info=True)
             return 0.0

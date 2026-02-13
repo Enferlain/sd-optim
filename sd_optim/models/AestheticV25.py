@@ -26,9 +26,7 @@ class AestheticV25:
             pil_image = image.convert("RGB")
 
             # Process image with error handling
-            pixel_values = self.preprocessor(
-                images=pil_image, return_tensors="pt"
-            ).pixel_values
+            pixel_values = self.preprocessor(images=pil_image, return_tensors="pt").pixel_values
             pixel_values = pixel_values.to(self.device)
 
             # Score with proper error handling

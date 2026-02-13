@@ -33,22 +33,35 @@ This project aims to provide a flexible and powerful tool for finding optimal pa
 
 ## Getting Started
 
-1.  **Prerequisites:** Python 3.10+, Git, a running instance of a supported WebUI (e.g., A1111, Forge) with its API enabled.
+1.  **Prerequisites:** Python 3.11-3.13, `uv`, Git, and a running instance of a supported WebUI (e.g., Comfy tested, A1111, Forge are untested) with its API enabled.
 2.  **Installation:** Clone this repository into your WebUI's `extensions` folder:
     ```bash
-    git clone -b mecha_update https://github.com/enferlain/sd-optim.git sd-optim
+    git clone -b refactor https://github.com/enferlain/sd-optim.git sd-optim
     ```
     *(Replace URL)*
-    Then install dependencies:
+    Then install dependencies with `uv`:
     ```bash
     cd sd-optim
-    pip install -r requirements.txt
+    uv lock
+    uv sync
     ```
-3.  **Configuration:** Copy `.tmpl.yaml` files in `conf/` to `.yaml` and edit them (especially `config.yaml` and `optimization_guide.yaml`) to match your paths and desired settings.
+    Install runtime extras based on your setup. Example (CUDA 13.0 + torch 2.10 + Optuna + rembg GPU backend + scorer extras):
+    ```bash
+    uv sync --extra torch-cu130 --extra torch-v210 --extra merge --extra optuna --extra onnx-gpu --extra scorer-hybridnoise --extra scorer-backgroundblackness --extra scorer-textureclean
+    ```
+3.  **Configuration:** Copy `.tmpl.yaml` files in `conf/` to `.yaml` and edit them (especially `config.yaml` and `optimization_guide/guide.yaml`) to match your paths and desired settings.
 4.  **Run:** Launch your WebUI with the API enabled. Then, from the `sd-optim` directory, run:
     ```bash
-    python sd_optim.py
+    uv run python sd_optim.py
     ```
+
+### Lockfile and Linux/Windows compatibility
+
+- `uv.lock` is cross-platform and includes environment markers/wheels for multiple OSes.
+- Linux users can use the same lockfile and run `uv sync --frozen` with their chosen extras.
+- If you run lock checks with a local cache dir:
+  - PowerShell: ``$env:UV_CACHE_DIR=".uv-cache"; uv lock --check``
+  - Bash: ``UV_CACHE_DIR=.uv-cache uv lock --check``
 
 **For detailed setup, configuration options, and usage guides, please see the [[Project Wiki]](https://github.com/enferlain/sd-optim/wiki).**
 

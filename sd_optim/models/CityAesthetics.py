@@ -63,9 +63,7 @@ class CityAestheticsScorer:
 
     def initialize_model(self):
         # Initialize CLIP model and processor
-        self.clip_processor = CLIPImageProcessor.from_pretrained(
-            "openai/clip-vit-large-patch14-336"
-        )
+        self.clip_processor = CLIPImageProcessor.from_pretrained("openai/clip-vit-large-patch14-336")
         self.clip_model = CLIPVisionModelWithProjection.from_pretrained(
             "openai/clip-vit-large-patch14-336",
             torch_dtype=torch.float32,
@@ -74,9 +72,7 @@ class CityAestheticsScorer:
 
         # Load the custom PredictorModel with state_dict from safetensors
         statedict = load_file(self.pathname)  # Load safetensor file
-        assert tuple(statedict["up.0.weight"].shape) == (1024, 768), (
-            "Unexpected model architecture."
-        )
+        assert tuple(statedict["up.0.weight"].shape) == (1024, 768), "Unexpected model architecture."
         self.city_model = PredictorModel(outputs=1)  # Initialize PredictorModel
         self.city_model.load_state_dict(statedict)  # Load weights into the model
         self.city_model.to(self.device)  # Move model to the device
@@ -91,14 +87,10 @@ class CityAestheticsScorer:
             else:
                 raise ValueError(f"Image file {image} does not exist.")
         else:
-            raise TypeError(
-                "Image must be a PIL.Image.Image instance or a valid file path."
-            )
+            raise TypeError("Image must be a PIL.Image.Image instance or a valid file path.")
 
         # Extract CLIP embeddings
-        inputs = self.clip_processor(images=pil_image, return_tensors="pt").to(
-            self.device, dtype=torch.float32
-        )
+        inputs = self.clip_processor(images=pil_image, return_tensors="pt").to(self.device, dtype=torch.float32)
         with torch.no_grad():
             clip_embeddings = self.clip_model(**inputs).image_embeds
 

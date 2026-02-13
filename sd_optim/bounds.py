@@ -4,14 +4,14 @@ import re
 import sd_mecha
 import fnmatch
 
-from typing import Dict, List, Tuple, Union, Optional, Any
+from typing import Any
 from omegaconf import DictConfig, ListConfig, OmegaConf
 
 
 logger = logging.getLogger(__name__)
 
 # Define a type alias for clarity (optional)
-BoundsInfo = Dict[str, Dict[str, Any]]
+BoundsInfo = dict[str, dict[str, Any]]
 
 
 class ParameterHandler:
@@ -38,39 +38,31 @@ class ParameterHandler:
         and performing conflict detection.
         """
         params_info: BoundsInfo = {}
-        assigned_items: Dict[Tuple[str, str], str] = {}
+        assigned_items: dict[tuple[str, str], str] = {}
 
         guide_components = self.cfg.optimization_guide.get("components", [])
         if not guide_components or not isinstance(guide_components, (list, ListConfig)):
-            logger.warning(
-                "No 'components' list found or invalid format in optimization_guide. No bounds generated."
-            )
+            logger.warning("No 'components' list found or invalid format in optimization_guide. No bounds generated.")
             return {}
 
         # Process each component
         for component_index, component_config_raw in enumerate(guide_components):
-            component_params = self._process_component(
-                component_index, component_config_raw, assigned_items
-            )
+            component_params = self._process_component(component_index, component_config_raw, assigned_items)
             params_info.update(component_params)
 
-        logger.info(
-            f"Generated metadata for {len(params_info)} optimization parameters based on guide."
-        )
+        logger.info(f"Generated metadata for {len(params_info)} optimization parameters based on guide.")
         return params_info
 
     def _process_component(
         self,
         component_index: int,
         component_config_raw: Any,
-        assigned_items: Dict[Tuple[str, str], str],
-    ) -> Dict[str, Any]:
+        assigned_items: dict[tuple[str, str], str],
+    ) -> dict[str, Any]:
         """Process a single component and all its strategies"""
         # Validate component structure
         if not isinstance(component_config_raw, (dict, DictConfig)):
-            logger.warning(
-                f"Skipping component entry at index {component_index}: Not a dictionary."
-            )
+            logger.warning(f"Skipping component entry at index {component_index}: Not a dictionary.")
             return {}
 
         # Convert to plain dict for easier access
@@ -82,25 +74,19 @@ class ParameterHandler:
 
         guide_component_name = component_config.get("name")
         if not guide_component_name:
-            logger.warning(
-                f"Skipping component entry at index {component_index} due to missing 'name'."
-            )
+            logger.warning(f"Skipping component entry at index {component_index} due to missing 'name'.")
             return {}
 
         # Get component-level optimize_params
         component_optimize_params = component_config.get("optimize_params", [])
         if not isinstance(component_optimize_params, list):
-            logger.warning(
-                f"Invalid 'optimize_params' format for component '{guide_component_name}', must be a list. Using empty list."
-            )
+            logger.warning(f"Invalid 'optimize_params' format for component '{guide_component_name}', must be a list. Using empty list.")
             component_optimize_params = []
 
         # Check for strategies list
         strategies_list_raw = component_config.get("strategies")
         if not strategies_list_raw or not isinstance(strategies_list_raw, list):
-            logger.warning(
-                f"Component '{guide_component_name}' is missing a valid 'strategies' list. Skipping this component."
-            )
+            logger.warning(f"Component '{guide_component_name}' is missing a valid 'strategies' list. Skipping this component.")
             return {}
 
         # Process all strategies for this component
@@ -120,17 +106,15 @@ class ParameterHandler:
     def _process_strategy(
         self,
         guide_component_name: str,
-        component_optimize_params: List[str],
+        component_optimize_params: list[str],
         strategy_index: int,
         strategy_config_raw: Any,
-        assigned_items: Dict[Tuple[str, str], str],
-    ) -> Dict[str, Any]:
+        assigned_items: dict[tuple[str, str], str],
+    ) -> dict[str, Any]:
         """Process a single strategy"""
         # Validate strategy structure
         if not isinstance(strategy_config_raw, (dict, DictConfig)):
-            logger.warning(
-                f"Invalid strategy entry format at index {strategy_index} in '{guide_component_name}'. Skipping."
-            )
+            logger.warning(f"Invalid strategy entry format at index {strategy_index} in '{guide_component_name}'. Skipping.")
             return {}
 
         strategy_config = (
@@ -147,35 +131,25 @@ class ParameterHandler:
             "single",
             "none",
         ]:
-            logger.warning(
-                f"Missing or invalid strategy 'type' at index {strategy_index} in '{guide_component_name}'. Skipping."
-            )
+            logger.warning(f"Missing or invalid strategy 'type' at index {strategy_index} in '{guide_component_name}'. Skipping.")
             return {}
 
         if strategy_type == "none":
             return {}
 
         # Determine target config and type
-        config_to_iterate, target_is_blocks, target_type_str = (
-            self._determine_target_config(guide_component_name, strategy_config)
-        )
+        config_to_iterate, target_is_blocks, target_type_str = self._determine_target_config(guide_component_name, strategy_config)
         if not config_to_iterate:
             return {}
 
         # Get component items
-        items_in_component = self._get_component_items(
-            config_to_iterate, guide_component_name
-        )
+        items_in_component = self._get_component_items(config_to_iterate, guide_component_name)
         if not items_in_component:
-            logger.warning(
-                f"Component '{guide_component_name}' has no items in config '{config_to_iterate.identifier}'. Skipping."
-            )
+            logger.warning(f"Component '{guide_component_name}' has no items in config '{config_to_iterate.identifier}'. Skipping.")
             return {}
 
         # Determine optimize_params for this strategy
-        current_optimize_params = strategy_config.get(
-            "optimize_params", component_optimize_params
-        )
+        current_optimize_params = strategy_config.get("optimize_params", component_optimize_params)
         if not isinstance(current_optimize_params, list):
             logger.warning(
                 f"Invalid 'optimize_params' for strategy '{strategy_type}' (index {strategy_index}) in '{guide_component_name}'. Using component default or skipping."
@@ -238,22 +212,15 @@ class ParameterHandler:
             )
         else:
             # This shouldn't happen due to earlier validation, but just in case
-            logger.warning(
-                f"Unknown strategy type '{strategy_type}' - this shouldn't happen!"
-            )
+            logger.warning(f"Unknown strategy type '{strategy_type}' - this shouldn't happen!")
             return {}
 
-    def _determine_target_config(
-        self, guide_component_name: str, strategy_config: Dict[str, Any]
-    ) -> Tuple[Optional[Any], bool, str]:
+    def _determine_target_config(self, guide_component_name: str, strategy_config: dict[str, Any]) -> tuple[Any | None, bool, str]:
         """Determine which config to use and target type based on strategy specification"""
         strategy_target_type = strategy_config.get("target_type")
 
         if strategy_target_type == "block":
-            if (
-                self.custom_block_config
-                and guide_component_name in self.custom_block_config.components()
-            ):
+            if self.custom_block_config and guide_component_name in self.custom_block_config.components():
                 return self.custom_block_config, True, "block"
             else:
                 logger.warning(
@@ -262,10 +229,7 @@ class ParameterHandler:
                 return None, False, ""
 
         elif strategy_target_type == "key":
-            if (
-                self.base_model_config
-                and guide_component_name in self.base_model_config.components()
-            ):
+            if self.base_model_config and guide_component_name in self.base_model_config.components():
                 return self.base_model_config, False, "key"
             else:
                 logger.warning(
@@ -275,31 +239,19 @@ class ParameterHandler:
 
         else:
             # Original logic - auto-determine based on component availability
-            if (
-                self.custom_block_config
-                and guide_component_name in self.custom_block_config.components()
-            ):
+            if self.custom_block_config and guide_component_name in self.custom_block_config.components():
                 return self.custom_block_config, True, "block"
-            elif (
-                self.base_model_config
-                and guide_component_name in self.base_model_config.components()
-            ):
+            elif self.base_model_config and guide_component_name in self.base_model_config.components():
                 return self.base_model_config, False, "key"
             else:
-                logger.warning(
-                    f"Component '{guide_component_name}' not found in known configs. Skipping component."
-                )
+                logger.warning(f"Component '{guide_component_name}' not found in known configs. Skipping component.")
                 return None, False, ""
 
-    def _get_component_items(
-        self, config_to_iterate: Any, guide_component_name: str
-    ) -> List[str]:
+    def _get_component_items(self, config_to_iterate: Any, guide_component_name: str) -> list[str]:
         """Get list of items (blocks/keys) for a component"""
         try:
             if guide_component_name not in config_to_iterate.components():
-                raise KeyError(
-                    f"Component name '{guide_component_name}' not found within config '{config_to_iterate.identifier}'"
-                )
+                raise KeyError(f"Component name '{guide_component_name}' not found within config '{config_to_iterate.identifier}'")
 
             component_obj = config_to_iterate.components()[guide_component_name]
             return list(component_obj.keys().keys())
@@ -312,13 +264,13 @@ class ParameterHandler:
 
     def _process_all_strategy(
         self,
-        current_optimize_params: List[str],
-        items_in_component: List[str],
-        base_metadata: Dict[str, Any],
-        strategy_config: Dict[str, Any],
+        current_optimize_params: list[str],
+        items_in_component: list[str],
+        base_metadata: dict[str, Any],
+        strategy_config: dict[str, Any],
         guide_component_name: str,
-        assigned_items: Dict[Tuple[str, str], str],
-    ) -> Dict[str, Any]:
+        assigned_items: dict[tuple[str, str], str],
+    ) -> dict[str, Any]:
         """Process 'all' strategy type"""
         params_info = {}
         default_bounds_tuple = (0.0, 1.0)
@@ -346,22 +298,20 @@ class ParameterHandler:
 
     def _process_select_strategy(
         self,
-        current_optimize_params: List[str],
-        items_in_component: List[str],
-        base_metadata: Dict[str, Any],
-        strategy_config: Dict[str, Any],
+        current_optimize_params: list[str],
+        items_in_component: list[str],
+        base_metadata: dict[str, Any],
+        strategy_config: dict[str, Any],
         guide_component_name: str,
-        assigned_items: Dict[Tuple[str, str], str],
-    ) -> Dict[str, Any]:
+        assigned_items: dict[tuple[str, str], str],
+    ) -> dict[str, Any]:
         """Process 'select' strategy type"""
         params_info = {}
         default_bounds_tuple = (0.0, 1.0)
         patterns = strategy_config.get("keys", [])
 
         if not patterns or not isinstance(patterns, list):
-            logger.warning(
-                f"'select' strategy needs a valid 'keys' list in '{guide_component_name}'. Skipping for all params."
-            )
+            logger.warning(f"'select' strategy needs a valid 'keys' list in '{guide_component_name}'. Skipping for all params.")
             return params_info
 
         strategy_identifier = "select"
@@ -378,9 +328,7 @@ class ParameterHandler:
                             )
                             continue
 
-                        assigned_items[assignment_key] = (
-                            f"{strategy_identifier}:{pattern}"
-                        )
+                        assigned_items[assignment_key] = f"{strategy_identifier}:{pattern}"
                         generated_param_name = f"{item_name}_{base_param_name}"
                         params_info[generated_param_name] = {
                             **base_metadata,
@@ -399,22 +347,20 @@ class ParameterHandler:
 
     def _process_group_strategy(
         self,
-        current_optimize_params: List[str],
-        items_in_component: List[str],
-        base_metadata: Dict[str, Any],
-        strategy_config: Dict[str, Any],
+        current_optimize_params: list[str],
+        items_in_component: list[str],
+        base_metadata: dict[str, Any],
+        strategy_config: dict[str, Any],
         guide_component_name: str,
-        assigned_items: Dict[Tuple[str, str], str],
-    ) -> Dict[str, Any]:
+        assigned_items: dict[tuple[str, str], str],
+    ) -> dict[str, Any]:
         """Process 'group' strategy type"""
         params_info = {}
         default_bounds_tuple = (0.0, 1.0)
         groups = strategy_config.get("groups", [])
 
         if not groups or not isinstance(groups, list):
-            logger.warning(
-                f"'group' strategy needs a valid 'groups' list in '{guide_component_name}'. Skipping for all params."
-            )
+            logger.warning(f"'group' strategy needs a valid 'groups' list in '{guide_component_name}'. Skipping for all params.")
             return params_info
 
         for base_param_name in current_optimize_params:
@@ -424,16 +370,10 @@ class ParameterHandler:
 
             for group_index, group_raw in enumerate(groups):
                 if not isinstance(group_raw, (dict, DictConfig)):
-                    logger.warning(
-                        f"Invalid group format at index {group_index} in '{guide_component_name}'. Skipping."
-                    )
+                    logger.warning(f"Invalid group format at index {group_index} in '{guide_component_name}'. Skipping.")
                     continue
 
-                group = (
-                    OmegaConf.to_container(group_raw, resolve=True)
-                    if isinstance(group_raw, DictConfig)
-                    else group_raw
-                )
+                group = OmegaConf.to_container(group_raw, resolve=True) if isinstance(group_raw, DictConfig) else group_raw
 
                 group_name = group.get("name")
                 group_patterns = group.get("keys", [])
@@ -478,17 +418,13 @@ class ParameterHandler:
                         "strategy": "group",  # Ensure strategy is set correctly
                         "group_name": group_name,
                         "base_param": base_param_name,
-                        "items_covered": list(
-                            set(temp_items_for_group)
-                        ),  # Use unique list
+                        "items_covered": list(set(temp_items_for_group)),  # Use unique list
                         "bounds": default_bounds_tuple,
                     }
 
                     # Mark all items as assigned by this group
                     for item_name in temp_items_for_group:
-                        assigned_items[(base_param_name, item_name)] = (
-                            strategy_identifier
-                        )
+                        assigned_items[(base_param_name, item_name)] = strategy_identifier
                     logger.debug(
                         f"PARAMETER_HANDLER: Marked {len(temp_items_for_group)} items as assigned for '{generated_param_name}'"
                     )  # ← ADD THIS
@@ -501,13 +437,13 @@ class ParameterHandler:
 
     def _process_single_strategy(
         self,
-        current_optimize_params: List[str],
-        items_in_component: List[str],
-        base_metadata: Dict[str, Any],
-        strategy_config: Dict[str, Any],
+        current_optimize_params: list[str],
+        items_in_component: list[str],
+        base_metadata: dict[str, Any],
+        strategy_config: dict[str, Any],
         guide_component_name: str,
-        assigned_items: Dict[Tuple[str, str], str],
-    ) -> Dict[str, Any]:
+        assigned_items: dict[tuple[str, str], str],
+    ) -> dict[str, Any]:
         """Process 'single' strategy type"""
         params_info = {}
         default_bounds_tuple = (0.0, 1.0)
@@ -542,9 +478,7 @@ class ParameterHandler:
 
             # If no conflicts, add the single parameter and mark items
             generated_param_name = f"{group_name}_{base_param_name}"
-            logger.debug(
-                f"PARAMETER_HANDLER: Generating single param: '{generated_param_name}'"
-            )
+            logger.debug(f"PARAMETER_HANDLER: Generating single param: '{generated_param_name}'")
 
             params_info[generated_param_name] = {
                 **base_metadata,
@@ -559,28 +493,22 @@ class ParameterHandler:
             for item_name in items_in_component:
                 assigned_items[(base_param_name, item_name)] = strategy_identifier
 
-            logger.debug(
-                f"PARAMETER_HANDLER: Marked {len(items_in_component)} items as assigned for '{generated_param_name}'"
-            )
+            logger.debug(f"PARAMETER_HANDLER: Marked {len(items_in_component)} items as assigned for '{generated_param_name}'")
 
         return params_info
 
     # V1.6: Apply custom bounds by specific name OR base name
     def get_bounds(
         self,
-        custom_bounds_config: Optional[
-            Dict[str, Union[List[float], List[int], int, float]]
-        ] = None,
-    ) -> Tuple[BoundsInfo, Dict[str, Union[Tuple[float, float], float, int, List]]]:
+        custom_bounds_config: dict[str, list[float] | list[int] | int | float] | None = None,
+    ) -> tuple[BoundsInfo, dict[str, tuple[float, float] | float | int | list]]:
         # Step 1: Generate base param_info from strategies (as before)
         params_info: BoundsInfo = self.create_parameter_bounds_metadata()
         if not params_info:
             return {}, {}
 
         # Step 2: Apply custom bounds overrides
-        validated_custom_bounds = self.validate_custom_bounds(
-            custom_bounds_config or {}
-        )
+        validated_custom_bounds = self.validate_custom_bounds(custom_bounds_config or {})
         updated_params_count = 0
 
         # Create lookup by base_param for efficiency
@@ -595,9 +523,7 @@ class ParameterHandler:
             # --- PRIORITY 1: Check for EXACT optimizer parameter name match ---
             if custom_key in params_info:
                 original_bounds = params_info[custom_key].get("bounds")
-                params_info[custom_key]["bounds"] = (
-                    custom_value  # Override specific param
-                )
+                params_info[custom_key]["bounds"] = custom_value  # Override specific param
                 logger.info(
                     f"  Overrode bounds for specific param '{custom_key}' from {original_bounds} to {custom_value} via custom_bounds."
                 )
@@ -610,9 +536,7 @@ class ParameterHandler:
                     # Check if this specific param wasn't already overridden by exact name match
                     if param_name not in validated_custom_bounds:
                         original_bounds = params_info[param_name].get("bounds")
-                        params_info[param_name]["bounds"] = (
-                            custom_value  # Update bounds
-                        )
+                        params_info[param_name]["bounds"] = custom_value  # Update bounds
                         logger.debug(
                             f"  Updated bounds for '{param_name}' (base: {custom_key}) from {original_bounds} to {custom_value} via custom_bounds base match."
                         )
@@ -625,15 +549,9 @@ class ParameterHandler:
                 )
 
         # Step 3: Extract bounds for the optimizer (remains the same)
-        optimizer_pbounds = {
-            param_name: info["bounds"]
-            for param_name, info in params_info.items()
-            if "bounds" in info
-        }
+        optimizer_pbounds = {param_name: info["bounds"] for param_name, info in params_info.items() if "bounds" in info}
 
-        logger.info(
-            f"--- Final {len(params_info)} Optimization Parameter Details (Bounds Updated: {updated_params_count}) ---"
-        )
+        logger.info(f"--- Final {len(params_info)} Optimization Parameter Details (Bounds Updated: {updated_params_count}) ---")
         items_to_log = list(params_info.items())
         log_limit = 100
         if len(items_to_log) > log_limit * 2:
@@ -653,8 +571,8 @@ class ParameterHandler:
     def validate_dependencies(
         self,
         params_info: BoundsInfo,
-        dependencies_cfg: Optional[List[Dict[str, Any]]] = None,
-    ) -> Dict[str, Dict[str, Any]]:
+        dependencies_cfg: list[dict[str, Any]] | None = None,
+    ) -> dict[str, dict[str, Any]]:
         """
         Validates the dependencies config and pre-calculates the full parameter name mapping.
         Returns a mapping of {child_full_name: {'parent': parent_full_name, ...}}
@@ -663,10 +581,10 @@ class ParameterHandler:
             return {}
 
         logger.info("Validating parameter dependencies...")
-        child_to_parent_map: Dict[str, Dict[str, Any]] = {}
+        child_to_parent_map: dict[str, dict[str, Any]] = {}
 
         # Create a lookup for items: item_name -> {base_param: full_param_name}
-        item_param_map: Dict[str, Dict[str, str]] = {}
+        item_param_map: dict[str, dict[str, str]] = {}
         valid_base_params = set()
 
         for p_name, info in params_info.items():
@@ -684,15 +602,11 @@ class ParameterHandler:
             default_val = dep.get("default", 1.0)
 
             if not parent_base or not child_base:
-                logger.warning(
-                    f"Dependency at index {dep_idx} missing 'parent' or 'child'. Skipping."
-                )
+                logger.warning(f"Dependency at index {dep_idx} missing 'parent' or 'child'. Skipping.")
                 continue
 
             if parent_base not in valid_base_params:
-                logger.warning(
-                    f"Dependency parent base parameter '{parent_base}' not found in any component. Skipping."
-                )
+                logger.warning(f"Dependency parent base parameter '{parent_base}' not found in any component. Skipping.")
                 continue
 
             # Map the base dependency to all item-specific parameters
@@ -709,25 +623,21 @@ class ParameterHandler:
                     mapped_count += 1
 
             if mapped_count > 0:
-                logger.info(
-                    f"  Mapped dependency '{parent_base}' -> '{child_base}' for {mapped_count} items/groups."
-                )
+                logger.info(f"  Mapped dependency '{parent_base}' -> '{child_base}' for {mapped_count} items/groups.")
             else:
-                logger.debug(
-                    f"  No pairs found for dependency '{parent_base}' -> '{child_base}' across any item/group."
-                )
+                logger.debug(f"  No pairs found for dependency '{parent_base}' -> '{child_base}' across any item/group.")
 
         return child_to_parent_map
 
     # V1.2 - Better validation, more types and conflict warnings
     @staticmethod
     def validate_custom_bounds(
-        custom_bounds: Optional[Dict[str, Any]],
-    ) -> Dict[str, Any]:
+        custom_bounds: dict[str, Any] | None,
+    ) -> dict[str, Any]:
         if custom_bounds is None:
             return {}
 
-        validated_bounds: Dict[str, Any] = {}
+        validated_bounds: dict[str, Any] = {}
         for param_name, bound_config in custom_bounds.items():
             try:
                 # Case 0: strings as tuple
@@ -751,14 +661,10 @@ class ParameterHandler:
                             num2 = float(num2_str)
                         # Overwrite bound_config with the parsed tuple
                         bound_config = (num1, num2)
-                        logger.debug(
-                            f"Successfully parsed string '{param_name}' into tuple: {bound_config}"
-                        )
+                        logger.debug(f"Successfully parsed string '{param_name}' into tuple: {bound_config}")
                     else:
                         # If it's a string but doesn't match, it's an error.
-                        raise ValueError(
-                            f"String value '{bound_config}' is not a valid tuple format '(min, max)'."
-                        )
+                        raise ValueError(f"String value '{bound_config}' is not a valid tuple format '(min, max)'.")
 
                 # Case 1: Rich dictionary format (for ranges with options)
                 if isinstance(bound_config, (dict, DictConfig)):
@@ -804,13 +710,9 @@ class ParameterHandler:
                     validated_bounds[param_name] = bound_config
 
                 else:
-                    raise ValueError(
-                        "Bound must be a tuple (range), list (categorical), dict (advanced), int, or float."
-                    )
+                    raise ValueError("Bound must be a tuple (range), list (categorical), dict (advanced), int, or float.")
 
             except Exception as e:
-                logger.error(
-                    f"Invalid custom bound for '{param_name}': {bound_config}. Error: {e}. Skipping."
-                )
+                logger.error(f"Invalid custom bound for '{param_name}': {bound_config}. Error: {e}. Skipping.")
 
         return validated_bounds

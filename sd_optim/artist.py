@@ -5,7 +5,7 @@ import logging
 # REMOVE: import matplotlib.pyplot as plt # No longer using matplotlib here
 from pathlib import Path
 from dataclasses import dataclass, field
-from typing import List, Dict, TYPE_CHECKING
+from typing import TYPE_CHECKING
 
 # ADD Plotly imports
 import plotly.graph_objects as go
@@ -25,21 +25,19 @@ class Artist:
 
     optimizer: "Optimizer"  # Reference to the main optimizer instance
     # Data storage (kept for now, mainly for BayesOpt path)
-    iterations: List[int] = field(default_factory=list)
-    scores: List[float] = field(default_factory=list)
-    best_scores: List[float] = field(default_factory=list)
-    parameters: List[Dict] = field(default_factory=list)
+    iterations: list[int] = field(default_factory=list)
+    scores: list[float] = field(default_factory=list)
+    best_scores: list[float] = field(default_factory=list)
+    parameters: list[dict] = field(default_factory=list)
 
     def __post_init__(self):
         self.output_dir = Path(HydraConfig.get().runtime.output_dir)
         self.vis_dir = self.output_dir / "visualizations"
         self.vis_dir.mkdir(exist_ok=True)
-        logger.info(
-            f"Artist initialized. Visualizations will be saved to: {self.vis_dir}"
-        )
+        logger.info(f"Artist initialized. Visualizations will be saved to: {self.vis_dir}")
 
     # collect_data remains the same
-    def collect_data(self, score: float, params: Dict):
+    def collect_data(self, score: float, params: dict):
         """Collects data from a completed optimization iteration."""
         try:
             iteration_num = self.optimizer.iteration  # Get current iteration
@@ -104,15 +102,10 @@ class Artist:
                 legend_title_text="Legend",
                 template="plotly_white",  # Use a clean template
             )
-            fig.update_yaxes(
-                rangemode="tozero"
-            )  # Ensure y-axis starts at 0 or below min score
+            fig.update_yaxes(rangemode="tozero")  # Ensure y-axis starts at 0 or below min score
 
             # Save the plot
-            plot_path = (
-                self.vis_dir
-                / f"convergence_{getattr(self.optimizer.cfg, 'run_name', 'Unknown Run')}.png"
-            )
+            plot_path = self.vis_dir / f"convergence_{getattr(self.optimizer.cfg, 'run_name', 'Unknown Run')}.png"
             try:
                 fig.write_image(str(plot_path))
                 logger.info(f"Artist: Convergence plot saved to {plot_path}")
@@ -122,18 +115,12 @@ class Artist:
                         "Artist: Failed to save Plotly plot: Kaleido engine not found or not functional. Install with 'pip install -U kaleido'. Skipping save."
                     )
                 else:
-                    logger.error(
-                        f"Artist: ValueError saving Plotly plot: {ve}. Skipping save."
-                    )
+                    logger.error(f"Artist: ValueError saving Plotly plot: {ve}. Skipping save.")
             except Exception as e_write:
-                logger.error(
-                    f"Artist: Unexpected error saving Plotly plot: {e_write}. Skipping save."
-                )
+                logger.error(f"Artist: Unexpected error saving Plotly plot: {e_write}. Skipping save.")
 
         except Exception as e:
-            logger.error(
-                f"Artist: Failed to generate convergence plot: {e}", exc_info=True
-            )
+            logger.error(f"Artist: Failed to generate convergence plot: {e}", exc_info=True)
 
     # --- MODIFIED: visualize_optimization calls the new plot_convergence ---
     async def visualize_optimization(self):

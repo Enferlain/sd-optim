@@ -10,7 +10,7 @@ import optuna
 import asyncio
 
 from pathlib import Path
-from typing import Dict, List, Optional, Any, Tuple
+from typing import Any
 
 from hydra.core.hydra_config import HydraConfig
 from omegaconf import ListConfig
@@ -41,38 +41,26 @@ class OptunaOptimizer(Optimizer):
         # --- Determine Optuna Storage Directory ---
         try:
             # 1. Determine Project Root (assuming this file is in sd_optim/)
-            project_root = Path(
-                __file__
-            ).parent.parent.resolve()  # sd_optim/ -> sd-optim/
+            project_root = Path(__file__).parent.parent.resolve()  # sd_optim/ -> sd-optim/
 
             # 2. Define Default Path (relative to project root)
-            default_storage_path = (
-                project_root / "optuna_db"
-            )  # e.g., D:\...\sd-optim\optuna_db
+            default_storage_path = project_root / "optuna_db"  # e.g., D:\...\sd-optim\optuna_db
 
             # 3. Read Config or Use Default
             # Use '.get' to safely access nested keys, provide default path as string
-            optuna_storage_path_str = self.cfg.optimizer.optuna_config.get(
-                "storage_dir", str(default_storage_path)
-            )
+            optuna_storage_path_str = self.cfg.optimizer.optuna_config.get("storage_dir", str(default_storage_path))
 
             # 4. Resolve Final Path and Create Directory
             self.optuna_storage_dir = Path(optuna_storage_path_str).resolve()
             self.optuna_storage_dir.mkdir(parents=True, exist_ok=True)
-            logger.info(
-                f"Optuna databases will be stored in: {self.optuna_storage_dir}"
-            )
+            logger.info(f"Optuna databases will be stored in: {self.optuna_storage_dir}")
 
         except NameError:
-            logger.error(
-                "__file__ not defined. Cannot reliably determine project root for default Optuna storage."
-            )
+            logger.error("__file__ not defined. Cannot reliably determine project root for default Optuna storage.")
             # Handle error - maybe fallback to CWD or raise
             self.optuna_storage_dir = Path("./optuna_db_fallback").resolve()
             self.optuna_storage_dir.mkdir(parents=True, exist_ok=True)
-            logger.warning(
-                f"Falling back to Optuna storage directory: {self.optuna_storage_dir}"
-            )
+            logger.warning(f"Falling back to Optuna storage directory: {self.optuna_storage_dir}")
         except Exception as e:
             logger.error(
                 f"CRITICAL ERROR setting up Optuna storage directory: {e}",
@@ -81,13 +69,9 @@ class OptunaOptimizer(Optimizer):
             raise  # Re-raise critical errors
 
         # Early stopping settings
-        self.early_stopping = self.cfg.optimizer.optuna_config.get(
-            "early_stopping", False
-        )
+        self.early_stopping = self.cfg.optimizer.optuna_config.get("early_stopping", False)
         self.patience = self.cfg.optimizer.optuna_config.get("patience", 10)
-        self.min_improvement = self.cfg.optimizer.optuna_config.get(
-            "min_improvement", 0.001
-        )
+        self.min_improvement = self.cfg.optimizer.optuna_config.get("min_improvement", 0.001)
         self.no_improvement_count = 0
 
         # Tracking metrics
@@ -137,16 +121,14 @@ class OptunaOptimizer(Optimizer):
 
                 trials = []
                 try:
-                    with open(self.log_path, "r", encoding="utf-8") as f:
+                    with open(self.log_path, encoding="utf-8") as f:
                         for line in f:
                             line = line.strip()
                             if line:
                                 try:
                                     trials.append(json.loads(line))
                                 except json.JSONDecodeError as e_json:
-                                    logger.warning(
-                                        f"Skipping invalid line in trial log: {e_json}"
-                                    )
+                                    logger.warning(f"Skipping invalid line in trial log: {e_json}")
                     return trials
                 except Exception as e:
                     logger.error(f"Failed to load trials log {self.log_path}: {e}")
@@ -161,11 +143,7 @@ class OptunaOptimizer(Optimizer):
         valid = all(hasattr(self.cfg.optimizer, field) for field in required_fields)
 
         if not valid:
-            missing = [
-                field
-                for field in required_fields
-                if not hasattr(self.cfg.optimizer, field)
-            ]
+            missing = [field for field in required_fields if not hasattr(self.cfg.optimizer, field)]
             logger.error(f"Missing required configuration fields: {missing}")
             return False  # Return early if basic fields missing
 
@@ -173,21 +151,15 @@ class OptunaOptimizer(Optimizer):
         sampler_config = self.cfg.optimizer.optuna_config.get("sampler", {})
         sampler_type = sampler_config.get("type", "tpe").lower()
         if sampler_type == "grid" and "search_space" not in sampler_config:
-            logger.error(
-                "Grid sampler selected but 'search_space' is missing in optimizer.sampler config."
-            )
+            logger.error("Grid sampler selected but 'search_space' is missing in optimizer.sampler config.")
             valid = False
         # Add more sampler-specific checks if needed
 
         # Validate pruner config (if pruning enabled)
         if self.cfg.optimizer.get("use_pruning", False):
-            pruner_type = self.cfg.optimizer.optuna_config.get(
-                "pruner_type", "median"
-            ).lower()
+            pruner_type = self.cfg.optimizer.optuna_config.get("pruner_type", "median").lower()
             if pruner_type not in ["median", "successive_halving"]:
-                logger.warning(
-                    f"Unknown pruner_type '{pruner_type}'. Optuna might default or error."
-                )
+                logger.warning(f"Unknown pruner_type '{pruner_type}'. Optuna might default or error.")
             # Add pruner-specific checks if needed
 
         return valid
@@ -207,9 +179,7 @@ class OptunaOptimizer(Optimizer):
             # Use os.urandom to generate a cryptographically secure 32-bit integer.
             # This avoids the np.random.randint overflow on some systems for 2**32-1.
             seed = int.from_bytes(os.urandom(4), "big")
-            logger.info(
-                f"Random seed was not provided (-1 or null). Generated a new seed: {seed}"
-            )
+            logger.info(f"Random seed was not provided (-1 or null). Generated a new seed: {seed}")
 
         # Common sampler parameters
         sampler_kwargs = {"seed": seed}
@@ -225,9 +195,7 @@ class OptunaOptimizer(Optimizer):
                 "n_startup_trials": self.cfg.optimizer.init_points,
                 "multivariate": sampler_config.get("multivariate", True),
                 "group": sampler_config.get("group", False),
-                "warn_independent_sampling": sampler_config.get(
-                    "warn_independent_sampling", True
-                ),
+                "warn_independent_sampling": sampler_config.get("warn_independent_sampling", True),
                 "constant_liar": sampler_config.get("constant_liar", False),
                 # --- ADDED PARAMETERS ---
                 "n_ei_candidates": sampler_config.get("n_ei_candidates", 24),
@@ -251,28 +219,16 @@ class OptunaOptimizer(Optimizer):
                 "n_startup_trials": self.cfg.optimizer.init_points,
                 "restart_strategy": sampler_config.get("restart_strategy", None),
                 "sigma0": sampler_config.get("sigma0", None),
-                "warn_independent_sampling": sampler_config.get(
-                    "warn_independent_sampling", True
-                ),
+                "warn_independent_sampling": sampler_config.get("warn_independent_sampling", True),
                 # --- ADDED PARAMETERS ---
                 "popsize": sampler_config.get("popsize", None),  # Population size
-                "inc_popsize": sampler_config.get(
-                    "inc_popsize", 2
-                ),  # Population increase factor for restarts
-                "use_separable_cma": sampler_config.get(
-                    "use_separable_cma", False
-                ),  # For high dimensions
-                "lr_adapt": sampler_config.get(
-                    "lr_adapt", False
-                ),  # Learning rate adaptation
+                "inc_popsize": sampler_config.get("inc_popsize", 2),  # Population increase factor for restarts
+                "use_separable_cma": sampler_config.get("use_separable_cma", False),  # For high dimensions
+                "lr_adapt": sampler_config.get("lr_adapt", False),  # Learning rate adaptation
                 # --- NEWLY ADDED PARAMETERS from Optuna documentation ---
                 "x0": sampler_config.get("x0", None),  # Initial parameter values
-                "consider_pruned_trials": sampler_config.get(
-                    "consider_pruned_trials", False
-                ),  # Consider pruned trials
-                "with_margin": sampler_config.get(
-                    "with_margin", False
-                ),  # Use CMA-ES with margin
+                "consider_pruned_trials": sampler_config.get("consider_pruned_trials", False),  # Consider pruned trials
+                "with_margin": sampler_config.get("with_margin", False),  # Use CMA-ES with margin
                 # Note: source_trials is not configurable from YAML as it requires actual FrozenTrial objects
                 **sampler_kwargs,
             }
@@ -287,23 +243,15 @@ class OptunaOptimizer(Optimizer):
                 **sampler_kwargs,
             }
             sampler = GPSampler(**gp_kwargs)
-            logger.info(
-                f"Using Gaussian Process (GP) Sampler with options: {gp_kwargs}"
-            )
+            logger.info(f"Using Gaussian Process (GP) Sampler with options: {gp_kwargs}")
 
         elif sampler_type == "qmc":
             # Quasi-Monte Carlo - good for exploring high-dimensional spaces evenly
             qmc_kwargs = {
-                "qmc_type": sampler_config.get(
-                    "qmc_type", "sobol"
-                ),  # 'sobol', 'halton', 'lhs'
+                "qmc_type": sampler_config.get("qmc_type", "sobol"),  # 'sobol', 'halton', 'lhs'
                 "scramble": sampler_config.get("scramble", True),
-                "warn_independent_sampling": sampler_config.get(
-                    "warn_independent_sampling", True
-                ),
-                "warn_asyncronous_seeding": sampler_config.get(
-                    "warn_asyncronous_seeding", True
-                ),
+                "warn_independent_sampling": sampler_config.get("warn_independent_sampling", True),
+                "warn_asyncronous_seeding": sampler_config.get("warn_asyncronous_seeding", True),
                 **sampler_kwargs,
             }
             sampler = QMCSampler(**qmc_kwargs)
@@ -312,14 +260,9 @@ class OptunaOptimizer(Optimizer):
         elif sampler_type == "grid":
             # Grid search - systematic but only practical for few parameters
             if "search_space" not in sampler_config:
-                raise ValueError(
-                    "Grid sampler requires a 'search_space' configuration in optimizer.sampler"
-                )
+                raise ValueError("Grid sampler requires a 'search_space' configuration in optimizer.sampler")
             # Convert search space values if they are lists (required by GridSampler)
-            search_space = {
-                k: list(v) if isinstance(v, (list, ListConfig)) else v
-                for k, v in sampler_config["search_space"].items()
-            }
+            search_space = {k: list(v) if isinstance(v, (list, ListConfig)) else v for k, v in sampler_config["search_space"].items()}
             sampler = GridSampler(search_space)
             logger.info(f"Using Grid Sampler with search space: {search_space}")
 
@@ -331,25 +274,15 @@ class OptunaOptimizer(Optimizer):
                 "mutation_prob": sampler_config.get("mutation_prob", None),
                 "crossover_prob": sampler_config.get("crossover_prob", 0.9),
                 "swapping_prob": sampler_config.get("swapping_prob", 0.5),
-                "warn_independent_sampling": sampler_config.get(
-                    "warn_independent_sampling", True
-                ),
+                "warn_independent_sampling": sampler_config.get("warn_independent_sampling", True),
                 # --- NEWLY ADDED PARAMETERS from Optuna documentation ---
-                "constraints_func": sampler_config.get(
-                    "constraints_func", None
-                ),  # Constraint function for optimization
+                "constraints_func": sampler_config.get("constraints_func", None),  # Constraint function for optimization
                 "elite_population_selection_strategy": sampler_config.get(
                     "elite_population_selection_strategy", None
                 ),  # Elite selection strategy
-                "child_generation_strategy": sampler_config.get(
-                    "child_generation_strategy", None
-                ),  # Child generation strategy
-                "after_trial_strategy": sampler_config.get(
-                    "after_trial_strategy", None
-                ),  # After trial strategy
-                "seed": sampler_kwargs.get(
-                    "seed"
-                ),  # Use only the seed from sampler_kwargs
+                "child_generation_strategy": sampler_config.get("child_generation_strategy", None),  # Child generation strategy
+                "after_trial_strategy": sampler_config.get("after_trial_strategy", None),  # After trial strategy
+                "seed": sampler_kwargs.get("seed"),  # Use only the seed from sampler_kwargs
             }
             # Handle crossover separately as it requires specific import
             crossover_config = sampler_config.get("crossover", None)
@@ -369,9 +302,7 @@ class OptunaOptimizer(Optimizer):
                 except (ImportError, AttributeError) as e:
                     logger.warning(f"Could not set crossover '{crossover_config}': {e}")
             sampler = NSGAIISampler(**nsgaii_kwargs)
-            logger.warning(
-                "Using NSGA-II Sampler - primarily for multi-objective optimization."
-            )
+            logger.warning("Using NSGA-II Sampler - primarily for multi-objective optimization.")
             logger.info(f"NSGA-II options: {nsgaii_kwargs}")
 
         # elif sampler_type == "botorch":
@@ -392,9 +323,7 @@ class OptunaOptimizer(Optimizer):
 
         else:
             if sampler_type != "tpe":  # Avoid duplicate warning if default is used
-                logger.warning(
-                    f"Unknown sampler type: '{sampler_type}', falling back to TPE."
-                )
+                logger.warning(f"Unknown sampler type: '{sampler_type}', falling back to TPE.")
             sampler = TPESampler(
                 n_startup_trials=self.cfg.optimizer.init_points,
                 multivariate=True,
@@ -415,9 +344,7 @@ class OptunaOptimizer(Optimizer):
         if self.cfg.optimizer.optuna_config.get("use_pruning", False):
             pruner_type = self.cfg.optimizer.optuna_config.get("pruner_type", "median")
             if pruner_type == "median":
-                pruner = optuna.pruners.MedianPruner(
-                    n_startup_trials=self.cfg.optimizer.init_points
-                )
+                pruner = optuna.pruners.MedianPruner(n_startup_trials=self.cfg.optimizer.init_points)
             elif pruner_type == "successive_halving":
                 pruner = optuna.pruners.SuccessiveHalvingPruner()
             if pruner:
@@ -433,9 +360,7 @@ class OptunaOptimizer(Optimizer):
             logger.info("No 'resume_from_study' specified. Creating a brand-new study.")
             storage_uri, db_filename = self._get_storage_uri_for_new_study()
             timestamp = time.strftime("%Y%m%d_%H%M%S")
-            sampler_name = self.cfg.optimizer.optuna_config.get("sampler", {}).get(
-                "type", "tpe"
-            )
+            sampler_name = self.cfg.optimizer.optuna_config.get("sampler", {}).get("type", "tpe")
             self.study_name = f"run_{timestamp}_{sampler_name}"
 
             self.study = optuna.create_study(
@@ -446,36 +371,22 @@ class OptunaOptimizer(Optimizer):
                 direction="maximize",
                 load_if_exists=False,
             )
-            logger.info(
-                f"Successfully created new study '{self.study_name}' in '{db_filename}'."
-            )
+            logger.info(f"Successfully created new study '{self.study_name}' in '{db_filename}'.")
             self._set_initial_study_attributes()
 
         # PATH B: Resuming or Forking
         else:
-            logger.info(
-                f"Attempting to load parent study '{parent_study_name_to_load}'."
-            )
-            parent_storage_uri, parent_db_filename = self._find_db_for_study(
-                parent_study_name_to_load
-            )
+            logger.info(f"Attempting to load parent study '{parent_study_name_to_load}'.")
+            parent_storage_uri, parent_db_filename = self._find_db_for_study(parent_study_name_to_load)
             if not parent_storage_uri:
-                raise ValueError(
-                    f"Could not find study '{parent_study_name_to_load}' to resume/fork."
-                )
+                raise ValueError(f"Could not find study '{parent_study_name_to_load}' to resume/fork.")
 
-            parent_study = optuna.load_study(
-                study_name=parent_study_name_to_load, storage=parent_storage_uri
-            )
+            parent_study = optuna.load_study(study_name=parent_study_name_to_load, storage=parent_storage_uri)
 
             # Sub-path B1: FORKING
             if should_fork_study:
-                logger.info(
-                    f"Forking study '{parent_study_name_to_load}' into a new study."
-                )
-                new_storage_uri, new_db_filename = self._get_storage_uri_for_new_study(
-                    is_fork=True
-                )
+                logger.info(f"Forking study '{parent_study_name_to_load}' into a new study.")
+                new_storage_uri, new_db_filename = self._get_storage_uri_for_new_study(is_fork=True)
                 timestamp = time.strftime("%Y%m%d_%H%M%S")
                 self.study_name = f"fork_{parent_study_name_to_load}_{timestamp}"
 
@@ -487,20 +398,12 @@ class OptunaOptimizer(Optimizer):
                     direction="maximize",
                 )
 
-                completed_trials = [
-                    t
-                    for t in parent_study.trials
-                    if t.state == optuna.trial.TrialState.COMPLETE
-                ]
+                completed_trials = [t for t in parent_study.trials if t.state == optuna.trial.TrialState.COMPLETE]
                 for trial in completed_trials:
                     self.study.enqueue_trial(trial.params)
 
-                logger.info(
-                    f"Created fork '{self.study_name}' in '{new_db_filename}' and enqueued {len(completed_trials)} parent trials."
-                )
-                self._set_initial_study_attributes(
-                    parent_name=parent_study_name_to_load
-                )
+                logger.info(f"Created fork '{self.study_name}' in '{new_db_filename}' and enqueued {len(completed_trials)} parent trials.")
+                self._set_initial_study_attributes(parent_name=parent_study_name_to_load)
 
             # Sub-path B2: RESUMING
             else:
@@ -524,9 +427,7 @@ class OptunaOptimizer(Optimizer):
 
                 if parent_scorers != current_scorers:
                     # Convert current_scorers_raw to a more readable format for the error message
-                    current_scorers_for_error = list(
-                        flatten_scorers(current_scorers_raw)
-                    )
+                    current_scorers_for_error = list(flatten_scorers(current_scorers_raw))
                     raise ValueError(
                         f"FATAL: Cannot resume study '{parent_study_name_to_load}' because scorers have changed. "
                         f"(Study used {sorted(list(parent_scorers))}, config has {sorted(current_scorers_for_error)}). "
@@ -537,17 +438,13 @@ class OptunaOptimizer(Optimizer):
                 # --- FIX: Do NOT replace the sampler on resume ---
                 # The existing sampler in the study already contains the history. Replacing it resets the state.
                 # self.study.sampler = sampler
-                logger.info(
-                    f"Re-using existing sampler of type '{type(self.study.sampler).__name__}' from the loaded study."
-                )
+                logger.info(f"Re-using existing sampler of type '{type(self.study.sampler).__name__}' from the loaded study.")
                 # The pruner is part of the study's permanent configuration and should not be changed on resume.
                 # self.study.pruner = pruner
                 self.study_name = parent_study_name_to_load
                 # --- NEW: Set the completed trials count on the base class ---
                 self.completed_trials = len(parent_study.trials)
-                logger.info(
-                    f"Setting iteration offset to {self.completed_trials} to account for existing trials."
-                )
+                logger.info(f"Setting iteration offset to {self.completed_trials} to account for existing trials.")
 
         # --- Common logic from here ---
         self._setup_logger_path()
@@ -555,40 +452,28 @@ class OptunaOptimizer(Optimizer):
 
         # --- NEW: Pre-populate logger with existing trials on resume ---
         if completed_trials > 0:
-            logger.info(
-                f"Writing {len(self.study.trials)} existing trials to the new log file..."
-            )
+            logger.info(f"Writing {len(self.study.trials)} existing trials to the new log file...")
             for existing_trial in self.study.trials:
                 # Use the callback to ensure consistent logging format
                 self._trial_callback(self.study, existing_trial)
         # --- END NEW ---
-        total_trials_planned = (
-            self.cfg.optimizer.init_points + self.cfg.optimizer.n_iters
-        )
+        total_trials_planned = self.cfg.optimizer.init_points + self.cfg.optimizer.n_iters
         remaining_trials = max(0, total_trials_planned - completed_trials)
 
         if completed_trials > 0:
             # --- NEW: Detailed trial breakdown ---
             n_startup_trials = self.cfg.optimizer.init_points
             remaining_startup_trials = max(0, n_startup_trials - completed_trials)
-            remaining_exploration_trials = max(
-                0, remaining_trials - remaining_startup_trials
-            )
+            remaining_exploration_trials = max(0, remaining_trials - remaining_startup_trials)
 
-            logger.info(
-                f"Study has {completed_trials} existing trials. {remaining_trials} new trials to run."
-            )
+            logger.info(f"Study has {completed_trials} existing trials. {remaining_trials} new trials to run.")
             if remaining_startup_trials > 0:
-                logger.info(
-                    f"  ({remaining_startup_trials} init trials + {remaining_exploration_trials} optimization trials)"
-                )
+                logger.info(f"  ({remaining_startup_trials} init trials + {remaining_exploration_trials} optimization trials)")
             else:
                 logger.info(f"  ({remaining_exploration_trials} optimization trials)")
             # --- END NEW ---
             if self.study.best_trial:
-                self.best_rolling_score = max(
-                    self.best_rolling_score, self.study.best_value
-                )
+                self.best_rolling_score = max(self.best_rolling_score, self.study.best_value)
 
         if remaining_trials > 0:
             logger.info(f"Starting optimization for {remaining_trials} new trials.")
@@ -648,11 +533,9 @@ class OptunaOptimizer(Optimizer):
         log scale, step, categorical, and continuous ranges.
         Supports conditional parameter sampling based on 'dependencies' config.
         """
-        params: Dict[str, Any] = {}
+        params: dict[str, Any] = {}
         if not self.optimizer_pbounds:
-            logger.error(
-                "Optimizer bounds not initialized in _objective. Cannot suggest parameters."
-            )
+            logger.error("Optimizer bounds not initialized in _objective. Cannot suggest parameters.")
             raise optuna.exceptions.TrialPruned("Bounds not available")
 
         def evaluate_condition(val, cond_str):
@@ -676,9 +559,7 @@ class OptunaOptimizer(Optimizer):
                         return op_func(val, threshold)
                 return True  # Default to true if unparseable
             except Exception as e_eval:
-                logger.warning(
-                    f"Error evaluating condition '{cond_str}' for value {val}: {e_eval}"
-                )
+                logger.warning(f"Error evaluating condition '{cond_str}' for value {val}: {e_eval}")
                 return True
 
         # Process parameters, ensuring parents are handled before children
@@ -718,26 +599,14 @@ class OptunaOptimizer(Optimizer):
                     step = bound_config.get("step", None)
 
                     # Check if it should be an integer suggestion
-                    is_integer_range = (
-                        isinstance(low, int)
-                        and isinstance(high, int)
-                        and (step is None or isinstance(step, int))
-                    )
+                    is_integer_range = isinstance(low, int) and isinstance(high, int) and (step is None or isinstance(step, int))
 
                     if is_integer_range:
-                        params[name] = trial.suggest_int(
-                            name, low, high, step=step or 1, log=log
-                        )
-                        logger.debug(
-                            f"Suggesting for '{name}': Int range [{low}-{high}], Step={step or 1}, Log={log}"
-                        )
+                        params[name] = trial.suggest_int(name, low, high, step=step or 1, log=log)
+                        logger.debug(f"Suggesting for '{name}': Int range [{low}-{high}], Step={step or 1}, Log={log}")
                     else:  # Otherwise, it's a float
-                        params[name] = trial.suggest_float(
-                            name, float(low), float(high), step=step, log=log
-                        )
-                        logger.debug(
-                            f"Suggesting for '{name}': Float range [{low}-{high}], Step={step}, Log={log}"
-                        )
+                        params[name] = trial.suggest_float(name, float(low), float(high), step=step, log=log)
+                        logger.debug(f"Suggesting for '{name}': Float range [{low}-{high}], Step={step}, Log={log}")
 
                 # Case 2: List format (always for categorical choices)
                 # In YAML: `param: [value1, value2, value3]`
@@ -753,16 +622,10 @@ class OptunaOptimizer(Optimizer):
                     low, high = bound_config
                     if isinstance(low, int) and isinstance(high, int):
                         params[name] = trial.suggest_int(name, low, high)
-                        logger.debug(
-                            f"Suggesting for '{name}': Simple Int range [{low}-{high}]"
-                        )
+                        logger.debug(f"Suggesting for '{name}': Simple Int range [{low}-{high}]")
                     else:
-                        params[name] = trial.suggest_float(
-                            name, float(low), float(high)
-                        )
-                        logger.debug(
-                            f"Suggesting for '{name}': Simple Float range [{low}-{high}]"
-                        )
+                        params[name] = trial.suggest_float(name, float(low), float(high))
+                        logger.debug(f"Suggesting for '{name}': Simple Float range [{low}-{high}]")
 
                 # Case 4: Single number (fixed parameter, not optimized)
                 elif isinstance(bound_config, (int, float)):
@@ -770,9 +633,7 @@ class OptunaOptimizer(Optimizer):
                     logger.debug(f"Using fixed value for '{name}': {bound_config}")
 
                 else:
-                    raise ValueError(
-                        f"Unsupported bounds format for '{name}': {bound_config}"
-                    )
+                    raise ValueError(f"Unsupported bounds format for '{name}': {bound_config}")
 
             except Exception as e_suggest:
                 logger.error(
@@ -793,10 +654,7 @@ class OptunaOptimizer(Optimizer):
             result = asyncio.run(self.sd_target_function(params))
 
             # --- NEW: Capture and store individual scorer results --- TODO: correct?
-            if (
-                hasattr(self.scorer, "last_scorer_results")
-                and self.scorer.last_scorer_results
-            ):
+            if hasattr(self.scorer, "last_scorer_results") and self.scorer.last_scorer_results:
                 trial.set_user_attr("scorer_results", self.scorer.last_scorer_results)
                 logger.debug(f"Stored scorer_results for trial {trial.number}")
 
@@ -805,17 +663,13 @@ class OptunaOptimizer(Optimizer):
 
             # Implement early stopping if enabled
             if self.early_stopping:
-                if self.trial_scores and result > (
-                    max(self.trial_scores[:-1] or [0]) + self.min_improvement
-                ):
+                if self.trial_scores and result > (max(self.trial_scores[:-1] or [0]) + self.min_improvement):
                     self.no_improvement_count = 0
                 else:
                     self.no_improvement_count += 1
 
                 if self.no_improvement_count >= self.patience:
-                    logger.info(
-                        f"Early stopping triggered after {len(self.trial_scores)} trials"
-                    )
+                    logger.info(f"Early stopping triggered after {len(self.trial_scores)} trials")
                     raise optuna.exceptions.TrialPruned()
 
             return result
@@ -828,11 +682,7 @@ class OptunaOptimizer(Optimizer):
 
     def _trial_callback(self, study: Study, trial: FrozenTrial) -> None:
         """Callback to log trial information."""
-        elapsed_time = (
-            time.time() - self.optimization_start_time
-            if self.optimization_start_time
-            else 0
-        )
+        elapsed_time = time.time() - self.optimization_start_time if self.optimization_start_time else 0
 
         # Store custom attributes in the trial itself
         trial.set_user_attr("elapsed_seconds", elapsed_time)
@@ -853,14 +703,10 @@ class OptunaOptimizer(Optimizer):
             "params": trial.params,
             "state": trial.state.name,
             "datetime": {
-                "datetime": trial.datetime_start.isoformat()
-                if trial.datetime_start
-                else None,
+                "datetime": trial.datetime_start.isoformat() if trial.datetime_start else None,
                 "elapsed_seconds": elapsed_time,
             },
-            "scorer_results": trial.user_attrs.get(
-                "scorer_results", {}
-            ),  # Capture from user_attrs
+            "scorer_results": trial.user_attrs.get("scorer_results", {}),  # Capture from user_attrs
         }
 
         # Write to the JSON logger
@@ -870,7 +716,7 @@ class OptunaOptimizer(Optimizer):
         if trial.number % 10 == 0 and trial.number > 0:
             self._create_progress_plots()
 
-    def _get_storage_uri_for_new_study(self, is_fork: bool = False) -> Tuple[str, str]:
+    def _get_storage_uri_for_new_study(self, is_fork: bool = False) -> tuple[str, str]:
         """
         Determines the database filename and URI based on the current
         run's configuration. This is used for creating NEW studies or FORKS.
@@ -892,11 +738,7 @@ class OptunaOptimizer(Optimizer):
             # --- THIS IS THE FIX ---
             scorers_raw = self.cfg.get("scorer_method", [])
             # 1. Ensure it's a list-like object (handles single string case)
-            scorers_list_like = (
-                scorers_raw
-                if isinstance(scorers_raw, (list, ListConfig))
-                else [scorers_raw]
-            )
+            scorers_list_like = scorers_raw if isinstance(scorers_raw, (list, ListConfig)) else [scorers_raw]
             # 2. Convert every item to a string and then sort
             scorers_str_list = sorted([str(s) for s in scorers_list_like])
             # 3. Now, join the list of strings. This is safe!
@@ -906,9 +748,7 @@ class OptunaOptimizer(Optimizer):
 
             def sanitize(name):
                 # This sanitize function can be improved to handle paths better
-                safe_name = (
-                    str(name).replace("\\", "/").split("/")[-1]
-                )  # Get filename from path
+                safe_name = str(name).replace("\\", "/").split("/")[-1]  # Get filename from path
                 return "".join(c for c in safe_name if c.isalnum() or c in ("_", "-"))
 
             fork_prefix = "fork_" if is_fork else ""
@@ -938,63 +778,43 @@ class OptunaOptimizer(Optimizer):
             storage_path = self.optuna_storage_dir / db_filename
             return f"sqlite:///{storage_path.resolve()}", db_filename
 
-    def _find_db_for_study(
-        self, study_name_to_find: str
-    ) -> Tuple[Optional[str], Optional[str]]:
+    def _find_db_for_study(self, study_name_to_find: str) -> tuple[str | None, str | None]:
         """Scans all .db files in the storage directory to find which one contains the target study."""
         logger.info(f"Searching for study '{study_name_to_find}' in all .db files...")
         for db_file in self.optuna_storage_dir.glob("*.db"):
             storage_uri = f"sqlite:///{db_file.resolve()}"
             try:
                 # Get all study summaries from this DB without loading the whole study
-                all_summaries = optuna.study.get_all_study_summaries(
-                    storage=storage_uri
-                )
+                all_summaries = optuna.study.get_all_study_summaries(storage=storage_uri)
                 for summary in all_summaries:
                     if summary.study_name == study_name_to_find:
-                        logger.info(
-                            f"Found study '{study_name_to_find}' in database: '{db_file.name}'"
-                        )
+                        logger.info(f"Found study '{study_name_to_find}' in database: '{db_file.name}'")
                         return storage_uri, db_file.name
             except Exception as e:
                 logger.warning(f"Could not inspect database '{db_file.name}': {e}")
                 continue
-        logger.error(
-            f"Study '{study_name_to_find}' was not found in any database in {self.optuna_storage_dir}"
-        )
+        logger.error(f"Study '{study_name_to_find}' was not found in any database in {self.optuna_storage_dir}")
         return None, None
 
-    def _set_initial_study_attributes(self, parent_name: Optional[str] = None):
+    def _set_initial_study_attributes(self, parent_name: str | None = None):
         """Sets user attributes for a newly created study or fork."""
         if not self.study:
-            logger.warning(
-                "Cannot set initial attributes because study is not initialized."
-            )
+            logger.warning("Cannot set initial attributes because study is not initialized.")
             return
         try:
             models_str = str([str(p) for p in self.cfg.get("model_paths", [])])
             self.study.set_user_attr("config_input_models", models_str)
-            self.study.set_user_attr(
-                "config_base_model_index", self.cfg.get("base_model_index", -1)
-            )
-            self.study.set_user_attr(
-                "config_optimization_mode", self.cfg.get("optimization_mode", "N/A")
-            )
-            self.study.set_user_attr(
-                "config_scorers", list(self.cfg.get("scorer_method", []))
-            )  # Store as list
+            self.study.set_user_attr("config_base_model_index", self.cfg.get("base_model_index", -1))
+            self.study.set_user_attr("config_optimization_mode", self.cfg.get("optimization_mode", "N/A"))
+            self.study.set_user_attr("config_scorers", list(self.cfg.get("scorer_method", [])))  # Store as list
 
             if self.cfg.get("optimization_mode") == "merge":
-                self.study.set_user_attr(
-                    "config_merge_method", self.cfg.get("merge_method", "N/A")
-                )
+                self.study.set_user_attr("config_merge_method", self.cfg.get("merge_method", "N/A"))
 
             if parent_name:
                 self.study.set_user_attr("forked_from", parent_name)
 
-            logger.info(
-                f"Stored initial configuration as user attributes for new study '{self.study_name}'."
-            )
+            logger.info(f"Stored initial configuration as user attributes for new study '{self.study_name}'.")
         except Exception as e:
             logger.warning(f"Could not store config as study attributes: {e}")
 
@@ -1016,11 +836,7 @@ class OptunaOptimizer(Optimizer):
             return
 
         # Check if enough trials exist for the plot
-        completed_trials = [
-            t
-            for t in self.study.trials
-            if t.state == TrialState.COMPLETE and t.value is not None
-        ]
+        completed_trials = [t for t in self.study.trials if t.state == TrialState.COMPLETE and t.value is not None]
         if len(completed_trials) < 1:  # History plot needs at least one point
             logger.debug("_create_progress_plots: Not enough completed trials yet.")
             return
@@ -1033,36 +849,27 @@ class OptunaOptimizer(Optimizer):
             try:
                 run_dir = Path(HydraConfig.get().runtime.output_dir)
             except ValueError:
-                logger.error(
-                    "_create_progress_plots: Hydra context unavailable. Cannot determine save path."
-                )
+                logger.error("_create_progress_plots: Hydra context unavailable. Cannot determine save path.")
                 return
             # Maybe save periodic plots to a sub-folder?
             output_dir = run_dir / "visualizations" / "periodic"
             output_dir.mkdir(parents=True, exist_ok=True)
 
             # Save plot using write_image
-            save_path = (
-                output_dir
-                / f"optuna_history_trial_{self.study.trials[-1].number:04d}.png"
-            )
+            save_path = output_dir / f"optuna_history_trial_{self.study.trials[-1].number:04d}.png"
             try:
                 fig.write_image(str(save_path))
                 logger.info(f"Saved periodic progress plot to {save_path}")
             except ValueError as ve:
                 if "kaleido" in str(ve).lower():
-                    logger.error(
-                        "Failed to save periodic plot: Kaleido missing/broken."
-                    )
+                    logger.error("Failed to save periodic plot: Kaleido missing/broken.")
                 else:
                     logger.error(f"ValueError saving periodic plot: {ve}.")
             except Exception as e_write:
                 logger.error(f"Error saving periodic plot: {e_write}.")
 
         except ImportError:
-            logger.error(
-                "Optuna visualization module not available for periodic plots."
-            )
+            logger.error("Optuna visualization module not available for periodic plots.")
         except Exception as e:
             logger.error(f"Failed to create periodic progress plot: {e}", exc_info=True)
 
@@ -1071,9 +878,7 @@ class OptunaOptimizer(Optimizer):
         """Analyze and plot importance of parameters using Optuna's functions."""
         # This method might be redundant if postprocess already generates the importance plot.
         # Keeping it updated for consistency or potential separate use.
-        if (
-            not self.study or len(self.study.trials) < 2
-        ):  # Importance usually needs >= 2 trials
+        if not self.study or len(self.study.trials) < 2:  # Importance usually needs >= 2 trials
             logger.warning("_analyze_parameter_importance: Not enough trials.")
             return
 
@@ -1096,9 +901,7 @@ class OptunaOptimizer(Optimizer):
             try:
                 run_dir = Path(HydraConfig.get().runtime.output_dir)
             except ValueError:
-                logger.error(
-                    "_analyze_parameter_importance: Hydra context unavailable. Cannot determine save path."
-                )
+                logger.error("_analyze_parameter_importance: Hydra context unavailable. Cannot determine save path.")
                 return
             output_dir = run_dir / "visualizations"  # Save with other postprocess plots
             output_dir.mkdir(parents=True, exist_ok=True)
@@ -1110,9 +913,7 @@ class OptunaOptimizer(Optimizer):
                 logger.info(f"Saved parameter importance plot to {save_path}")
             except ValueError as ve:
                 if "kaleido" in str(ve).lower():
-                    logger.error(
-                        "Failed to save importance plot: Kaleido missing/broken."
-                    )
+                    logger.error("Failed to save importance plot: Kaleido missing/broken.")
                 else:
                     logger.error(f"ValueError saving importance plot: {ve}.")
             except Exception as e_write:
@@ -1120,13 +921,9 @@ class OptunaOptimizer(Optimizer):
 
         except ImportError as imp_err:
             # Handle missing optional dependencies like scikit-learn
-            logger.error(
-                f"Could not generate importance plot due to missing dependency: {imp_err}"
-            )
+            logger.error(f"Could not generate importance plot due to missing dependency: {imp_err}")
         except Exception as e:
-            logger.error(
-                f"Failed to analyze/plot parameter importance: {e}", exc_info=True
-            )
+            logger.error(f"Failed to analyze/plot parameter importance: {e}", exc_info=True)
 
     async def postprocess(self) -> None:
         """Perform post-optimization analysis and reporting."""
@@ -1150,12 +947,8 @@ class OptunaOptimizer(Optimizer):
             total_runtime = time.time() - self.optimization_start_time
             hours, remainder = divmod(total_runtime, 3600)
             minutes, seconds = divmod(remainder, 60)
-            logger.info(
-                f"Total runtime: {int(hours):02}:{int(minutes):02}:{int(seconds):02}"
-            )
-            logger.info(
-                f"Average time per trial: {total_runtime / max(1, total_trials):.2f} seconds"
-            )
+            logger.info(f"Total runtime: {int(hours):02}:{int(minutes):02}:{int(seconds):02}")
+            logger.info(f"Average time per trial: {total_runtime / max(1, total_trials):.2f} seconds")
 
         # Log best trials
         logger.info("\nTop 5 Trials:")
@@ -1175,9 +968,7 @@ class OptunaOptimizer(Optimizer):
         # --- ADD Optuna Plot Generation ---
         logger.info("Generating Optuna visualizations...")
         if len(self.study.trials) < 2:
-            logger.warning(
-                "Not enough trials (need >= 2) for most Optuna visualizations."
-            )
+            logger.warning("Not enough trials (need >= 2) for most Optuna visualizations.")
             return
 
         try:
@@ -1185,9 +976,7 @@ class OptunaOptimizer(Optimizer):
             try:
                 run_dir = Path(HydraConfig.get().runtime.output_dir)
             except ValueError:
-                logger.error(
-                    "Hydra context not available. Cannot determine output directory for plots."
-                )
+                logger.error("Hydra context not available. Cannot determine output directory for plots.")
                 return
             output_dir = run_dir / "visualizations"
             output_dir.mkdir(parents=True, exist_ok=True)
@@ -1221,24 +1010,16 @@ class OptunaOptimizer(Optimizer):
                                 f"  Failed to save Plotly plot '{name}': Kaleido engine not found or not functional. Please install with 'pip install -U kaleido'. Skipping save."
                             )
                         else:
-                            logger.error(
-                                f"  ValueError saving Plotly plot '{name}': {ve}. Skipping save."
-                            )
+                            logger.error(f"  ValueError saving Plotly plot '{name}': {ve}. Skipping save.")
                     except Exception as e_write:
-                        logger.error(
-                            f"  Unexpected error saving Plotly plot '{name}': {e_write}. Skipping save."
-                        )
+                        logger.error(f"  Unexpected error saving Plotly plot '{name}': {e_write}. Skipping save.")
 
                 except (ValueError, TypeError) as plot_err:
                     # Handle errors like not enough parameters for contour, etc.
-                    logger.warning(
-                        f"  Could not generate Optuna plot '{name}': {plot_err}. Skipping."
-                    )
+                    logger.warning(f"  Could not generate Optuna plot '{name}': {plot_err}. Skipping.")
                 except ImportError as imp_err:
                     # Handle missing optional dependencies like scikit-learn for importance
-                    logger.warning(
-                        f"  Could not generate Optuna plot '{name}' due to missing dependency: {imp_err}. Skipping."
-                    )
+                    logger.warning(f"  Could not generate Optuna plot '{name}' due to missing dependency: {imp_err}. Skipping.")
                 except Exception as e_gen:
                     logger.error(
                         f"  Unexpected error generating Optuna plot '{name}': {e_gen}",
@@ -1247,9 +1028,7 @@ class OptunaOptimizer(Optimizer):
 
         except ImportError:
             # Should not happen if Optuna is installed, but good practice
-            logger.error(
-                "Optuna library seems to be missing? Cannot generate visualizations."
-            )
+            logger.error("Optuna library seems to be missing? Cannot generate visualizations.")
         except Exception as e_vis:
             logger.error(
                 f"An error occurred during Optuna visualization generation: {e_vis}",
@@ -1261,15 +1040,11 @@ class OptunaOptimizer(Optimizer):
         logger.info("=" * 50)
         # --- END Optuna Plot Generation ---
 
-    def get_best_parameters(self) -> Dict:
+    def get_best_parameters(self) -> dict:
         """Return best parameters found during optimization."""
-        return (
-            self.study.best_params
-            if self.study and hasattr(self.study, "best_params")
-            else {}
-        )
+        return self.study.best_params if self.study and hasattr(self.study, "best_params") else {}
 
-    def get_optimization_history(self) -> List[Dict]:
+    def get_optimization_history(self) -> list[dict]:
         """Return history of optimization attempts."""
         if not self.study:
             return []
@@ -1282,9 +1057,7 @@ class OptunaOptimizer(Optimizer):
                         "trial_number": trial.number,
                         "value": trial.value,
                         "params": trial.params,
-                        "datetime": trial.datetime_start.isoformat()
-                        if trial.datetime_start
-                        else None,
+                        "datetime": trial.datetime_start.isoformat() if trial.datetime_start else None,
                     }
                 )
         return history
@@ -1301,16 +1074,12 @@ class OptunaOptimizer(Optimizer):
             try:
                 run_dir = Path(HydraConfig.get().runtime.output_dir)
             except ValueError:
-                logger.error(
-                    "Hydra context not available. Cannot determine default output directory for report."
-                )
+                logger.error("Hydra context not available. Cannot determine default output directory for report.")
                 # Fallback or raise error
                 output_dir = Path("./optuna_visualizations_report")  # Example fallback
                 logger.warning(f"Using fallback directory for report: {output_dir}")
             else:
-                output_dir = (
-                    run_dir / "visualizations_report"
-                )  # Use a separate folder? Or same as postprocess?
+                output_dir = run_dir / "visualizations_report"  # Use a separate folder? Or same as postprocess?
 
         output_dir = Path(output_dir)
         output_dir.mkdir(parents=True, exist_ok=True)
@@ -1337,35 +1106,23 @@ class OptunaOptimizer(Optimizer):
             for name, plot_func in report_plots.items():
                 try:
                     fig = plot_func(self.study)
-                    save_path = (
-                        output_dir / f"optuna_{name}_{self.study_name}.png"
-                    )  # Use study_name
+                    save_path = output_dir / f"optuna_{name}_{self.study_name}.png"  # Use study_name
                     # Save using write_image
                     try:
                         fig.write_image(str(save_path))
                         logger.info(f"  Report: Saved plot '{name}'")
                     except ValueError as ve:
                         if "kaleido" in str(ve).lower():
-                            logger.error(
-                                f"  Report: Failed to save '{name}': Kaleido missing/broken. Skipping."
-                            )
+                            logger.error(f"  Report: Failed to save '{name}': Kaleido missing/broken. Skipping.")
                         else:
-                            logger.error(
-                                f"  Report: ValueError saving '{name}': {ve}. Skipping."
-                            )
+                            logger.error(f"  Report: ValueError saving '{name}': {ve}. Skipping.")
                     except Exception as e_write:
-                        logger.error(
-                            f"  Report: Error saving '{name}': {e_write}. Skipping."
-                        )
+                        logger.error(f"  Report: Error saving '{name}': {e_write}. Skipping.")
 
                 except (ValueError, TypeError) as plot_err:
-                    logger.warning(
-                        f"  Report: Cannot generate plot '{name}': {plot_err}. Skipping."
-                    )
+                    logger.warning(f"  Report: Cannot generate plot '{name}': {plot_err}. Skipping.")
                 except ImportError as imp_err:
-                    logger.warning(
-                        f"  Report: Cannot generate plot '{name}', missing dependency: {imp_err}. Skipping."
-                    )
+                    logger.warning(f"  Report: Cannot generate plot '{name}', missing dependency: {imp_err}. Skipping.")
                 except Exception as e_gen:
                     logger.error(
                         f"  Report: Unexpected error generating plot '{name}': {e_gen}",
@@ -1395,9 +1152,7 @@ class OptunaOptimizer(Optimizer):
             elif opt_mode == "recipe":
                 # We get the filename stem, or use a default if the path is missing.
                 recipe_path_str = self.cfg.recipe_optimization.get("recipe_path")
-                merge_method_name = (
-                    Path(recipe_path_str).stem if recipe_path_str else "unknown-recipe"
-                )
+                merge_method_name = Path(recipe_path_str).stem if recipe_path_str else "unknown-recipe"
                 # We NO LONGER add the "recipe_" prefix here!
             elif opt_mode == "layer_adjust":
                 merge_method_name = "layer_adjust"
@@ -1408,22 +1163,16 @@ class OptunaOptimizer(Optimizer):
             scorer_name_part = "_".join(sorted(scorers_list))
 
             def sanitize(name):
-                return "".join(
-                    c if c.isalnum() or c in ("_", "-") else "_" for c in str(name)
-                )
+                return "".join(c if c.isalnum() or c in ("_", "-") else "_" for c in str(name))
 
             db_filename_base = f"optuna_{sanitize(opt_mode)}_{sanitize(merge_method_name)}_{sanitize(scorer_name_part)}"
             db_filename = f"{db_filename_base}.db"
             # --- End db filename logic ---
 
-            if not hasattr(self, "optuna_storage_dir") or not isinstance(
-                self.optuna_storage_dir, Path
-            ):
+            if not hasattr(self, "optuna_storage_dir") or not isinstance(self.optuna_storage_dir, Path):
                 raise ValueError("Optuna storage directory not initialized correctly.")
             if not self.optuna_storage_dir.is_dir():
-                logger.warning(
-                    f"Optuna storage directory {self.optuna_storage_dir} does not exist yet. Creating."
-                )
+                logger.warning(f"Optuna storage directory {self.optuna_storage_dir} does not exist yet. Creating.")
                 self.optuna_storage_dir.mkdir(parents=True, exist_ok=True)
 
             storage_path = self.optuna_storage_dir / db_filename
@@ -1431,14 +1180,10 @@ class OptunaOptimizer(Optimizer):
             # <<< ADDED: Explicit logging of target DB >>>
             logger.info(f"Determined database URI for dashboard: {storage_uri}")
             if not storage_path.exists():
-                logger.warning(
-                    f"Target Optuna DB file {storage_path} doesn't exist yet. Dashboard might show empty study initially."
-                )
+                logger.warning(f"Target Optuna DB file {storage_path} doesn't exist yet. Dashboard might show empty study initially.")
 
         except Exception as e_name:
-            logger.error(
-                f"Failed to determine Optuna DB path for background dashboard: {e_name}"
-            )
+            logger.error(f"Failed to determine Optuna DB path for background dashboard: {e_name}")
             return None
 
         # Launch dashboard using the determined URI via the helper
@@ -1453,9 +1198,7 @@ def run_dashboard_in_background(storage_uri, port):
     print(f"{'=' * 80}")
     print(f"Access the dashboard at: http://localhost:{port}")
     print("The dashboard will run in the background.")
-    print(
-        "(Check console running sd_optim.py for dashboard process status/errors on exit)"
-    )
+    print("(Check console running sd_optim.py for dashboard process status/errors on exit)")
     print(f"{'=' * 80}\n")
     # Small delay to potentially let prints appear before subprocess output might start
     time.sleep(0.5)
@@ -1477,14 +1220,10 @@ def run_dashboard_in_background(storage_uri, port):
             text=True,
             creationflags=creationflags,  # Prevent console window on Windows
         )
-        logger.info(
-            f"Launched background dashboard process (PID: {dashboard_process.pid})"
-        )
+        logger.info(f"Launched background dashboard process (PID: {dashboard_process.pid})")
         return dashboard_process
     except FileNotFoundError:
-        logger.error(
-            f"Could not find '{cmd[0]}' command. Is optuna-dashboard installed and in PATH?"
-        )
+        logger.error(f"Could not find '{cmd[0]}' command. Is optuna-dashboard installed and in PATH?")
         print(f"ERROR: Failed to launch dashboard - command '{cmd[0]}' not found.")
         return None
     except Exception as e:

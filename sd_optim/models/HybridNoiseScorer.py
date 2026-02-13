@@ -37,15 +37,11 @@ class HybridNoiseScorer:
         return cv2.merge([b_eq, g_eq, r_eq])
 
     def score(self, image: Image.Image) -> float:
-        original_cv_bgr = cv2.cvtColor(
-            np.array(image.convert("RGB")), cv2.COLOR_RGB2BGR
-        )
+        original_cv_bgr = cv2.cvtColor(np.array(image.convert("RGB")), cv2.COLOR_RGB2BGR)
 
         # Step 1: Get a rough background sample from the AI
         output_image_pil = rembg.remove(image, session=self.rembg_session)
-        output_image_with_alpha = cv2.cvtColor(
-            np.array(output_image_pil), cv2.COLOR_RGBA2BGRA
-        )
+        output_image_with_alpha = cv2.cvtColor(np.array(output_image_pil), cv2.COLOR_RGBA2BGRA)
 
         if output_image_with_alpha.shape[2] != 4:
             return 5.0
@@ -65,17 +61,13 @@ class HybridNoiseScorer:
         dominant_bg_color = kmeans.cluster_centers_[dominant_cluster_index]
 
         # Step 3: Create a new, precise mask based on color similarity
-        color_diff = np.linalg.norm(
-            original_cv_bgr.astype(np.float32) - dominant_bg_color, axis=-1
-        )
+        color_diff = np.linalg.norm(original_cv_bgr.astype(np.float32) - dominant_bg_color, axis=-1)
         final_background_mask = color_diff < self.color_tolerance
 
         # Step 4: Run noise analysis on the new, perfect mask
         if np.any(final_background_mask):
             isolated_bg_bgr = np.zeros_like(original_cv_bgr)
-            isolated_bg_bgr[final_background_mask] = original_cv_bgr[
-                final_background_mask
-            ]
+            isolated_bg_bgr[final_background_mask] = original_cv_bgr[final_background_mask]
 
             noise_map_bgr = self._create_noise_map(isolated_bg_bgr)
             noise_map_gray = cv2.cvtColor(noise_map_bgr, cv2.COLOR_BGR2GRAY)

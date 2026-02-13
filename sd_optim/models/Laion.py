@@ -44,9 +44,7 @@ class Laion(nn.Module):
     def __init__(self, pathname, clip_path, device):
         super().__init__()
         self.device = device
-        self.clip_model, self.preprocess = clip.load(
-            clip_path, device=self.device, jit=False
-        )
+        self.clip_model, self.preprocess = clip.load(clip_path, device=self.device, jit=False)
         self.mlp = MLP(768)
         state_dict = torch.load(pathname, map_location="cpu")
         self.mlp.load_state_dict(state_dict, strict=False)
@@ -56,9 +54,7 @@ class Laion(nn.Module):
         if device == "cpu":
             self.clip_model.float()
         else:
-            clip.model.convert_weights(
-                self.clip_model
-            )  # Actually this line is unnecessary since clip by default already on float16
+            clip.model.convert_weights(self.clip_model)  # Actually this line is unnecessary since clip by default already on float16
 
         # have clip.logit_scale require no grad.
         self.clip_model.logit_scale.requires_grad_(False)

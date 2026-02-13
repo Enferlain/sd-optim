@@ -18,17 +18,13 @@ class PickScore:
     def initialize_model(self):
         if not self.model_dict:
             statedict = safetensors.torch.load_file(self.pathname)
-            config_pick = AutoConfig.from_pretrained(
-                pretrained_model_name_or_path="yuvalkirstain/PickScore_v1"
-            )
+            config_pick = AutoConfig.from_pretrained(pretrained_model_name_or_path="yuvalkirstain/PickScore_v1")
             model = AutoModel.from_pretrained(
                 pretrained_model_name_or_path=None,
                 state_dict=statedict,
                 config=config_pick,
             )
-            preprocess_val = AutoProcessor.from_pretrained(
-                pretrained_model_name_or_path="laion/CLIP-ViT-H-14-laion2B-s32B-b79K"
-            )
+            preprocess_val = AutoProcessor.from_pretrained(pretrained_model_name_or_path="laion/CLIP-ViT-H-14-laion2B-s32B-b79K")
 
             self.model_dict["model"] = model
             self.model_dict["preprocess_val"] = preprocess_val

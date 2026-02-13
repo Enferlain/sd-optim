@@ -38,9 +38,7 @@ class ForensicNoiseScorer:
         output_bytes = remove(input_bytes, session=self.rembg_session)
 
         # Read the image with alpha channel
-        output_image_with_alpha = cv2.imdecode(
-            np.frombuffer(output_bytes, np.uint8), cv2.IMREAD_UNCHANGED
-        )
+        output_image_with_alpha = cv2.imdecode(np.frombuffer(output_bytes, np.uint8), cv2.IMREAD_UNCHANGED)
 
         # Create a mask from the alpha channel where transparent pixels are the background
         if output_image_with_alpha.shape[2] == 4:
@@ -54,9 +52,7 @@ class ForensicNoiseScorer:
             # If no alpha channel, assume no background was removed
             return np.array([])  # Return empty array
 
-    def _detect_colored_noise(
-        self, pixels: np.ndarray, kernel_size: int = 5
-    ) -> np.ndarray:
+    def _detect_colored_noise(self, pixels: np.ndarray, kernel_size: int = 5) -> np.ndarray:
         """Extracts RGB noise from a region of pixels."""
         if len(pixels.shape) < 2:  # Not a valid image region
             return pixels
@@ -65,9 +61,7 @@ class ForensicNoiseScorer:
         # For now, we assume the background is mostly flat and analyze the pixel values directly.
         return pixels  # Placeholder for a more complex implementation if needed
 
-    def _detect_structural_noise(
-        self, pixels: np.ndarray, method: str = "gaussian_diff"
-    ) -> float:
+    def _detect_structural_noise(self, pixels: np.ndarray, method: str = "gaussian_diff") -> float:
         """
         Calculates a noise score based on the standard deviation of pixels.
         This is a simplified proxy for the more complex methods.

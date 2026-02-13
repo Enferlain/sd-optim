@@ -17,12 +17,7 @@ import yaml
 
 from pathlib import Path
 from typing import (
-    List,
-    Tuple,
-    Dict,
-    Set,
     Any,
-    Optional,
 )
 
 
@@ -71,27 +66,19 @@ def validate_run_config(cfg: DictConfig) -> None:  # <-- Changed return type to 
         raise ValueError("'models_dir' must be set in your config.yaml.")
     models_dir = Path(models_dir_str).resolve()
     if not models_dir.is_dir():
-        raise FileNotFoundError(
-            f"The specified models_dir is invalid or not found: {models_dir}"
-        )
+        raise FileNotFoundError(f"The specified models_dir is invalid or not found: {models_dir}")
 
     # --- Mode-Specific Validation ---
     if cfg.optimization_mode == "merge":
         if not cfg.model_paths or len(cfg.model_paths) < 1:
-            raise ValueError(
-                "For 'merge' mode, 'model_paths' must contain at least one model path."
-            )
+            raise ValueError("For 'merge' mode, 'model_paths' must contain at least one model path.")
         if not cfg.merge_method:
-            raise ValueError(
-                "Configuration missing required field: 'merge_method' for 'merge' mode."
-            )
+            raise ValueError("Configuration missing required field: 'merge_method' for 'merge' mode.")
 
     elif cfg.optimization_mode == "recipe":
         recipe_cfg = cfg.get("recipe_optimization")
         if not recipe_cfg:
-            raise ValueError(
-                "`optimization_mode` is 'recipe', but 'recipe_optimization' section is missing."
-            )
+            raise ValueError("`optimization_mode` is 'recipe', but 'recipe_optimization' section is missing.")
 
         recipe_path_str = recipe_cfg.get("recipe_path")
         target_nodes_raw = recipe_cfg.get("target_nodes")
@@ -115,13 +102,9 @@ def validate_run_config(cfg: DictConfig) -> None:  # <-- Changed return type to 
             elif isinstance(target_nodes_raw, (list, ListConfig)):
                 target_nodes_list = list(target_nodes_raw)
             else:
-                raise TypeError(
-                    f"target_nodes must be a string or a list, but got {type(target_nodes_raw)}"
-                )
+                raise TypeError(f"target_nodes must be a string or a list, but got {type(target_nodes_raw)}")
 
-            logger.debug(
-                f"Performing advanced validation on recipe for targets: {target_nodes_list}"
-            )
+            logger.debug(f"Performing advanced validation on recipe for targets: {target_nodes_list}")
             original_recipe_text = recipe_path.read_text(encoding="utf-8")
             all_lines = original_recipe_text.strip().split("\n")
 
@@ -129,16 +112,12 @@ def validate_run_config(cfg: DictConfig) -> None:  # <-- Changed return type to 
                 target_node_idx = int(target_node_str.strip("&"))
 
                 if not (0 <= target_node_idx < len(all_lines) - 1):
-                    raise IndexError(
-                        f"target_nodes entry '{target_node_str}' is out of bounds for the recipe."
-                    )
+                    raise IndexError(f"target_nodes entry '{target_node_str}' is out of bounds for the recipe.")
 
                 target_line = all_lines[target_node_idx + 1]
                 match = re.search(r'merge\s+"([^"]+)"', target_line)
                 if not match:
-                    raise TypeError(
-                        f"Target node {target_node_str} does not appear to be a valid merge line."
-                    )
+                    raise TypeError(f"Target node {target_node_str} does not appear to be a valid merge line.")
 
                 method_name = match.group(1)
                 method_obj = resolve_merge_method(method_name)
@@ -163,32 +142,24 @@ def validate_run_config(cfg: DictConfig) -> None:  # <-- Changed return type to 
             raise ValueError("Unexpected error during recipe validation.") from e
 
         if cfg.get("model_paths"):
-            logger.info(
-                "NOTE: In 'recipe' mode, `model_paths` is only used to locate the `models_dir`."
-            )
+            logger.info("NOTE: In 'recipe' mode, `model_paths` is only used to locate the `models_dir`.")
 
     elif cfg.optimization_mode == "layer_adjust":
         if not cfg.model_paths or len(cfg.model_paths) < 1:
-            raise ValueError(
-                "`model_paths` must contain at least one model for 'layer_adjust' mode."
-            )
+            raise ValueError("`model_paths` must contain at least one model for 'layer_adjust' mode.")
     else:
         raise ValueError(f"Invalid optimization_mode: '{cfg.optimization_mode}'")
 
     # --- Global Validation ---
     if not hasattr(cfg, "merge_dtype") or cfg.merge_dtype not in precision_mapping:
-        raise ValueError(
-            f"Invalid 'merge_dtype': '{cfg.get('merge_dtype')}'. Must be one of {list(precision_mapping.keys())}"
-        )
+        raise ValueError(f"Invalid 'merge_dtype': '{cfg.get('merge_dtype')}'. Must be one of {list(precision_mapping.keys())}")
     if not hasattr(cfg, "save_dtype") or cfg.save_dtype not in precision_mapping:
-        raise ValueError(
-            f"Invalid 'save_dtype': '{cfg.get('save_dtype')}'. Must be one of {list(precision_mapping.keys())}"
-        )
+        raise ValueError(f"Invalid 'save_dtype': '{cfg.get('save_dtype')}'. Must be one of {list(precision_mapping.keys())}")
 
     logger.info("Configuration successfully validated.")
 
 
-def _get_valid_params_for_node(node: MergeRecipeNode) -> List[str]:
+def _get_valid_params_for_node(node: MergeRecipeNode) -> list[str]:
     """
     Correctly inspects an sd-mecha MergeRecipeNode and returns ALL
     valid keyword parameter names.
@@ -213,9 +184,7 @@ def load_and_register_custom_configs(config_dir: Path):
     logger.info(f"Scanning for custom ModelConfigs in: {config_dir}")
     registered_count = 0
     if not config_dir.is_dir():
-        logger.warning(
-            f"Custom config directory not found: {config_dir}. Skipping registration."
-        )
+        logger.warning(f"Custom config directory not found: {config_dir}. Skipping registration.")
         return
 
     try:
@@ -226,12 +195,10 @@ def load_and_register_custom_configs(config_dir: Path):
     for filepath in config_dir.glob("*.yaml"):
         try:
             logger.debug(f"  Loading config file: {filepath.name}")
-            with open(filepath, "r", encoding="utf-8") as f:
+            with open(filepath, encoding="utf-8") as f:
                 yaml_data = yaml.load(f, Loader=Loader)
                 if not isinstance(yaml_data, dict) or "identifier" not in yaml_data:
-                    logger.warning(
-                        f"    Skipping {filepath.name}: Invalid format or missing 'identifier'."
-                    )
+                    logger.warning(f"    Skipping {filepath.name}: Invalid format or missing 'identifier'.")
                     continue
 
                 # Use ModelConfigImpl to parse the structure
@@ -240,14 +207,10 @@ def load_and_register_custom_configs(config_dir: Path):
 
                 # Register using register_aux for user-defined configs
                 model_configs.register_aux(config_obj)
-                logger.info(
-                    f"  Successfully registered AUX ModelConfig: '{config_id}' from {filepath.name}"
-                )
+                logger.info(f"  Successfully registered AUX ModelConfig: '{config_id}' from {filepath.name}")
                 registered_count += 1
         except yaml.YAMLError as e_yaml:
-            logger.error(
-                f"  Error parsing YAML file {filepath.name}: {e_yaml}", exc_info=True
-            )
+            logger.error(f"  Error parsing YAML file {filepath.name}: {e_yaml}", exc_info=True)
         except TypeError as e_type:
             logger.error(
                 f"  Error constructing ModelConfig from {filepath.name} (likely structure mismatch): {e_type}",
@@ -264,9 +227,7 @@ def load_and_register_custom_configs(config_dir: Path):
                 exc_info=True,
             )
 
-    logger.info(
-        f"Finished custom config scan. Registered {registered_count} config(s)."
-    )
+    logger.info(f"Finished custom config scan. Registered {registered_count} config(s).")
 
 
 ###########################################
@@ -278,9 +239,7 @@ def load_and_register_custom_conversion(conversion_dir: Path):
     logger.info(f"Scanning for custom Conversion/MergeMethods in: {conversion_dir}")
     registered_count = 0
     if not conversion_dir.is_dir():
-        logger.warning(
-            f"Custom conversion directory not found: {conversion_dir}. Skipping registration."
-        )
+        logger.warning(f"Custom conversion directory not found: {conversion_dir}. Skipping registration.")
         return
 
     # Add the conversion directory to the Python path temporarily to allow direct imports
@@ -296,18 +255,12 @@ def load_and_register_custom_conversion(conversion_dir: Path):
                 # Perform the import - this triggers the @merge_method decorators inside
                 # Need to construct the full import path relative to something in sys.path
                 # Assuming conversion_dir is like 'sd_optim/model_configs'
-                import_path = (
-                    f"{conversion_dir.parent.name}.{conversion_dir.name}.{module_name}"
-                )
+                import_path = f"{conversion_dir.parent.name}.{conversion_dir.name}.{module_name}"
                 importlib.import_module(import_path)
-                logger.info(
-                    f"  Successfully imported and potentially registered methods from: {module_name}.py"
-                )
+                logger.info(f"  Successfully imported and potentially registered methods from: {module_name}.py")
                 registered_count += 1  # Count modules imported, not methods registered
             except ImportError as e_imp:
-                logger.error(
-                    f"  Error importing module {module_name}.py: {e_imp}", exc_info=True
-                )
+                logger.error(f"  Error importing module {module_name}.py: {e_imp}", exc_info=True)
             except Exception as e_other:
                 logger.error(
                     f"  Unexpected error importing/registering from {module_name}.py: {e_other}",
@@ -318,9 +271,7 @@ def load_and_register_custom_conversion(conversion_dir: Path):
         if str(conversion_dir.parent.resolve()) in sys.path:
             sys.path.pop(0)
 
-    logger.info(
-        f"Finished custom conversion scan. Imported {registered_count} module(s)."
-    )
+    logger.info(f"Finished custom conversion scan. Imported {registered_count} module(s).")
 
 
 ##############################
@@ -339,17 +290,13 @@ def resolve_merge_method(merge_method_name: str) -> merge_methods.MergeMethod:
 
         # Check if it's already a decorated sd-mecha method object
         if isinstance(merge_func, merge_methods.MergeMethod):
-            logger.debug(
-                f"Resolved merge method '{merge_method_name}' from local merge_methods.py."
-            )
+            logger.debug(f"Resolved merge method '{merge_method_name}' from local merge_methods.py.")
             return merge_func
         else:
             # This is a fallback for safety, in case we forget a decorator.
             # It attempts to wrap the raw function into a temporary MergeMethod object.
             try:
-                wrapped_func = sd_mecha.merge_method(
-                    merge_func, identifier=merge_method_name, register=False
-                )
+                wrapped_func = sd_mecha.merge_method(merge_func, identifier=merge_method_name, register=False)
                 logger.warning(
                     f"Manually wrapping local method '{merge_method_name}'. Decorate with @merge_method for proper registration."
                 )
@@ -366,15 +313,11 @@ def resolve_merge_method(merge_method_name: str) -> merge_methods.MergeMethod:
     # ones (which are also registered here) in Step 1.
     try:
         merge_func = sd_mecha.extensions.merge_methods.resolve(merge_method_name)
-        logger.debug(
-            f"Resolved merge method '{merge_method_name}' from sd-mecha built-ins."
-        )
+        logger.debug(f"Resolved merge method '{merge_method_name}' from sd-mecha built-ins.")
         return merge_func
     except ValueError:
         # --- Step 3: If it's not in our class and not in sd-mecha's registry, it doesn't exist. ---
-        logger.error(
-            f"FATAL: Merge method '{merge_method_name}' not found in local MergeMethods or in sd-mecha's registry."
-        )
+        logger.error(f"FATAL: Merge method '{merge_method_name}' not found in local MergeMethods or in sd-mecha's registry.")
         os.abort()
 
 
@@ -382,8 +325,8 @@ def resolve_merge_method(merge_method_name: str) -> merge_methods.MergeMethod:
 ### Recipe Optimization ###
 ###########################
 def serialize_nodes_for_rewrite(
-    nodes_dict: Dict[str, sd_mecha.recipe_nodes.RecipeNode],
-) -> Tuple[List[str], Dict[str, int]]:
+    nodes_dict: dict[str, sd_mecha.recipe_nodes.RecipeNode],
+) -> tuple[list[str], dict[str, int]]:
     """
     Takes a dictionary of named RecipeNode objects and serializes them into
     a list of .mecha string lines and a map of name to final line index.
@@ -414,8 +357,8 @@ def serialize_nodes_for_rewrite(
 def rewrite_recipe_text(
     original_recipe_text: str,
     target_node_idx: int,
-    new_node_strings: List[str],
-    param_to_final_idx: Dict[str, int],
+    new_node_strings: list[str],
+    param_to_final_idx: dict[str, int],
 ) -> str:
     """
     Rewrites a .mecha recipe text by prepending new nodes and patching a target line.
@@ -455,17 +398,10 @@ def rewrite_recipe_text(
 
         rewritten_lines.append(line_to_append)
 
-    logger.info(
-        "Successfully shifted original recipe references and patched target line."
-    )
+    logger.info("Successfully shifted original recipe references and patched target line.")
 
     # --- Assembly step remains the same ---
-    final_recipe_text = (
-        "version 0.1.0\n"
-        + "\n".join(new_node_strings)
-        + "\n"
-        + "\n".join(rewritten_lines)
-    )
+    final_recipe_text = "version 0.1.0\n" + "\n".join(new_node_strings) + "\n" + "\n".join(rewritten_lines)
     return final_recipe_text
 
 
@@ -473,9 +409,9 @@ class ModelVisitor(recipe_nodes.RecipeVisitor):
     """A simple visitor to find all ModelRecipeNodes in a graph."""
 
     def __init__(self):
-        self.models: List[recipe_nodes.ModelRecipeNode] = []
+        self.models: list[recipe_nodes.ModelRecipeNode] = []
         # Memoization to prevent visiting the same node multiple times in complex graphs
-        self.visited: Set[recipe_nodes.RecipeNode] = set()
+        self.visited: set[recipe_nodes.RecipeNode] = set()
 
     # REMOVED the incorrect generic .visit() method.
     # We will rely on the default dispatching mechanism.
@@ -506,9 +442,7 @@ class ModelVisitor(recipe_nodes.RecipeVisitor):
         self.visited.add(node)
 
 
-def get_info_from_target_node(
-    root_node: recipe_nodes.RecipeNode, target_node_ref: str
-) -> Dict[str, Any]:
+def get_info_from_target_node(root_node: recipe_nodes.RecipeNode, target_node_ref: str) -> dict[str, Any]:
     """
     Analyzes a recipe graph to extract the merge method name and input model names
     for a specific target node.
@@ -556,7 +490,7 @@ class CacheInjectorVisitor(RecipeVisitor):
     a cache object into every single MergeRecipeNode it finds.
     """
 
-    def __init__(self, cache: Dict):
+    def __init__(self, cache: dict):
         self.cache = cache
         # Keep track of visited nodes to avoid infinite loops in complex graphs
         self.visited = set()
@@ -625,9 +559,7 @@ def save_merge_artifacts(
 
         # --- Step 2: Find All Converters Used in the Recipe ---
         converter_names = find_used_converters(final_recipe_node)
-        converter_imports, converters_code = get_source_code_for_methods(
-            converter_names
-        )
+        converter_imports, converters_code = get_source_code_for_methods(converter_names)
 
         # --- Step 3: Find the Custom Config Used ---
         custom_config_name = cfg.optimization_guide.get("custom_block_config_id")
@@ -637,9 +569,7 @@ def save_merge_artifacts(
         fallback_path_str = get_fallback_model_path_str(cfg, merger)
 
         # --- Step 5: Transpile the Recipe to Python ---
-        recipe_python_code = MechaToPythonConverter(
-            sd_mecha.serialize(final_recipe_node)
-        ).convert()
+        recipe_python_code = MechaToPythonConverter(sd_mecha.serialize(final_recipe_node)).convert()
 
         # --- Step 6: Assemble the Final Script ---
         all_imports = method_imports | converter_imports
@@ -686,9 +616,7 @@ def get_method_names(cfg: DictConfig, original_recipe_text: str) -> str:
             target_node_idx = int(target_ref.strip("&"))
 
             # Deserialize up to and including the target line's context
-            recipe_slice_to_parse = all_lines[
-                : target_node_idx + 2
-            ]  # +1 for 0-index, +1 for version header
+            recipe_slice_to_parse = all_lines[: target_node_idx + 2]  # +1 for 0-index, +1 for version header
             target_node = sd_mecha.deserialize(recipe_slice_to_parse)
 
             # The last node in this slice is our target
@@ -710,8 +638,8 @@ class ConverterFinder(recipe_nodes.RecipeVisitor):
     """A targeted visitor to find only the identifiers of CUSTOM conversion methods."""
 
     def __init__(self):
-        self.converter_names: Set[str] = set()
-        self.visited: Set[recipe_nodes.RecipeNode] = set()
+        self.converter_names: set[str] = set()
+        self.visited: set[recipe_nodes.RecipeNode] = set()
         self.known_converters = sd_mecha.extensions.merge_methods.get_all_converters()
 
         # --- ADDITION: We need to know where sd-mecha lives ---
@@ -720,9 +648,7 @@ class ConverterFinder(recipe_nodes.RecipeVisitor):
         except TypeError:
             # Fallback if sd-mecha path can't be found
             self.sd_mecha_path = None
-            logger.warning(
-                "Could not determine sd-mecha library path. Converter filtering might be inaccurate."
-            )
+            logger.warning("Could not determine sd-mecha library path. Converter filtering might be inaccurate.")
 
     def visit(self, node):
         if node not in self.visited:
@@ -743,14 +669,9 @@ class ConverterFinder(recipe_nodes.RecipeVisitor):
                 # If we have a valid sd-mecha path, check if the source file is inside it.
                 # If it's NOT, then it must be one of ours!
                 if (
-                    self.sd_mecha_path
-                    and self.sd_mecha_path not in source_file_path.parents
-                ):
-                    self.converter_names.add(method_obj.identifier)
-                # If we couldn't find the sd-mecha path, we fall back to a simpler check.
-                # This is less robust but better than nothing.
-                elif self.sd_mecha_path is None and "sd_mecha" not in str(
-                    source_file_path
+                    (self.sd_mecha_path and self.sd_mecha_path not in source_file_path.parents)
+                    or self.sd_mecha_path is None
+                    and "sd_mecha" not in str(source_file_path)
                 ):
                     self.converter_names.add(method_obj.identifier)
 
@@ -777,16 +698,14 @@ class ConverterFinder(recipe_nodes.RecipeVisitor):
                     self.visit(v)
 
 
-def find_used_converters(root_node: recipe_nodes.RecipeNode) -> Set[str]:
+def find_used_converters(root_node: recipe_nodes.RecipeNode) -> set[str]:
     """Traverses a recipe graph to find all unique conversion methods used."""
     finder = ConverterFinder()
     finder.visit(root_node)
     return finder.converter_names
 
 
-def get_yaml_content(
-    config_name: Optional[str], configs_dir_path: str
-) -> Optional[str]:
+def get_yaml_content(config_name: str | None, configs_dir_path: str) -> str | None:
     """Reads the content of a specific YAML file."""
     if not config_name:
         return None
@@ -803,17 +722,13 @@ def get_fallback_model_path_str(
 ) -> str:
     """Determines the fallback model path string for the script."""
     fallback_index = cfg.get("fallback_model_index", -1)
-    if (
-        fallback_index is not None
-        and fallback_index != -1
-        and fallback_index < len(merger.models)
-    ):
+    if fallback_index is not None and fallback_index != -1 and fallback_index < len(merger.models):
         fallback_node = merger.models[fallback_index]
         return f'"{fallback_node.path}"'
     return "None"
 
 
-def _format_and_deduplicate_imports(imports: Set[str]) -> str:
+def _format_and_deduplicate_imports(imports: set[str]) -> str:
     """
     Takes a set of import statement strings and cleans them up,
     merging 'from ... import ...' statements, handling aliasing,
@@ -838,9 +753,7 @@ def _format_and_deduplicate_imports(imports: Set[str]) -> str:
             elif isinstance(node, ast.ImportFrom):
                 # Ignore broken relative imports like 'from . import ...'
                 if node.level > 0:  # node.level > 0 indicates a relative import (., ..)
-                    logger.warning(
-                        f"Skipping relative import, it cannot be made portable: '{imp_line}'"
-                    )
+                    logger.warning(f"Skipping relative import, it cannot be made portable: '{imp_line}'")
                     continue
 
                 module_name = node.module
@@ -900,9 +813,9 @@ def build_reproducible_script(
     output_filename: str,
     iteration: int,
     transpiled_recipe: str,
-    yaml_name: Optional[str],
-    yaml_content: Optional[str],
-    all_imports: Set[str],
+    yaml_name: str | None,
+    yaml_content: str | None,
+    all_imports: set[str],
     methods_code_block: str,
     converters_code_block: str,
     fallback_model_path_str: str,
@@ -1040,9 +953,9 @@ if __name__ == "__main__":
 class _CodeParser(ast.NodeVisitor):
     """An AST visitor to find all names used and local methods called within a function's AST."""
 
-    def __init__(self, local_method_names: Set[str]):
-        self.used_names: Set[str] = set()
-        self.called_local_methods: Set[str] = set()
+    def __init__(self, local_method_names: set[str]):
+        self.used_names: set[str] = set()
+        self.called_local_methods: set[str] = set()
         self.local_method_names = local_method_names
 
     def visit_Name(self, node: ast.Name):
@@ -1063,16 +976,13 @@ class _CodeParser(ast.NodeVisitor):
         if isinstance(func, ast.Name) and func.id in self.local_method_names:
             self.called_local_methods.add(func.id)
         elif isinstance(func, ast.Attribute) and isinstance(func.value, ast.Name):
-            if (
-                func.value.id in ("self", "cls")
-                and func.attr in self.local_method_names
-            ):
+            if func.value.id in ("self", "cls") and func.attr in self.local_method_names:
                 self.called_local_methods.add(func.attr)
         self.generic_visit(node)
 
 
 # --- And now the main function itself ---
-def get_source_code_for_methods(method_names: Set[str]) -> Tuple[Set[str], str]:
+def get_source_code_for_methods(method_names: set[str]) -> tuple[set[str], str]:
     """
     Takes a set of method names, finds their source code including their
     original decorators, and discovers all necessary imports and top-level variables.
@@ -1080,7 +990,7 @@ def get_source_code_for_methods(method_names: Set[str]) -> Tuple[Set[str], str]:
     if not method_names:
         return set(), ""
 
-    _source_cache: Dict[str, str] = {}
+    _source_cache: dict[str, str] = {}
 
     all_source_code_blocks = []
     all_used_names = set()
@@ -1130,16 +1040,10 @@ def get_source_code_for_methods(method_names: Set[str]) -> Tuple[Set[str], str]:
                 # Now, if resolve_merge_method fails, it will raise a SystemExit,
                 # which is better than a silent failure. We can catch this if we want.
                 logger.error(f"Could not get or parse source for '{method_name}': {e}")
-                all_source_code_blocks.append(
-                    f"# ERROR: Could not get source for {method_name}"
-                )
+                all_source_code_blocks.append(f"# ERROR: Could not get source for {method_name}")
             except SystemExit:
-                logger.error(
-                    f"FATAL: resolve_merge_method could not find '{method_name}'. Halting artifact generation for this method."
-                )
-                all_source_code_blocks.append(
-                    f"# ERROR: Could not resolve merge method '{method_name}'."
-                )
+                logger.error(f"FATAL: resolve_merge_method could not find '{method_name}'. Halting artifact generation for this method.")
+                all_source_code_blocks.append(f"# ERROR: Could not resolve merge method '{method_name}'.")
 
     # Step 4: Scan the discovered files to find imports AND top-level assignments
     relevant_imports = set()
@@ -1173,11 +1077,7 @@ def get_source_code_for_methods(method_names: Set[str]) -> Tuple[Set[str], str]:
             logger.error(f"Could not parse file {file_path} for imports/variables: {e}")
 
     # Combine the discovered code blocks
-    final_code_str = (
-        "\n".join(sorted(list(top_level_code_to_add)))
-        + "\n\n"
-        + "\n\n".join(all_source_code_blocks)
-    )
+    final_code_str = "\n".join(sorted(list(top_level_code_to_add))) + "\n\n" + "\n\n".join(all_source_code_blocks)
 
     return relevant_imports, final_code_str
 
@@ -1218,9 +1118,7 @@ class MechaToPythonConverter:
                 if remapped_kwargs:
                     if call_args:
                         call_args += ", "
-                    call_args += ", ".join(
-                        f"{k}={v}" for k, v in remapped_kwargs.items()
-                    )
+                    call_args += ", ".join(f"{k}={v}" for k, v in remapped_kwargs.items())
                 python_line += f"\n{var_name} = sd_mecha.{command}({call_args})"
 
             elif command == "merge":
@@ -1233,9 +1131,7 @@ class MechaToPythonConverter:
                 if remapped_kwargs:
                     if call_args:
                         call_args += ", "
-                    call_args += ", ".join(
-                        f"{k}={v}" for k, v in remapped_kwargs.items()
-                    )
+                    call_args += ", ".join(f"{k}={v}" for k, v in remapped_kwargs.items())
                 python_line += f"\n{var_name} = sd_mecha.extensions.merge_methods.resolve({method_identifier_str})({call_args})"
 
             else:
@@ -1254,13 +1150,11 @@ class MechaToPythonConverter:
 
         return "\n\n".join(self.python_lines)
 
-    def _parse_line(self, line: str) -> List[str]:
+    def _parse_line(self, line: str) -> list[str]:
         """A simple parser that respects quotes."""
         return re.findall(r'"[^"]*"|\S+', line)
 
-    def _extract_args_kwargs(
-        self, parts: List[str]
-    ) -> Tuple[List[str], Dict[str, str]]:
+    def _extract_args_kwargs(self, parts: list[str]) -> tuple[list[str], dict[str, str]]:
         """Separates a list of parts into positional and keyword arguments."""
         args = []
         kwargs = {}
@@ -1462,9 +1356,7 @@ def fineman(fine, isxl):
                 fines[i] = 0.0
         fine = fines
     elif not isinstance(fine, list):
-        print(
-            "Error: Invalid input type for 'fine'. Expected a comma-separated string or a list."
-        )
+        print("Error: Invalid input type for 'fine'. Expected a comma-separated string or a list.")
         return None
 
     fine = [
@@ -1487,7 +1379,7 @@ def weighttoxl(weights):
     return weights
 
 
-def modify_state_dict(state_dict: Dict, adjustments: Dict, is_xl_model: bool) -> Dict:
+def modify_state_dict(state_dict: dict, adjustments: dict, is_xl_model: bool) -> dict:
     """Modifies the state_dict based on the given adjustments."""
 
     fine_adjustments = fineman(",".join(map(str, adjustments.values())), is_xl_model)
@@ -1503,9 +1395,7 @@ def modify_state_dict(state_dict: Dict, adjustments: Dict, is_xl_model: bool) ->
     for index, layer_name in LAYER_MAPPING.items():
         if layer_name in state_dict:
             if index < 5:
-                modified_state_dict[layer_name] = (
-                    state_dict[layer_name] * fine_adjustments[index]
-                )
+                modified_state_dict[layer_name] = state_dict[layer_name] * fine_adjustments[index]
             else:
                 modified_state_dict[layer_name] = state_dict[layer_name] + torch.tensor(
                     fine_adjustments[index],
@@ -1542,16 +1432,10 @@ class HotkeyListener:
         if key == keyboard.Key.esc:
             return False  # Stop listener
         try:
-            if key == HOTKEY_SWITCH_MANUAL[1] and all(
-                k in keyboard._pressed_events for k in HOTKEY_SWITCH_MANUAL[0]
-            ):
-                self.scoring_mode.value = (
-                    "manual"  # Assuming scoring_mode is a shared variable
-                )
+            if key == HOTKEY_SWITCH_MANUAL[1] and all(k in keyboard._pressed_events for k in HOTKEY_SWITCH_MANUAL[0]):
+                self.scoring_mode.value = "manual"  # Assuming scoring_mode is a shared variable
                 print("Switching to manual scoring mode!")
-            elif key == HOTKEY_SWITCH_AUTO[1] and all(
-                k in keyboard._pressed_events for k in HOTKEY_SWITCH_AUTO[0]
-            ):
+            elif key == HOTKEY_SWITCH_AUTO[1] and all(k in keyboard._pressed_events for k in HOTKEY_SWITCH_AUTO[0]):
                 self.scoring_mode.value = "automatic"
                 print("Switching to automatic scoring mode!")
         except AttributeError:
@@ -1562,21 +1446,17 @@ class HotkeyListener:
 # ...
 
 
-def get_summary_images(
-    log_file: Path, imgs_dir: Path, top_iterations: int
-) -> List[Tuple[str, float, Path]]:
+def get_summary_images(log_file: Path, imgs_dir: Path, top_iterations: int) -> list[tuple[str, float, Path]]:
     """Parses the log file, identifies top-scoring iterations, and selects images for summary."""
     try:
-        with open(log_file, "r") as f:
+        with open(log_file) as f:
             log_data = [json.loads(line) for line in f]
     except (FileNotFoundError, json.JSONDecodeError) as e:
         logger.error(f"Error loading log file: {e}")
         return []  # Return empty list if error occurs
 
     # Sort iterations by target score in descending order and select top iterations
-    sorted_iterations = sorted(log_data, key=lambda x: x["target"], reverse=True)[
-        :top_iterations
-    ]
+    sorted_iterations = sorted(log_data, key=lambda x: x["target"], reverse=True)[:top_iterations]
 
     summary_images = []
     for iteration_data in sorted_iterations:
@@ -1592,9 +1472,7 @@ def get_summary_images(
                 score = parts[-1]
 
                 # Put the file into payload group based on it's index
-                payload_images.setdefault(payload, []).append(
-                    (image_index, score, Path(imgs_dir, file_name))
-                )
+                payload_images.setdefault(payload, []).append((image_index, score, Path(imgs_dir, file_name)))
 
         # Select best image per payload
         for i, image_set in enumerate(payload_images.values()):
@@ -1620,13 +1498,9 @@ def update_log_scores(log_file: Path, summary_images, new_scores):
 
             # Update scores for the corresponding iterations
             # TODO: Handle offset based on what iteration it starts on?
-            for i in range(
-                len(summary_images)
-            ):  # Loop through summary_images to get indices
+            for i in range(len(summary_images)):  # Loop through summary_images to get indices
                 # Update score based on the index
-                log_data[i]["target"] = new_scores[
-                    i
-                ]  # Update directly with a single value, not a list
+                log_data[i]["target"] = new_scores[i]  # Update directly with a single value, not a list
 
             f.seek(0)  # Go to the beginning of the file
             json.dump(log_data, f, indent=4)  # Write the updated data

@@ -2,7 +2,7 @@
 
 import logging
 import re
-from typing import TypeVar, Optional
+from typing import TypeVar
 from sd_mecha.extensions.merge_methods import Parameter, Return, StateDict, merge_method
 from sd_mecha.streaming import StateDictKeyError  # Ensure this is imported
 
@@ -31,7 +31,7 @@ def convert_sdxl_optim_blocks_to_sdxl_sgm(
         logger.warning("Converter called without 'key'. Signaling fallback.")
         raise StateDictKeyError("Converter called without 'key'.")
 
-    block_name: Optional[str] = None  # Use Optional typing
+    block_name: str | None = None  # Use Optional typing
 
     # --- Attempt to map target_key to a DEFINED block name ---
     # Only include logic for prefixes corresponding to blocks defined
@@ -67,11 +67,7 @@ def convert_sdxl_optim_blocks_to_sdxl_sgm(
 
     # --- CLIP-G Block Mapping ---
     elif target_key.startswith("conditioner.embedders.1.model."):
-        if (
-            ".token_embedding." in target_key
-            or ".positional_embedding" in target_key
-            or ".embeddings." in target_key
-        ):
+        if ".token_embedding." in target_key or ".positional_embedding" in target_key or ".embeddings." in target_key:
             block_name = "CLIP_G_EMBEDDING"
         elif ".text_projection" in target_key:
             block_name = "CLIP_G_TEXT_PROJECTION"
@@ -84,22 +80,16 @@ def convert_sdxl_optim_blocks_to_sdxl_sgm(
 
     # --- VAE Block Mapping (Granular) ---
     elif target_key.startswith("first_stage_model."):
-        key_suffix = target_key.split(".", 1)[
-            1
-        ]  # Get everything after 'first_stage_model.'
+        key_suffix = target_key.split(".", 1)[1]  # Get everything after 'first_stage_model.'
         if key_suffix.startswith("encoder.conv_in."):
             block_name = "VAE_ENCODER_IN"
         elif key_suffix.startswith("encoder.down."):
             block_name = "VAE_ENCODER_DOWN"
         elif key_suffix.startswith("encoder.mid."):
             block_name = "VAE_ENCODER_MID"
-        elif key_suffix.startswith("encoder.norm_out.") or key_suffix.startswith(
-            "encoder.conv_out."
-        ):
+        elif key_suffix.startswith("encoder.norm_out.") or key_suffix.startswith("encoder.conv_out."):
             block_name = "VAE_ENCODER_OUT"
-        elif key_suffix.startswith("quant_conv.") or key_suffix.startswith(
-            "post_quant_conv."
-        ):
+        elif key_suffix.startswith("quant_conv.") or key_suffix.startswith("post_quant_conv."):
             block_name = "VAE_QUANT"
         elif key_suffix.startswith("decoder.conv_in."):
             block_name = "VAE_DECODER_IN"
@@ -107,9 +97,7 @@ def convert_sdxl_optim_blocks_to_sdxl_sgm(
             block_name = "VAE_DECODER_MID"
         elif key_suffix.startswith("decoder.up."):
             block_name = "VAE_DECODER_UP"
-        elif key_suffix.startswith("decoder.norm_out.") or key_suffix.startswith(
-            "decoder.conv_out."
-        ):
+        elif key_suffix.startswith("decoder.norm_out.") or key_suffix.startswith("decoder.conv_out."):
             block_name = "VAE_DECODER_OUT"
         else:
             block_name = "VAE_ELSE"
@@ -123,12 +111,8 @@ def convert_sdxl_optim_blocks_to_sdxl_sgm(
             return value
         except KeyError:
             # Mapping found, but block wasn't optimized (not in dict). Signal fallback.
-            logger.debug(
-                f"Key '{target_key}' maps to block '{block_name}', but block not in optimized dict. Signaling fallback."
-            )
-            raise StateDictKeyError(
-                f"Block '{block_name}' not in optimized input dict for key '{target_key}'"
-            )
+            logger.debug(f"Key '{target_key}' maps to block '{block_name}', but block not in optimized dict. Signaling fallback.")
+            raise StateDictKeyError(f"Block '{block_name}' not in optimized input dict for key '{target_key}'")
         except Exception as conv_e:
             # Catch other potential errors during lookup
             logger.error(
@@ -139,7 +123,5 @@ def convert_sdxl_optim_blocks_to_sdxl_sgm(
     else:
         # --- NO MAPPING FOUND ---
         # target_key does not correspond to any defined block structure. Signal fallback.
-        logger.debug(
-            f"Key '{target_key}' does not map to any known block structure. Signaling fallback."
-        )
+        logger.debug(f"Key '{target_key}' does not map to any known block structure. Signaling fallback.")
         raise StateDictKeyError(f"Key '{target_key}' not handled by block conversion.")

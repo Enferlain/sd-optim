@@ -21,16 +21,12 @@ class CLIPScore(nn.Module):
     def __init__(self, pathname, device="cpu"):
         super().__init__()
         self.device = device
-        self.clip_model, self.preprocess = clip.load(
-            pathname, device=self.device, jit=False
-        )
+        self.clip_model, self.preprocess = clip.load(pathname, device=self.device, jit=False)
 
         if device == "cpu":
             self.clip_model.float()
         else:
-            clip.model.convert_weights(
-                self.clip_model
-            )  # Actually this line is unnecessary since clip by default already on float16
+            clip.model.convert_weights(self.clip_model)  # Actually this line is unnecessary since clip by default already on float16
 
         # have clip.logit_scale require no grad.
         self.clip_model.logit_scale.requires_grad_(False)
@@ -54,9 +50,7 @@ class CLIPScore(nn.Module):
         image_features = F.normalize(self.clip_model.encode_image(image))
 
         # score
-        rewards = torch.sum(
-            torch.mul(txt_features, image_features), dim=1, keepdim=True
-        )
+        rewards = torch.sum(torch.mul(txt_features, image_features), dim=1, keepdim=True)
 
         score = rewards.detach().cpu().numpy().item()
         score += 1

@@ -2,7 +2,6 @@ import cv2
 import numpy as np
 from PIL import Image
 from skimage.restoration import denoise_tv_chambolle
-from typing import Optional, Dict, Tuple
 
 # Texture Clean Scorer ported from test_texture.py
 
@@ -14,7 +13,7 @@ TEXTURE_SCORE_METRICS = [
     "fg_mf_median",
 ]
 
-TEXTURE_SCORE_DEFAULT_GOOD_BAD: Dict[str, Tuple[float, float]] = {
+TEXTURE_SCORE_DEFAULT_GOOD_BAD: dict[str, tuple[float, float]] = {
     "fg_flat_noise_tv": (0.0045, 0.0075),
     "fg_noise_tv": (0.0045, 0.0075),
     "fg_starved_ratio": (0.020, 0.050),
@@ -22,7 +21,7 @@ TEXTURE_SCORE_DEFAULT_GOOD_BAD: Dict[str, Tuple[float, float]] = {
     "fg_mf_median": (0.018, 0.024),
 }
 
-TEXTURE_SCORE_DEFAULT_WEIGHTS: Dict[str, float] = {
+TEXTURE_SCORE_DEFAULT_WEIGHTS: dict[str, float] = {
     "fg_flat_noise_tv": 1.0,
     "fg_noise_tv": 1.0,
     "fg_starved_ratio": 2.0,
@@ -43,9 +42,9 @@ def score_lower_better(value: float, good: float, bad: float) -> float:
 
 
 def texture_clean_score_absolute(
-    metrics: Dict[str, float],
-    good_bad: Optional[Dict[str, Tuple[float, float]]] = None,
-    weights: Optional[Dict[str, float]] = None,
+    metrics: dict[str, float],
+    good_bad: dict[str, tuple[float, float]] | None = None,
+    weights: dict[str, float] | None = None,
 ) -> float:
     good_bad = good_bad or TEXTURE_SCORE_DEFAULT_GOOD_BAD
     weights = weights or TEXTURE_SCORE_DEFAULT_WEIGHTS
@@ -67,7 +66,7 @@ def build_rembg_mask(
     img: Image.Image,
     model: str,
     post_process_mask: bool,
-    session: Optional[object] = None,
+    session: object | None = None,
 ) -> np.ndarray:
     from rembg import new_session
     from rembg.bg import post_process
@@ -98,7 +97,7 @@ class TextureScorer:
         self,
         rembg_model: str = "u2net",
         post_process_mask: bool = True,
-        rembg_session: Optional[object] = None,
+        rembg_session: object | None = None,
     ):
         self.rembg_model = rembg_model
         self.post_process_mask = post_process_mask

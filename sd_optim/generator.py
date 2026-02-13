@@ -3,7 +3,7 @@ import logging
 import aiohttp
 
 from dataclasses import dataclass
-from typing import Dict, AsyncGenerator, Optional
+from collections.abc import AsyncGenerator
 from PIL import Image
 from pathlib import Path
 from omegaconf import DictConfig
@@ -18,7 +18,7 @@ class Generator:
     url: str
     batch_size: int
     webui: str
-    adapter: Optional[BackendAdapter] = None
+    adapter: BackendAdapter | None = None
 
     def __post_init__(self):
         self._initialize_adapter()
@@ -39,9 +39,7 @@ class Generator:
             # TODO: Implement SwarmAdapter in adapters.py if needed.
             # For now, we can either raise error or fallback if you port the code.
             logger.error("SwarmUI adapter not yet implemented in refactor.")
-            raise NotImplementedError(
-                "SwarmUI support requires SwarmAdapter implementation."
-            )
+            raise NotImplementedError("SwarmUI support requires SwarmAdapter implementation.")
 
         else:
             raise ValueError(f"Unsupported WebUI type: {self.webui}")
@@ -60,7 +58,7 @@ class Generator:
 
     async def generate(
         self,
-        payload: Dict,
+        payload: dict,
         cfg: DictConfig,  # Kept for signature compatibility if needed, but unused
         session: aiohttp.ClientSession,
     ) -> AsyncGenerator[Image.Image, None]:

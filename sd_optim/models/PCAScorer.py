@@ -25,9 +25,7 @@ class PCAScorer:
     def _equalize_float_v1(self, float_data):
         if float_data.size == 0:
             return float_data
-        hist, bins = np.histogram(
-            float_data.flatten(), bins=65536, range=(float_data.min(), float_data.max())
-        )
+        hist, bins = np.histogram(float_data.flatten(), bins=65536, range=(float_data.min(), float_data.max()))
         cdf = hist.cumsum()
         cdf_normalized = cdf / float(cdf.max())
         equalized_data = np.interp(float_data.flatten(), bins[:-1], cdf_normalized)
@@ -37,9 +35,7 @@ class PCAScorer:
         if float_data.size == 0:
             return float_data
         abs_data = np.abs(float_data)
-        hist, bins = np.histogram(
-            abs_data.flatten(), bins=65536, range=(abs_data.min(), abs_data.max())
-        )
+        hist, bins = np.histogram(abs_data.flatten(), bins=65536, range=(abs_data.min(), abs_data.max()))
         cdf = hist.cumsum()
         cdf_normalized = cdf / float(cdf.max())
         equalized_data = np.interp(abs_data.flatten(), bins[:-1], cdf_normalized)
@@ -54,12 +50,8 @@ class PCAScorer:
         sobel_x_norm = np.empty_like(sobel_x)
         sobel_y_norm = np.empty_like(sobel_y)
 
-        cv2.normalize(
-            sobel_x, dst=sobel_x_norm, alpha=0, beta=255, norm_type=cv2.NORM_MINMAX
-        )
-        cv2.normalize(
-            sobel_y, dst=sobel_y_norm, alpha=0, beta=255, norm_type=cv2.NORM_MINMAX
-        )
+        cv2.normalize(sobel_x, dst=sobel_x_norm, alpha=0, beta=255, norm_type=cv2.NORM_MINMAX)
+        cv2.normalize(sobel_y, dst=sobel_y_norm, alpha=0, beta=255, norm_type=cv2.NORM_MINMAX)
         return np.stack([gray, sobel_x_norm, sobel_y_norm], axis=-1).astype(np.uint8)
 
     def analyze_image_pca(
@@ -116,15 +108,11 @@ class PCAScorer:
                 if linearize:
                     reconstructed_img = np.power(reconstructed_img, 1 / 2.2)
                 reconstructed_uint8 = (reconstructed_img * 255).astype(np.uint8)
-                output_image_float_flat = (
-                    cv2.cvtColor(reconstructed_uint8, cv2.COLOR_RGB2GRAY) / 255.0
-                ).flatten()
+                output_image_float_flat = (cv2.cvtColor(reconstructed_uint8, cv2.COLOR_RGB2GRAY) / 255.0).flatten()
             else:
                 difference = pixel_data - reconstructed_pixels
                 if linearize:
-                    difference = np.power(np.abs(difference), 1 / 2.2) * np.sign(
-                        difference
-                    )
+                    difference = np.power(np.abs(difference), 1 / 2.2) * np.sign(difference)
 
                 if mode == "difference":
                     output_image_float_flat = np.mean(difference, axis=1)
@@ -146,9 +134,7 @@ class PCAScorer:
         else:
             min_val, max_val = pixels_of_interest.min(), pixels_of_interest.max()
             if max_val > min_val:
-                final_image_float[mask_flat] = (pixels_of_interest - min_val) / (
-                    max_val - min_val
-                )
+                final_image_float[mask_flat] = (pixels_of_interest - min_val) / (max_val - min_val)
 
         if gamma != 1.0:
             final_image_float = np.power(final_image_float, gamma)

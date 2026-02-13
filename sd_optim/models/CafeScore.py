@@ -17,15 +17,9 @@ class CafeScore:
 
     def initialize_model(self):
         statedict = safetensors.torch.load_file(self.pathname)
-        config_pick = AutoConfig.from_pretrained(
-            pretrained_model_name_or_path="cafeai/cafe_aesthetic"
-        )
-        model = BeitForImageClassification.from_pretrained(
-            pretrained_model_name_or_path=None, state_dict=statedict, config=config_pick
-        )
-        processor = AutoProcessor.from_pretrained(
-            pretrained_model_name_or_path="cafeai/cafe_aesthetic"
-        )
+        config_pick = AutoConfig.from_pretrained(pretrained_model_name_or_path="cafeai/cafe_aesthetic")
+        model = BeitForImageClassification.from_pretrained(pretrained_model_name_or_path=None, state_dict=statedict, config=config_pick)
+        processor = AutoProcessor.from_pretrained(pretrained_model_name_or_path="cafeai/cafe_aesthetic")
         self.pipe = pipeline(
             "image-classification",
             model=model,

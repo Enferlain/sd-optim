@@ -1,11 +1,10 @@
-'''
- * Adapted from BLIP (https://github.com/salesforce/BLIP)
- * Based on huggingface code base
- * https://github.com/huggingface/transformers/blob/v4.15.0/src/transformers/models/bert
-'''
+"""
+* Adapted from BLIP (https://github.com/salesforce/BLIP)
+* Based on huggingface code base
+* https://github.com/huggingface/transformers/blob/v4.15.0/src/transformers/models/bert
+"""
 
 import math
-from typing import Tuple
 
 import torch
 from torch import Tensor, device, nn
@@ -50,9 +49,7 @@ class BertEmbeddings(nn.Module):
 
         self.config = config
 
-    def forward(
-        self, input_ids=None, position_ids=None, inputs_embeds=None, past_key_values_length=0
-    ):
+    def forward(self, input_ids=None, position_ids=None, inputs_embeds=None, past_key_values_length=0):
         if input_ids is not None:
             input_shape = input_ids.size()
         else:
@@ -337,7 +334,7 @@ class BertLayer(nn.Module):
         outputs = self_attention_outputs[1:-1]
         present_key_value = self_attention_outputs[-1]
 
-        if mode=='multimodal':
+        if mode == "multimodal":
             assert encoder_hidden_states is not None, "encoder_hidden_states must be given for cross-attention layers"
 
             cross_attention_outputs = self.crossattention(
@@ -350,9 +347,7 @@ class BertLayer(nn.Module):
             )
             attention_output = cross_attention_outputs[0]
             outputs = outputs + cross_attention_outputs[1:-1]  # add cross attentions if we output attention weights
-        layer_output = apply_chunking_to_forward(
-            self.feed_forward_chunk, self.chunk_size_feed_forward, self.seq_len_dim, attention_output
-        )
+        layer_output = apply_chunking_to_forward(self.feed_forward_chunk, self.chunk_size_feed_forward, self.seq_len_dim, attention_output)
         outputs = (layer_output,) + outputs
 
         outputs = outputs + (present_key_value,)
@@ -369,7 +364,7 @@ class BertEncoder(nn.Module):
     def __init__(self, config):
         super().__init__()
         self.config = config
-        self.layer = nn.ModuleList([BertLayer(config,i) for i in range(config.num_hidden_layers)])
+        self.layer = nn.ModuleList([BertLayer(config, i) for i in range(config.num_hidden_layers)])
         self.gradient_checkpointing = False
 
     def forward(
@@ -384,7 +379,7 @@ class BertEncoder(nn.Module):
         output_attentions=False,
         output_hidden_states=False,
         return_dict=True,
-        mode='multimodal',
+        mode="multimodal",
     ):
         all_hidden_states = () if output_hidden_states else None
         all_self_attentions = () if output_attentions else None
@@ -401,11 +396,8 @@ class BertEncoder(nn.Module):
             past_key_value = past_key_values[i] if past_key_values is not None else None
 
             if self.gradient_checkpointing and self.training:
-
                 if use_cache:
-                    logger.warn(
-                        "`use_cache=True` is incompatible with gradient checkpointing. Setting `use_cache=False`..."
-                    )
+                    logger.warn("`use_cache=True` is incompatible with gradient checkpointing. Setting `use_cache=False`...")
                     use_cache = False
 
                 def create_custom_forward(module):
@@ -538,7 +530,7 @@ class BertPreTrainedModel(PreTrainedModel):
     _keys_to_ignore_on_load_missing = [r"position_ids"]
 
     def _init_weights(self, module):
-        """ Initialize the weights """
+        """Initialize the weights"""
         if isinstance(module, (nn.Linear, nn.Embedding)):
             # Slightly different from the TF version which uses truncated_normal for initialization
             # cf https://github.com/pytorch/pytorch/pull/5617
@@ -572,7 +564,6 @@ class BertModel(BertPreTrainedModel):
 
         self.init_weights()
 
-
     def get_input_embeddings(self):
         return self.embeddings.word_embeddings
 
@@ -587,8 +578,7 @@ class BertModel(BertPreTrainedModel):
         for layer, heads in heads_to_prune.items():
             self.encoder.layer[layer].attention.prune_heads(heads)
 
-
-    def get_extended_attention_mask(self, attention_mask: Tensor, input_shape: Tuple[int], device: device, is_decoder: bool) -> Tensor:
+    def get_extended_attention_mask(self, attention_mask: Tensor, input_shape: tuple[int], device: device, is_decoder: bool) -> Tensor:
         """
         Makes broadcastable attention and causal masks so that future and masked tokens are ignored.
 
@@ -634,11 +624,7 @@ class BertModel(BertPreTrainedModel):
             else:
                 extended_attention_mask = attention_mask[:, None, None, :]
         else:
-            raise ValueError(
-                "Wrong shape for input_ids (shape {}) or attention_mask (shape {})".format(
-                    input_shape, attention_mask.shape
-                )
-            )
+            raise ValueError(f"Wrong shape for input_ids (shape {input_shape}) or attention_mask (shape {attention_mask.shape})")
 
         # Since attention_mask is 1.0 for positions we want to attend and 0.0 for
         # masked positions, this operation will create a tensor which is 0.0 for
@@ -665,7 +651,7 @@ class BertModel(BertPreTrainedModel):
         output_hidden_states=None,
         return_dict=None,
         is_decoder=False,
-        mode='multimodal',
+        mode="multimodal",
     ):
         r"""
         encoder_hidden_states  (:obj:`torch.FloatTensor` of shape :obj:`(batch_size, sequence_length, hidden_size)`, `optional`):
@@ -686,9 +672,7 @@ class BertModel(BertPreTrainedModel):
             decoding (see :obj:`past_key_values`).
         """
         output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions
-        output_hidden_states = (
-            output_hidden_states if output_hidden_states is not None else self.config.output_hidden_states
-        )
+        output_hidden_states = output_hidden_states if output_hidden_states is not None else self.config.output_hidden_states
         return_dict = return_dict if return_dict is not None else self.config.use_return_dict
 
         if is_decoder:
@@ -721,8 +705,7 @@ class BertModel(BertPreTrainedModel):
 
         # We can provide a self-attention mask of dimensions [batch_size, from_seq_length, to_seq_length]
         # ourselves in which case we just need to make it broadcastable to all heads.
-        extended_attention_mask: torch.Tensor = self.get_extended_attention_mask(attention_mask, input_shape,
-                                                                                 device, is_decoder)
+        extended_attention_mask: torch.Tensor = self.get_extended_attention_mask(attention_mask, input_shape, device, is_decoder)
 
         # If a 2D or 3D attention mask is provided for the cross-attention
         # we need to make broadcastable to [batch_size, num_heads, seq_length, seq_length]
@@ -789,9 +772,7 @@ class BertModel(BertPreTrainedModel):
         )
 
 
-
 class BertLMHeadModel(BertPreTrainedModel):
-
     _keys_to_ignore_on_load_unexpected = [r"pooler"]
     _keys_to_ignore_on_load_missing = [r"position_ids", r"predictions.decoder.bias"]
 
@@ -826,8 +807,8 @@ class BertLMHeadModel(BertPreTrainedModel):
         return_dict=None,
         return_logits=False,
         is_decoder=True,
-        reduction='mean',
-        mode='multimodal',
+        reduction="mean",
+        mode="multimodal",
     ):
         r"""
         encoder_hidden_states  (:obj:`torch.FloatTensor` of shape :obj:`(batch_size, sequence_length, hidden_size)`, `optional`):
@@ -895,8 +876,8 @@ class BertLMHeadModel(BertPreTrainedModel):
             labels = labels[:, 1:].contiguous()
             loss_fct = CrossEntropyLoss(reduction=reduction, label_smoothing=0.1)
             lm_loss = loss_fct(shifted_prediction_scores.view(-1, self.config.vocab_size), labels.view(-1))
-            if reduction=='none':
-                lm_loss = lm_loss.view(prediction_scores.size(0),-1).sum(1)
+            if reduction == "none":
+                lm_loss = lm_loss.view(prediction_scores.size(0), -1).sum(1)
 
         if not return_dict:
             output = (prediction_scores,) + outputs[2:]
@@ -925,8 +906,8 @@ class BertLMHeadModel(BertPreTrainedModel):
             "input_ids": input_ids,
             "attention_mask": attention_mask,
             "past_key_values": past,
-            "encoder_hidden_states": model_kwargs.get("encoder_hidden_states", None),
-            "encoder_attention_mask": model_kwargs.get("encoder_attention_mask", None),
+            "encoder_hidden_states": model_kwargs.get("encoder_hidden_states"),
+            "encoder_attention_mask": model_kwargs.get("encoder_attention_mask"),
             "is_decoder": True,
         }
 

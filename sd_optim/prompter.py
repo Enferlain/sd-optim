@@ -5,7 +5,6 @@ import re
 import logging
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, List, Tuple
 from omegaconf import DictConfig, ListConfig, OmegaConf
 
 logger = logging.getLogger(__name__)
@@ -29,7 +28,7 @@ class CardDealer:
                 relative_path = file.relative_to(self.wildcards_dir)
                 wildcard_name = str(relative_path.with_suffix("")).replace(os.sep, "_")
 
-                with open(file, "r", encoding="utf-8") as f:
+                with open(file, encoding="utf-8") as f:
                     lines = [line.strip() for line in f.readlines() if line.strip()]
                     if lines:
                         self.wildcards[wildcard_name] = lines
@@ -62,7 +61,7 @@ class CardDealer:
 
 
 # --- CHANGED: Simplified Assembly Logic ---
-def assemble_payload(defaults: Dict, payload: Dict) -> Dict:
+def assemble_payload(defaults: dict, payload: dict) -> dict:
     """
     Merges defaults into the payload.
     Now WebUI-agnostic: returns a flat dict. Adapters handle API formatting.
@@ -80,7 +79,7 @@ def assemble_payload(defaults: Dict, payload: Dict) -> Dict:
     return final_payload
 
 
-def unpack_cargo(cargo: DictConfig) -> Tuple[Dict, Dict]:
+def unpack_cargo(cargo: DictConfig) -> tuple[dict, dict]:
     """
     Unpacks a cargo structure into a flat dictionary of case payloads
     and a shared dictionary of defaults.
@@ -143,18 +142,14 @@ class Prompter:
         defaults, payloads = unpack_cargo(cargo_data)
 
         if not payloads:
-            logger.error(
-                "No payloads found in configuration! Check conf/payloads/ structure."
-            )
+            logger.error("No payloads found in configuration! Check conf/payloads/ structure.")
             # Debug tip for user
-            logger.debug(
-                f"Current 'payloads' config keys: {list(cargo_data.keys()) if cargo_data else 'Empty'}"
-            )
+            logger.debug(f"Current 'payloads' config keys: {list(cargo_data.keys()) if cargo_data else 'Empty'}")
 
         for payload_name, payload in payloads.items():
             self.raw_payloads[payload_name] = assemble_payload(defaults, payload)
 
-    def render_payloads(self, batch_size: int = 0) -> Tuple[List[Dict], List[str]]:
+    def render_payloads(self, batch_size: int = 0) -> tuple[list[dict], list[str]]:
         payloads = []
         paths = []
 
@@ -170,16 +165,10 @@ class Prompter:
 
                 # Process Wildcards in Prompts
                 if "prompt" in rendered and isinstance(rendered["prompt"], str):
-                    rendered["prompt"] = self.dealer.replace_wildcards(
-                        rendered["prompt"]
-                    )
+                    rendered["prompt"] = self.dealer.replace_wildcards(rendered["prompt"])
 
-                if "negative_prompt" in rendered and isinstance(
-                    rendered["negative_prompt"], str
-                ):
-                    rendered["negative_prompt"] = self.dealer.replace_wildcards(
-                        rendered["negative_prompt"]
-                    )
+                if "negative_prompt" in rendered and isinstance(rendered["negative_prompt"], str):
+                    rendered["negative_prompt"] = self.dealer.replace_wildcards(rendered["negative_prompt"])
 
                 # Handle specific logic for Forge Extensions (vpred)
                 # This could arguably move to the Adapter, but it's pure data manipulation
@@ -189,9 +178,7 @@ class Prompter:
                     if "alwayson_scripts" not in rendered:
                         rendered["alwayson_scripts"] = {}
 
-                    rendered["alwayson_scripts"][ext_name] = {
-                        "args": [True, False, 0, 0, 0, 0, "default", "v_prediction"]
-                    }
+                    rendered["alwayson_scripts"][ext_name] = {"args": [True, False, 0, 0, 0, 0, "default", "v_prediction"]}
 
                 paths.append(p_name)
                 payloads.append(rendered)

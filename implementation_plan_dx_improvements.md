@@ -4,9 +4,9 @@
 
 You already have strong backend plans in place:
 
-- **Repo Reorg** ([plan.md](file:///d:/stable-diffusion-webui-reForge/extensions/sd-optim/conductor/tracks/repo_reorg_p1_20260210/plan.md)): Clean package boundaries, CLI entry points
-- **Image Reuse** ([plan.md](file:///d:/stable-diffusion-webui-reForge/extensions/sd-optim/conductor/tracks/image_reuse_p1_20260210/plan.md)): Deterministic fingerprinting, manifest v2, incremental rescoring
-- **Product Guidelines** ([guidelines](file:///d:/stable-diffusion-webui-reForge/extensions/sd-optim/conductor/product-guidelines.md)): "Data-First Design" with high-fidelity visualization
+- **Repo Reorg** ([plan.md](conductor/tracks/repo_reorg_p1_20260210/plan.md)): Clean package boundaries, CLI entry points
+- **Image Reuse** ([plan.md](conductor/tracks/image_reuse_p1_20260210/plan.md)): Deterministic fingerprinting, manifest v2, incremental rescoring
+- **Product Guidelines** ([guidelines](conductor/product-guidelines.md)): "Data-First Design" with high-fidelity visualization
 
 The missing piece is a **UI layer** that makes all this infrastructure accessible without terminal commands.
 
@@ -128,3 +128,5 @@ Click any run to see:
 1. **React vs HTMX?** React gives richer interactivity but adds build complexity. HTMX keeps it simple and Python-centric. Given the "Data-First" guideline, React with a charting library (Recharts/Plotly) is probably the better fit.
 2. **Standalone or WebUI extension?** The dashboard could live as a separate local server (simpler) or integrate into the existing WebUI extension system (tighter coupling but unified access).
 3. **How much of the repo reorg should happen first?** The UI can work with the current flat structure, but the reorg would make the API layer much cleaner.
+4. **Git style branching for studies/results** Needs discussion
+5. **PostgreSQL instead of SQLite?** Needs discussion, but probably

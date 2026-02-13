@@ -27,9 +27,7 @@ async def test_texture_scorer():
     )
 
     # Create a dummy image
-    dummy_img = Image.fromarray(
-        np.random.randint(0, 255, (512, 512, 3), dtype=np.uint8)
-    )
+    dummy_img = Image.fromarray(np.random.randint(0, 255, (512, 512, 3), dtype=np.uint8))
 
     print("Initializing AestheticScorer...")
     scorer = AestheticScorer(cfg)

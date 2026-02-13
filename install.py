@@ -16,45 +16,30 @@ try:
     requirements_path = extension_dir / "requirements.txt"
 
     if not requirements_path.is_file():
-        print(
-            f"Error: requirements.txt not found at {requirements_path}", file=sys.stderr
-        )
+        print(f"Error: requirements.txt not found at {requirements_path}", file=sys.stderr)
         sys.exit(1)
 
     print(f"Processing requirements from: {requirements_path}")
-    with open(requirements_path, "r", encoding="utf-8") as f:
+    with open(requirements_path, encoding="utf-8") as f:
         reqs = f.readlines()
 
     for req in reqs:
         # --- Strip inline comments FIRST ---
-        req_no_comment = req.split("#")[
-            0
-        ].strip()  # Split at #, take first part, strip whitespace
+        req_no_comment = req.split("#")[0].strip()  # Split at #, take first part, strip whitespace
 
         # --- Skip empty lines (including lines that were only comments) ---
         if not req_no_comment:
             continue
 
         # Now use req_no_comment for processing
-        package_name = (
-            req_no_comment.split("==")[0]
-            .split(">=")[0]
-            .split("<=")[0]
-            .split("~=")[0]
-            .split("!=")[0]
-            .strip()
-        )
+        package_name = req_no_comment.split("==")[0].split(">=")[0].split("<=")[0].split("~=")[0].split("!=")[0].strip()
 
         if package_name and not launch.is_installed(package_name):
             print(f"Attempting to install {req_no_comment}...")
             # --- Pass the comment-stripped version to run_pip ---
-            launch.run_pip(
-                f"install {req_no_comment}", f"sd-optim requirement: {package_name}"
-            )
+            launch.run_pip(f"install {req_no_comment}", f"sd-optim requirement: {package_name}")
         elif package_name:
-            print(
-                f"Requirement already satisfied: {package_name} (from {req_no_comment})"
-            )
+            print(f"Requirement already satisfied: {package_name} (from {req_no_comment})")
         # else: print(f"Skipping invalid requirement line: {req}")
 
     print("Finished processing sd-optim requirements.")

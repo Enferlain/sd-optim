@@ -19,9 +19,7 @@ class SyntheticModel(pl.LightningModule, HyperparametersMixin):
             num_classes=0,
         )
 
-        self.clf = nn.Sequential(
-            nn.Linear(1536, 128), nn.ReLU(inplace=True), nn.Linear(128, 2)
-        )
+        self.clf = nn.Sequential(nn.Linear(1536, 128), nn.ReLU(inplace=True), nn.Linear(128, 2))
 
     def forward(self, image):
         image_features = self.model(image)
@@ -45,15 +43,9 @@ class NoAIScore:
 
     def initialize_model(self):
         statedict = safetensors.torch.load_file(self.class_path)
-        config = AutoConfig.from_pretrained(
-            pretrained_model_name_or_path="cafeai/cafe_style"
-        )
-        model = BeitForImageClassification.from_pretrained(
-            pretrained_model_name_or_path=None, state_dict=statedict, config=config
-        )
-        processor = AutoProcessor.from_pretrained(
-            pretrained_model_name_or_path="cafeai/cafe_style"
-        )
+        config = AutoConfig.from_pretrained(pretrained_model_name_or_path="cafeai/cafe_style")
+        model = BeitForImageClassification.from_pretrained(pretrained_model_name_or_path=None, state_dict=statedict, config=config)
+        processor = AutoProcessor.from_pretrained(pretrained_model_name_or_path="cafeai/cafe_style")
         self.model_class = pipeline(
             "image-classification",
             model=model,
@@ -62,15 +54,9 @@ class NoAIScore:
         )
 
         statedict = safetensors.torch.load_file(self.anime_path)
-        config = AutoConfig.from_pretrained(
-            pretrained_model_name_or_path="saltacc/anime-ai-detect"
-        )
-        model = BeitForImageClassification.from_pretrained(
-            pretrained_model_name_or_path=None, state_dict=statedict, config=config
-        )
-        processor = AutoProcessor.from_pretrained(
-            pretrained_model_name_or_path="saltacc/anime-ai-detect"
-        )
+        config = AutoConfig.from_pretrained(pretrained_model_name_or_path="saltacc/anime-ai-detect")
+        model = BeitForImageClassification.from_pretrained(pretrained_model_name_or_path=None, state_dict=statedict, config=config)
+        processor = AutoProcessor.from_pretrained(pretrained_model_name_or_path="saltacc/anime-ai-detect")
         self.model_anime = pipeline(
             "image-classification",
             model=model,
@@ -93,9 +79,7 @@ class NoAIScore:
             "crop_mode": "squash",
         }
 
-        self.transform_m = timm.data.create_transform(
-            **transform_config, is_training=False
-        )
+        self.transform_m = timm.data.create_transform(**transform_config, is_training=False)
 
     def score(self, prompt, image):
         if isinstance(image, Image.Image):

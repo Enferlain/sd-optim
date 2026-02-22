@@ -16,8 +16,12 @@ from hydra.core.hydra_config import HydraConfig
 from omegaconf import DictConfig, open_dict, ListConfig
 from PIL import Image
 
+try:
+    from rembg import new_session
+except ImportError:
+    new_session = None
+
 logger = logging.getLogger(__name__)
-logging.basicConfig(level=logging.INFO)
 
 SCORER_CLASS_PATHS = {
     "laion": ("sd_optim.models.Laion", "Laion"),
@@ -43,12 +47,12 @@ SCORER_CLASS_PATHS = {
     "pcascorer": ("sd_optim.models.PCAScorer", "PCAScorer"),
     "textureclean": ("sd_optim.models.TextureScorer", "TextureScorer"),
 }
-_SCORER_CLASS_CACHE: dict[str, Any] = {}
 
 
 def _import_attr(module_path: str, attr_name: str):
     try:
         module = importlib.import_module(module_path)
+        return getattr(module, attr_name)
     except ImportError as exc:
         logger.warning(
             "Optional scorer dependency missing while importing %s.%s: %s",
@@ -56,7 +60,8 @@ def _import_attr(module_path: str, attr_name: str):
             attr_name,
             exc,
         )
-        return None
+    except AttributeError:
+        logger.error("Scorer class '%s' not found in module '%s'.", attr_name, module_path)
     except Exception as exc:
         logger.error(
             "Unexpected error while importing %s.%s: %s",
@@ -64,28 +69,17 @@ def _import_attr(module_path: str, attr_name: str):
             attr_name,
             exc,
         )
-        return None
+    return None
 
-    try:
-        return getattr(module, attr_name)
-    except AttributeError:
-        logger.error("Scorer class '%s' not found in module '%s'.", attr_name, module_path)
-        return None
+
+SCORER_CLASSES = {
+    key: _import_attr(module_path, attr_name)
+    for key, (module_path, attr_name) in SCORER_CLASS_PATHS.items()
+}
 
 
 def _get_scorer_class(scorer_name: str):
-    scorer_key = scorer_name.lower()
-    if scorer_key in _SCORER_CLASS_CACHE:
-        return _SCORER_CLASS_CACHE[scorer_key]
-
-    class_path = SCORER_CLASS_PATHS.get(scorer_key)
-    if not class_path:
-        return None
-
-    module_path, attr_name = class_path
-    scorer_class = _import_attr(module_path, attr_name)
-    _SCORER_CLASS_CACHE[scorer_key] = scorer_class
-    return scorer_class
+    return SCORER_CLASSES.get(scorer_name.lower())
 
 
 MODEL_DATA = {
@@ -215,26 +209,11 @@ class AestheticScorer:
         self.model_path: dict[str, Path] = {}  # Dictionary to hold Path objects for models
         # Stores individual scorer results from the last score() call for metadata
         self.last_scorer_results: dict[str, float] = {}
-
-        self.rembg_session = None
-        # Unified rembg session initialization
-        # If any scorer that needs it is configured, create the session.
-        scorers_needing_rembg = {"hybridnoise", "backgroundblackness", "textureclean"}
-        if any(s.lower() in scorers_needing_rembg for s in self.cfg.get("scorer_method", [])):
-            logger.info("A configured scorer requires background removal. Initializing rembg session...")
-            try:
-                from rembg import new_session
-
-                self.rembg_session = new_session(providers=["CPUExecutionProvider"])
-            except ImportError as exc:
-                raise ImportError(
-                    "A configured scorer requires 'rembg', but it is not installed. "
-                    "Install the corresponding scorer extra (for example "
-                    "'scorer-textureclean', 'scorer-hybridnoise', or "
-                    "'scorer-backgroundblackness')."
-                ) from exc
-        else:
-            self.rembg_session = None
+        self.rembg_session: Any | None = None
+        self._scorers_needing_rembg = {"hybridnoise", "backgroundblackness", "textureclean"}
+        self._rembg_required = any(
+            str(s).lower() in self._scorers_needing_rembg for s in self.cfg.get("scorer_method", [])
+        )
 
         self.setup_img_saving()
 
@@ -245,7 +224,30 @@ class AestheticScorer:
 
         self.setup_evaluator_paths()  # Populates self.model_path and sets default devices/weights
         self.get_models()  # Downloads files if needed
+        self._ensure_rembg_session()
         self._load_all_models()
+
+    def _ensure_rembg_session(self) -> None:
+        if self.rembg_session is not None or not self._rembg_required:
+            return
+
+        logger.info("A configured scorer requires background removal. Initializing rembg session...")
+        if new_session is None:
+            raise ImportError(
+                "A configured scorer requires 'rembg', but it is not installed. "
+                "Install the corresponding scorer extra (for example "
+                "'scorer-textureclean', 'scorer-hybridnoise', or "
+                "'scorer-backgroundblackness')."
+            )
+        try:
+            self.rembg_session = new_session(providers=["CPUExecutionProvider"])
+        except ImportError as exc:
+            raise ImportError(
+                "A configured scorer requires 'rembg', but it is not installed. "
+                "Install the corresponding scorer extra (for example "
+                "'scorer-textureclean', 'scorer-hybridnoise', or "
+                "'scorer-backgroundblackness')."
+            ) from exc
 
     def unload_lazy_models(self):
         """Unloads models that were loaded on-demand."""
@@ -583,6 +585,9 @@ class AestheticScorer:
             logger.debug(f"Model '{evaluator_lower}' is already loaded.")
             return True
 
+        if evaluator_lower in self._scorers_needing_rembg:
+            self._ensure_rembg_session()
+
         logger.info(f"Lazy loading scorer model: '{evaluator_lower}'")
         scorer_model_dir_path = Path(self.cfg.scorer_model_dir)
         clip_l_path = scorer_model_dir_path / "CLIP-ViT-L-14.pt"
@@ -818,7 +823,7 @@ class AestheticScorer:
 
                 # Print its own score
                 if self.cfg.scorer_print_individual:
-                    print(f"{evaluator}:{individual_eval_score:.4f}")
+                    logger.info("%s:%.4f", evaluator, individual_eval_score)
 
             # --- General Automatic Scorer Path ---
             else:
@@ -871,7 +876,7 @@ class AestheticScorer:
                         individual_eval_score = scorer_instance.score(**score_args)
 
                         if self.cfg.scorer_print_individual:
-                            print(f"{evaluator}:{individual_eval_score:.4f}")
+                            logger.info("%s:%.4f", evaluator, individual_eval_score)
 
                     elif evaluator_lower == "hpsv3":
                         # HPSv3 returns a tuple (mu, sigma)
@@ -879,8 +884,8 @@ class AestheticScorer:
 
                         # Print individual mu and sigma
                         if self.cfg.scorer_print_individual:
-                            print(f"  {evaluator} (score): {mu_score:.4f}")
-                            print(f"  {evaluator} (uncertainty): {sigma_score:.4f}")
+                            logger.info("%s (score): %.4f", evaluator, mu_score)
+                            logger.info("%s (uncertainty): %.4f", evaluator, sigma_score)
 
                         # Process a final score combining mu and sigma.
                         # Using Lower Confidence Bound: score = mu - k * sigma
@@ -890,7 +895,7 @@ class AestheticScorer:
                         individual_eval_score = mu_score - (k * sigma_score)
 
                         if self.cfg.scorer_print_individual:
-                            print(f"  {evaluator} (processed final): {individual_eval_score:.4f}")
+                            logger.info("%s (processed final): %.4f", evaluator, individual_eval_score)
 
                     else:
                         # Standard scoring for other models
@@ -902,7 +907,7 @@ class AestheticScorer:
 
                         # Print its own score for other models
                         if self.cfg.scorer_print_individual:
-                            print(f"{evaluator}:{individual_eval_score:.4f}")
+                            logger.info("%s:%.4f", evaluator, individual_eval_score)
 
                 except Exception as e:
                     logger.error(f"Error scoring with {evaluator}: {e}", exc_info=True)
@@ -933,11 +938,11 @@ class AestheticScorer:
                         logger.info(f"Using fake average score: {fake_score:.4f}")
                         return fake_score  # Return the validated fake score
                     else:
-                        print("\tInvalid score. Please enter a number between 0 and 10.")
+                        logger.warning("Invalid score. Please enter a number between 0 and 10.")
                 except ValueError:
-                    print("\tInvalid input. Please enter a number.")
+                    logger.warning("Invalid input. Please enter a number.")
             else:
-                print("\tInput cannot be empty.")
+                logger.warning("Input cannot be empty.")
 
     def average_calc(self, values: list[float], scorer_weights: list[float], average_type: str) -> float:
         # Ensure weights and values match length
@@ -987,20 +992,20 @@ class AestheticScorer:
             elif system == "Linux":
                 if "microsoft-standard" in platform.uname().release:
                     if not hasattr(self, "wsl_instructions_printed"):
-                        print(
-                            "Make sure to install xdg-open-wsl from here: https://github.com/cpbotha/xdg-open-wsl otherwise the images will NOT open."
+                        logger.warning(
+                            "Install xdg-open-wsl from https://github.com/cpbotha/xdg-open-wsl or image opening will fail."
                         )
                         self.wsl_instructions_printed = True  # Set a flag to avoid printing multiple times
                 subprocess.run(["xdg-open", str(image_path)], check=True)
             elif system == "Darwin":  # macOS
                 subprocess.run(["open", str(image_path)], check=True)
             else:
-                print(f"Sorry, automatic image opening is not yet supported on '{system}'. Please open the image manually: {image_path}")
+                logger.warning("Automatic image opening not supported on '%s'. Open manually: %s", system, image_path)
         except FileNotFoundError:
-            print("Error: Could not find the default image viewer. Please ensure it's installed and configured correctly.")
+            logger.error("Could not find default image viewer. Ensure it is installed/configured.")
         except (subprocess.CalledProcessError, OSError) as e:
-            print(f"Error opening image: {e}")
-            print(f"Please try opening the image manually: {image_path}")
+            logger.error("Error opening image: %s", e)
+            logger.warning("Try opening the image manually: %s", image_path)
 
     @staticmethod
     def get_user_score() -> float:
@@ -1013,7 +1018,7 @@ class AestheticScorer:
 
             # Input validation
             if not user_input.replace(".", "", 1).isdigit():  # Allow one decimal point
-                print("\tInvalid input. Please enter a number between 0 and 10.")
+                logger.warning("Invalid input. Please enter a number between 0 and 10.")
                 continue
 
             try:
@@ -1021,6 +1026,6 @@ class AestheticScorer:
                 if 0 <= score <= 10:
                     return score
                 else:
-                    print("\tInvalid input. Please enter a number between 0 and 10.")
+                    logger.warning("Invalid input. Please enter a number between 0 and 10.")
             except ValueError:
-                print("\tInvalid input. Please enter a number between 0 and 10.")
+                logger.warning("Invalid input. Please enter a number between 0 and 10.")

@@ -1,6 +1,9 @@
 import torch
+import logging
 from aesthetic_predictor_v2_5 import convert_v2_5_from_siglip
 from PIL import Image
+
+logger = logging.getLogger(__name__)
 
 
 class AestheticV25:
@@ -35,4 +38,4 @@ class AestheticV25:
                 return score.item()
 
         except Exception as e:
-            print(f"Error in AestheticV25 scoring: {str(e)}")
+            logger.error("Error in AestheticV25 scoring: %s", str(e))

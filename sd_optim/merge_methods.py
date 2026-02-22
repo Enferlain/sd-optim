@@ -1,15 +1,14 @@
-import sys
-
 import functools
 import enum
 import operator
+import logging
 import torch
 import math
 import torch.nn.functional as F
 import fnmatch
+import ptwt
 
 from torch import Tensor
-from pytorch_wavelets import DWTForward, DWTInverse
 from sd_mecha import Parameter, Return, merge_method  # Import Parameter and Return
 
 from sd_optim.svd import torch_svd_lowrank  # you need to make your own or use the one from mecha
@@ -24,6 +23,7 @@ except ImportError:
     CUPY_AVAILABLE = False
 
 EPSILON = 1e-10
+logger = logging.getLogger(__name__)
 
 
 class MergeMethods:
@@ -40,9 +40,8 @@ class MergeMethods:
         cache = kwargs["cache"]
         key = kwargs["key"]
 
-        if key:  # Only print if key is available
-            # The 'alpha' variable here is ALREADY the specific float value for this key
-            print(f"[merge_layers] Key: {key} -- Using alpha: {alpha:.4f}")
+        if key:
+            logger.debug("[merge_layers] Key: %s -- Using alpha: %.4f", key, alpha)
 
         # --- ADDED NaN/Inf CHECK ---
         a_is_finite = torch.isfinite(a).all()
@@ -55,8 +54,7 @@ class MergeMethods:
             if not b_is_finite:
                 warning_msg += "Input 'b' has NaNs/Infs. "
             warning_msg += "Returning input 'a' as fallback."
-            # Use your logging system here if you have one, otherwise print
-            print(warning_msg, file=sys.stderr)  # Or logpy.warning(warning_msg)
+            logger.warning(warning_msg)
             return a  # Return tensor 'a'
         # --- END OF NaN/Inf CHECK ---
 
@@ -248,9 +246,10 @@ class MergeMethods:
             result = MergeMethods.exp_stiefel(a, scaled_tangent)
             return result
         except Exception as e_logexp:  # Fallback path
-            print(
-                f"Warning: slerp_stiefel fallback triggered for {key_prefix}. Reason: {type(e_logexp).__name__}. Using direct SVD method.",
-                file=sys.stderr,
+            logger.warning(
+                "slerp_stiefel fallback triggered for %s. Reason: %s. Using direct SVD method.",
+                key_prefix,
+                type(e_logexp).__name__,
             )
 
             svd_driver = "gesvda" if a.is_cuda else None
@@ -373,7 +372,7 @@ class MergeMethods:
 
         # Check for singularity (λ_i + λ_j ≈ 0)
         if torch.any(torch.abs(d) < 1e-12):
-            print("Warning: Singular Sylvester operator: some λ_i+λ_j ≈ 0", file=sys.stderr)
+            logger.warning("Singular Sylvester operator: some λ_i+λ_j ≈ 0")
             # Could regularize with: d[torch.abs(d) < 1e-12] = 1e-12 * torch.sign(d[torch.abs(d) < 1e-12])
 
         # Solve in diagonal coordinates
@@ -538,9 +537,10 @@ class MergeMethods:
             return final_result
 
         except Exception as e:  # Fallback for any numerical issues
-            print(
-                f"Warning: slerp_square_unitary fallback triggered for {key_prefix}. Reason: {type(e).__name__}. Using LERP+SVD.",
-                file=sys.stderr,
+            logger.warning(
+                "slerp_square_unitary fallback triggered for %s. Reason: %s. Using LERP+SVD.",
+                key_prefix,
+                type(e).__name__,
             )
             lerped_val = torch.lerp(A, B, alpha)
             try:
@@ -548,7 +548,11 @@ class MergeMethods:
                 fallback_result = (u_lerp @ vh_lerp).to(original_dtype)
                 return fallback_result
             except Exception as e2:
-                print(f"Warning: SVD fallback also failed for {key_prefix}. Reason: {type(e2).__name__}. Using raw LERP.", file=sys.stderr)
+                logger.warning(
+                    "SVD fallback also failed for %s. Reason: %s. Using raw LERP.",
+                    key_prefix,
+                    type(e2).__name__,
+                )
                 return lerped_val
 
     @staticmethod
@@ -977,16 +981,23 @@ class MergeMethods:
         a: Parameter(Tensor, "weight"), b: Parameter(Tensor, "weight"), alpha: Parameter(Tensor) = 0.5, **kwargs
     ) -> Return(Tensor, "weight"):
         key = kwargs["key"]
-        if key:  # Only print if key is available
-            # The 'alpha' variable here is ALREADY the specific float value for this key
-            print(f"[geosum] Key: {key} -- Using alpha: {alpha:.4f}")
+        if key:
+            logger.debug("[geosum] Key: %s -- Using alpha: %.4f", key, alpha)
         a = torch.complex(a, torch.zeros_like(a))
         b = torch.complex(b, torch.zeros_like(b))
         res = a ** (1 - alpha) * b**alpha
         return res.real
 
     @staticmethod
-    def merge_wavelets(a: Tensor, b: Tensor, alpha: float, wave: str = "db4", levels: int = None) -> Tensor:
+    def merge_conv_wavelets(
+        a: Tensor,
+        b: Tensor,
+        alpha: float,
+        wave: str = "db4",
+        level: int | None = None,
+        mode: str = "zero",
+        compute_dtype: torch.dtype | None = torch.float32,
+    ) -> Tensor:
         """
         Merges two convolutional layers using a multi-level wavelet transform
         while attempting to preserve original sizes. Kernels are reshaped to 2D
@@ -995,52 +1006,62 @@ class MergeMethods:
         Args:
         - a, b: Input tensors (convolutional kernels)
         - alpha: Blending factor (0 to 1)
-        - wave: Wavelet to use (default: 'db3')
-        - levels: Number of decomposition levels
+        - wave: Wavelet to use (default: 'db4')
+        - level: Number of decomposition levels
+        - mode:
+        - compute_dtype: 
         """
-        original_size = a.shape
+        if a.shape != b.shape:
+            raise ValueError(f"Shape mismatch: {a.shape} vs {b.shape}")
+        if a.ndim != 4:
+            raise ValueError(f"Expected conv weight tensor [O,I,kH,kW], got {a.shape}")
 
-        # Reshape tensors to 2D based on kernel size
-        is_conv_3x3 = len(a.shape) == 4 and a.shape[-1] != 1
-        is_conv_1x1 = len(a.shape) == 4 and a.shape[-1] == 1
-        if is_conv_3x3 or is_conv_1x1:
-            shape_2d = (-1, functools.reduce(operator.mul, a.shape[1:]))
-        elif not a.shape:
-            shape_2d = (1, 1)
-        else:
-            shape_2d = (-1, a.shape[-1])
+        if not (0.0 <= alpha <= 1.0):
+            raise ValueError("alpha must be in [0, 1]")
 
-        a = a.reshape(*shape_2d)
-        b = b.reshape(*shape_2d)
+        O, I, kH, kW = a.shape
+        if (kH, kW) not in [(1, 1), (3, 3)]:
+            raise ValueError(f"Only 1x1 and 3x3 supported here, got {kH}x{kW}")
 
-        # Determine the number of levels if not specified
-        if levels is None:
-            levels = min(4, (max(shape_2d) - 1).bit_length() - 1)  # Adaptive J
+        # Choose a level that always makes sense for these tiny kernels.
+        # 1x1: no meaningful decomposition -> just linear blend.
+        if (kH, kW) == (1, 1):
+            return (alpha * a + (1.0 - alpha) * b)
 
-        # Initialize wavelet transform
-        dwt = DWTForward(J=levels, wave=wave, mode="zero")
-        idwt = DWTInverse(wave=wave, mode="zero")
-        dwt = dwt.to(device=a.device, dtype=a.dtype)
-        idwt = idwt.to(device=a.device, dtype=a.dtype)
+        # 3x3: one level is the only practical choice.
+        if level is None:
+            level = 1
+        level = int(level)
+        if level < 1:
+            # treat as no decomposition
+            return (alpha * a + (1.0 - alpha) * b)
 
-        # Perform forward DWT (on 2D matrices)
-        a_ll, a_h = dwt(a.unsqueeze(0).unsqueeze(0))  # Add batch and channel dimensions
-        b_ll, b_h = dwt(b.unsqueeze(0).unsqueeze(0))  # Add batch and channel dimensions
+        # Compute in fp32 by default, cast back at end
+        orig_dtype = a.dtype
+        work_dtype = compute_dtype if compute_dtype is not None else orig_dtype
 
-        # Merge the low-frequency components
-        merged_ll = alpha * a_ll + (1 - alpha) * b_ll
+        A = a.to(dtype=work_dtype)
+        B = b.to(dtype=work_dtype)
 
-        # Merge the high-frequency components
-        merged_h = []
-        for a_h_level, b_h_level in zip(a_h, b_h):
-            merged_h_level = alpha * a_h_level + (1 - alpha) * b_h_level
-            merged_h.append(merged_h_level)
+        # Batch all (O*I) kernels as images: [N, 1, 3, 3]
+        A_img = A.reshape(O * I, 1, kH, kW)
+        B_img = B.reshape(O * I, 1, kH, kW)
 
-        # Perform inverse DWT
-        merged = idwt((merged_ll, merged_h)).squeeze(0).squeeze(0)  # Remove batch and channel dimensions
+        # wavedec2 returns [cA_n, (cH_n,cV_n,cD_n), ...] in pywt order [page:2]
+        ca = ptwt.wavedec2(A_img, wave, level=level, mode=mode)
+        cb = ptwt.wavedec2(B_img, wave, level=level, mode=mode)  # mode supports "reflect/zero/constant/periodic" [page:2]
 
-        # Reshape back to original size (no cropping needed)
-        return merged.reshape(original_size)
+        merged = [alpha * ca[0] + (1.0 - alpha) * cb[0]]
+        for da, db in zip(ca[1:], cb[1:]):
+            merged.append(tuple(alpha * xa + (1.0 - alpha) * xb for xa, xb in zip(da, db)))
+
+        out = ptwt.waverec2(merged, wave)  # [page:2]
+
+        # Safety: ensure exact kernel size (padding modes can yield off-by-1 in some toolchains)
+        out = out[..., :kH, :kW]
+
+        out_w = out.reshape(O, I, kH, kW).to(dtype=orig_dtype)
+        return out_w
 
     @staticmethod
     def get_layer_type(shape, kwargs):
@@ -1282,7 +1303,7 @@ class MergeMethods:
         key = kwargs.get("key")  # Use .get() for safety, though 'key' should always be there
         if key is None:
             # This shouldn't happen in normal sd-mecha execution, but good to handle
-            print("Merge method 'weighted_sum_0_filtered' called without 'key' in kwargs.")
+            logger.warning("Merge method 'weighted_sum_0_filtered' called without 'key' in kwargs.")
             return a  # Fallback to returning 'a'
 
         # The patterns to apply the weighted sum to
@@ -1885,13 +1906,13 @@ class MergeMethods:
 
         # The most important check: do the shapes match?
         if shape_a != shape_b:
-            print("=" * 80)
-            print(f"!!! MISMATCH DETECTED FOR KEY: {key} !!!")
-            print(f"  - Shape of Tensor 'a': {shape_a}")
-            print(f"  - Shape of Tensor 'b': {shape_b}")
-            print(f"  - Dtype of 'a': {a.dtype}, Device: {a.device}")
-            print(f"  - Dtype of 'b': {b.dtype}, Device: {b.device}")
-            print("=" * 80)
+            logger.error("=" * 80)
+            logger.error("MISMATCH DETECTED FOR KEY: %s", key)
+            logger.error("Shape of Tensor 'a': %s", shape_a)
+            logger.error("Shape of Tensor 'b': %s", shape_b)
+            logger.error("Dtype of 'a': %s, Device: %s", a.dtype, a.device)
+            logger.error("Dtype of 'b': %s, Device: %s", b.dtype, b.device)
+            logger.error("=" * 80)
 
         layer_cache = None
         if cache is not None:
@@ -3306,7 +3327,7 @@ class MergeMethods:
 
         except RuntimeError as qr_error:
             # Fallback to Cholesky if QR fails (very rare)
-            print(f"QR failed, using Cholesky fallback: {qr_error}")
+            logger.warning("QR failed, using Cholesky fallback: %s", qr_error)
             try:
                 I_k = torch.eye(k, device=P.device, dtype=torch.float64)
                 G = (P_fp64.T @ P_fp64) + projector_eps * I_k
@@ -3318,7 +3339,7 @@ class MergeMethods:
                 E = torch.linalg.solve_triangular(L.T, y, upper=True).to(P.dtype)
 
             except RuntimeError as chol_error:
-                print(f"Both QR and Cholesky failed, using pseudo-inverse: {chol_error}")
+                logger.warning("Both QR and Cholesky failed, using pseudo-inverse: %s", chol_error)
                 # Last resort: pseudo-inverse
                 P_pinv = torch.linalg.pinv(P_fp64)
                 E = (P_pinv @ diff_fp64).to(P.dtype)
@@ -3447,7 +3468,11 @@ class MergeMethods:
             return result.to(dtype=original_dtype)
 
         except Exception as e:
-            print(f"Butterfly factorization failed for dimension {out_dim}, falling back to QR decomposition. Error: {e}")
+            logger.warning(
+                "Butterfly factorization failed for dimension %s; falling back to QR decomposition. Error: %s",
+                out_dim,
+                e,
+            )
 
             # Proper fallback that creates basis from guide
             Q, _ = torch.linalg.qr(guide2d, mode="reduced")
@@ -6977,20 +7002,20 @@ class MergeMethods:
         if not valid_core_indices:
             valid_core_indices = list(range(num_deltas))
 
-        print("=== DELTA INDEX MAPPING ===")
-        print(f"Total deltas: {num_deltas}")
-        print(f"Core indices: {valid_core_indices}")
+        logger.info("=== DELTA INDEX MAPPING ===")
+        logger.info("Total deltas: %s", num_deltas)
+        logger.info("Core indices: %s", valid_core_indices)
         outlier_indices = [i for i in range(num_deltas) if i not in valid_core_indices]
-        print(f"Outlier indices: {outlier_indices}")
+        logger.info("Outlier indices: %s", outlier_indices)
 
         core_deltas = [cleaned_deltas[i] for i in valid_core_indices]
         outlier_deltas = [d for i, d in enumerate(cleaned_deltas) if i not in valid_core_indices]
 
-        print("\n=== OUTLIER MODELS ===")
+        logger.info("=== OUTLIER MODELS ===")
         for i, idx in enumerate(outlier_indices):
-            print(f"OUTLIER_{i} = Delta index {idx}")
+            logger.info("OUTLIER_%s = Delta index %s", i, idx)
 
-        print(f"\nExpected shadowforge at index 10, got outlier indices: {outlier_indices}")
+        logger.info("Expected shadowforge at index 10, got outlier indices: %s", outlier_indices)
 
         if not core_deltas:
             return torch.mean(torch.stack(cleaned_deltas), dim=0)
@@ -7010,14 +7035,14 @@ class MergeMethods:
             MergeMethods.track_tensor_quality(parallel, f"PARALLEL_{i}", key)
 
             if torch.isnan(parallel).any():
-                print("NaN detected in parallel projection, using zero instead")
+                logger.warning("NaN detected in parallel projection, using zero instead")
                 parallel = torch.zeros_like(outlier)
 
             perpendicular = outlier - parallel
             MergeMethods.track_tensor_quality(perpendicular, f"PERPENDICULAR_{i}", key)
 
             if torch.isnan(perpendicular).any():
-                print("NaN detected in perpendicular, using original outlier")
+                logger.warning("NaN detected in perpendicular, using original outlier")
                 perpendicular = outlier
                 parallel = torch.zeros_like(outlier)
 
@@ -7057,13 +7082,13 @@ class MergeMethods:
         perp_norm = torch.norm(merged_perpendicular) if perpendicular_components else 0
         importance_norm = torch.norm(final_importance)
 
-        print(f"Core norm: {core_norm:.6f}")
-        print(f"Parallel norm: {parallel_norm:.6f}")
-        print(f"Perpendicular norm: {perp_norm:.6f}")
-        print(f"Importance norm: {importance_norm:.6f}")
-        print(f"Parallel ratio: {parallel_norm / core_norm:.3f}")
-        print(f"Perpendicular ratio: {perp_norm / core_norm:.3f}")
-        print(f"Importance ratio: {importance_norm / core_norm:.3f}")
+        logger.info("Core norm: %.6f", core_norm)
+        logger.info("Parallel norm: %.6f", parallel_norm)
+        logger.info("Perpendicular norm: %.6f", perp_norm)
+        logger.info("Importance norm: %.6f", importance_norm)
+        logger.info("Parallel ratio: %.3f", parallel_norm / core_norm)
+        logger.info("Perpendicular ratio: %.3f", perp_norm / core_norm)
+        logger.info("Importance ratio: %.3f", importance_norm / core_norm)
 
         # FINAL COMBINATION: Use importance weights for final combination
         final_delta = delta_core + final_importance * (orthogonal_contribution * merged_perpendicular)
@@ -7298,6 +7323,15 @@ class MergeMethods:
         has_inf = torch.isinf(tensor).any()
 
         key_info = f"[{key}] " if key else ""
-        print(
-            f"{key_info}{label}: norm={norm:.6f}, mean={mean_val:.6f}, std={std_val:.6f}, min={min_val:.6f}, max={max_val:.6f}, nan={has_nan}, inf={has_inf}"
+        logger.debug(
+            "%s%s: norm=%.6f, mean=%.6f, std=%.6f, min=%.6f, max=%.6f, nan=%s, inf=%s",
+            key_info,
+            label,
+            norm,
+            mean_val,
+            std_val,
+            min_val,
+            max_val,
+            has_nan,
+            has_inf,
         )

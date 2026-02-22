@@ -12,7 +12,6 @@ from omegaconf import (
     DictConfig,
 )  # Using OmegaConf for cleaner config logging
 from sd_optim import utils  # Import utils (needs to exist)
-from sd_optim import BayesOptimizer, OptunaOptimizer
 
 # Configure logging level and format early. Can be overridden by Hydra later.
 logging.basicConfig(
@@ -27,6 +26,9 @@ logging.getLogger("kaleido").setLevel(logging.WARNING)
 logging.getLogger("plotly").setLevel(logging.WARNING)  # Just in case
 logging.getLogger("PIL.PngImagePlugin").setLevel(logging.WARNING)
 logging.getLogger("PIL.Image").setLevel(logging.WARNING)
+logging.getLogger("numba").setLevel(logging.WARNING)
+logging.getLogger("numba.core").setLevel(logging.WARNING)
+logging.getLogger("httpcore.http11").setLevel(logging.WARNING)
 
 # Use a logger specific to this main script
 logger = logging.getLogger(__name__)  # Hydra often configures this further
@@ -114,9 +116,21 @@ def main(cfg: DictConfig) -> None:
     optimizer_name = "N/A"
     # Access optimizer selection flags safely
     if cfg.optimizer.get("bayes", False):
+        try:
+            from sd_optim import BayesOptimizer
+        except ModuleNotFoundError as e:
+            if getattr(e, "name", "") == "bayes_opt":
+                logger.error(
+                    "Bayes optimizer selected, but dependency 'bayesian-optimization' is not installed. "
+                    "Install the Bayes extra before running with optimizer.bayes=true."
+                )
+                sys.exit(1)
+            raise
         optimizer_class = BayesOptimizer
         optimizer_name = "BayesOpt"
     elif cfg.optimizer.get("optuna", False):
+        from sd_optim import OptunaOptimizer
+
         optimizer_class = OptunaOptimizer
         optimizer_name = "Optuna"
     # Add elif for other optimizers if re-implemented (e.g., TPE, ATPE)
@@ -142,7 +156,7 @@ def main(cfg: DictConfig) -> None:
         logger.info("Optimizer configuration validated.")
 
         # --- Launch Dashboard BEFORE Optimization ---
-        if isinstance(optim_instance, OptunaOptimizer) and cfg.optimizer.optuna_config.get("launch_dashboard", False):
+        if type(optim_instance).__name__ == "OptunaOptimizer" and cfg.optimizer.optuna_config.get("launch_dashboard", False):
             dashboard_port = cfg.optimizer.optuna_config.get("dashboard_port", 8080)
             logger.info(f"--- Attempting to launch Optuna Dashboard in background (Port: {dashboard_port}) ---")
             dashboard_process = optim_instance.start_dashboard_background(port=dashboard_port)
@@ -181,17 +195,18 @@ def main(cfg: DictConfig) -> None:
         # --- ADDED: Attempt Postprocessing ---
         logger.info("--- Attempting Postprocessing (Finally Block) ---")
         if optim_instance is not None:
+            optimizer_type = type(optim_instance).__name__
             # Check if the specific optimizer subclass needs postprocessing visuals
-            if isinstance(optim_instance, (OptunaOptimizer, BayesOptimizer)):  # Add other types if needed
+            if optimizer_type in {"OptunaOptimizer", "BayesOptimizer"}:  # Add other types if needed
                 try:
                     # Check for results before calling postprocess
                     should_run_postprocess = False
-                    if isinstance(optim_instance, OptunaOptimizer):
+                    if optimizer_type == "OptunaOptimizer":
                         if optim_instance.study and optim_instance.study.trials:
                             should_run_postprocess = True
                         else:
                             logger.warning("Optuna study has no trials, skipping postprocessing.")
-                    elif isinstance(optim_instance, BayesOptimizer):
+                    elif optimizer_type == "BayesOptimizer":
                         if optim_instance.optimizer and hasattr(optim_instance.optimizer, "res") and optim_instance.optimizer.res:
                             should_run_postprocess = True
                         else:

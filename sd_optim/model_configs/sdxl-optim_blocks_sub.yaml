@@ -1,0 +1,119 @@
+# Filename: sdxl-optim_blocks_sub.yaml
+# Granular sub-block configuration for SDXL UNet
+# Differentiates between ResNet (.0), Transformer (.1), and Upsample/Downsample (.2) sub-blocks.
+
+identifier: sdxl-optim_blocks_sub
+
+components:
+  unet:
+    # --- Input Blocks (00-08) ---
+    UNET_IN00_0: { shape: [], dtype: float32, optional: true } # Initial Conv
+    UNET_IN01_0: { shape: [], dtype: float32, optional: true } # ResNet
+    UNET_IN02_0: { shape: [], dtype: float32, optional: true } # ResNet
+    UNET_IN03_0: { shape: [], dtype: float32, optional: true } # Downsample
+    UNET_IN04_0: { shape: [], dtype: float32, optional: true } # ResNet
+    UNET_IN04_1: { shape: [], dtype: float32, optional: true } # Transformer
+    UNET_IN05_0: { shape: [], dtype: float32, optional: true } # ResNet
+    UNET_IN05_1: { shape: [], dtype: float32, optional: true } # Transformer
+    UNET_IN06_0: { shape: [], dtype: float32, optional: true } # Downsample
+    UNET_IN07_0: { shape: [], dtype: float32, optional: true } # ResNet
+    UNET_IN07_1: { shape: [], dtype: float32, optional: true } # Transformer
+    UNET_IN08_0: { shape: [], dtype: float32, optional: true } # ResNet
+    UNET_IN08_1: { shape: [], dtype: float32, optional: true } # Transformer
+
+    # --- Middle Block (00) ---
+    UNET_MID00_0: { shape: [], dtype: float32, optional: true } # ResNet
+    UNET_MID00_1: { shape: [], dtype: float32, optional: true } # Transformer
+    UNET_MID00_2: { shape: [], dtype: float32, optional: true } # ResNet
+
+    # --- Output Blocks (00-08) ---
+    UNET_OUT00_0: { shape: [], dtype: float32, optional: true } # ResNet
+    UNET_OUT00_1: { shape: [], dtype: float32, optional: true } # Transformer
+    UNET_OUT01_0: { shape: [], dtype: float32, optional: true } # ResNet
+    UNET_OUT01_1: { shape: [], dtype: float32, optional: true } # Transformer
+    UNET_OUT02_0: { shape: [], dtype: float32, optional: true } # ResNet
+    UNET_OUT02_1: { shape: [], dtype: float32, optional: true } # Transformer
+    UNET_OUT02_2: { shape: [], dtype: float32, optional: true } # Upsample
+    UNET_OUT03_0: { shape: [], dtype: float32, optional: true } # ResNet
+    UNET_OUT03_1: { shape: [], dtype: float32, optional: true } # Transformer
+    UNET_OUT04_0: { shape: [], dtype: float32, optional: true } # ResNet
+    UNET_OUT04_1: { shape: [], dtype: float32, optional: true } # Transformer
+    UNET_OUT05_0: { shape: [], dtype: float32, optional: true } # ResNet
+    UNET_OUT05_1: { shape: [], dtype: float32, optional: true } # Transformer
+    UNET_OUT05_2: { shape: [], dtype: float32, optional: true } # Upsample
+    UNET_OUT06_0: { shape: [], dtype: float32, optional: true } # ResNet
+    UNET_OUT07_0: { shape: [], dtype: float32, optional: true } # ResNet
+    UNET_OUT08_0: { shape: [], dtype: float32, optional: true } # ResNet
+
+    # --- Global/Misc ---
+    UNET_TIME_EMBED: { shape: [], dtype: float32, optional: true }
+    UNET_LABEL_EMBED: { shape: [], dtype: float32, optional: true }
+    UNET_OUT_FINAL: { shape: [], dtype: float32, optional: true }
+    UNET_ELSE: { shape: [], dtype: float32, optional: true }
+
+  clip_l:
+    CLIP_L_IN00: { shape: [], dtype: float32, optional: true }
+    CLIP_L_IN01: { shape: [], dtype: float32, optional: true }
+    CLIP_L_IN02: { shape: [], dtype: float32, optional: true }
+    CLIP_L_IN03: { shape: [], dtype: float32, optional: true }
+    CLIP_L_IN04: { shape: [], dtype: float32, optional: true }
+    CLIP_L_IN05: { shape: [], dtype: float32, optional: true }
+    CLIP_L_IN06: { shape: [], dtype: float32, optional: true }
+    CLIP_L_IN07: { shape: [], dtype: float32, optional: true }
+    CLIP_L_IN08: { shape: [], dtype: float32, optional: true }
+    CLIP_L_IN09: { shape: [], dtype: float32, optional: true }
+    CLIP_L_IN10: { shape: [], dtype: float32, optional: true }
+    CLIP_L_IN11: { shape: [], dtype: float32, optional: true }
+    CLIP_L_EMBEDDING: { shape: [], dtype: float32, optional: true }
+    CLIP_L_FINAL_NORM: { shape: [], dtype: float32, optional: true }
+    CLIP_L_ELSE: { shape: [], dtype: float32, optional: true }
+
+  clip_g:
+    CLIP_G_IN00: { shape: [], dtype: float32, optional: true }
+    CLIP_G_IN01: { shape: [], dtype: float32, optional: true }
+    CLIP_G_IN02: { shape: [], dtype: float32, optional: true }
+    CLIP_G_IN03: { shape: [], dtype: float32, optional: true }
+    CLIP_G_IN04: { shape: [], dtype: float32, optional: true }
+    CLIP_G_IN05: { shape: [], dtype: float32, optional: true }
+    CLIP_G_IN06: { shape: [], dtype: float32, optional: true }
+    CLIP_G_IN07: { shape: [], dtype: float32, optional: true }
+    CLIP_G_IN08: { shape: [], dtype: float32, optional: true }
+    CLIP_G_IN09: { shape: [], dtype: float32, optional: true }
+    CLIP_G_IN10: { shape: [], dtype: float32, optional: true }
+    CLIP_G_IN11: { shape: [], dtype: float32, optional: true }
+    CLIP_G_IN12: { shape: [], dtype: float32, optional: true }
+    CLIP_G_IN13: { shape: [], dtype: float32, optional: true }
+    CLIP_G_IN14: { shape: [], dtype: float32, optional: true }
+    CLIP_G_IN15: { shape: [], dtype: float32, optional: true }
+    CLIP_G_IN16: { shape: [], dtype: float32, optional: true }
+    CLIP_G_IN17: { shape: [], dtype: float32, optional: true }
+    CLIP_G_IN18: { shape: [], dtype: float32, optional: true }
+    CLIP_G_IN19: { shape: [], dtype: float32, optional: true }
+    CLIP_G_IN20: { shape: [], dtype: float32, optional: true }
+    CLIP_G_IN21: { shape: [], dtype: float32, optional: true }
+    CLIP_G_IN22: { shape: [], dtype: float32, optional: true }
+    CLIP_G_IN23: { shape: [], dtype: float32, optional: true }
+    CLIP_G_IN24: { shape: [], dtype: float32, optional: true }
+    CLIP_G_IN25: { shape: [], dtype: float32, optional: true }
+    CLIP_G_IN26: { shape: [], dtype: float32, optional: true }
+    CLIP_G_IN27: { shape: [], dtype: float32, optional: true }
+    CLIP_G_IN28: { shape: [], dtype: float32, optional: true }
+    CLIP_G_IN29: { shape: [], dtype: float32, optional: true }
+    CLIP_G_IN30: { shape: [], dtype: float32, optional: true }
+    CLIP_G_IN31: { shape: [], dtype: float32, optional: true }
+    CLIP_G_LN_FINAL: { shape: [], dtype: float32, optional: true }
+    CLIP_G_TEXT_PROJECTION: { shape: [], dtype: float32, optional: true }
+    CLIP_G_EMBEDDING: { shape: [], dtype: float32, optional: true }
+    CLIP_G_ELSE: { shape: [], dtype: float32, optional: true }
+
+  vae:
+    VAE_ENCODER_IN: { shape: [], dtype: float32, optional: true }
+    VAE_ENCODER_DOWN: { shape: [], dtype: float32, optional: true }
+    VAE_ENCODER_MID: { shape: [], dtype: float32, optional: true }
+    VAE_ENCODER_OUT: { shape: [], dtype: float32, optional: true }
+    VAE_QUANT: { shape: [], dtype: float32, optional: true }
+    VAE_DECODER_IN: { shape: [], dtype: float32, optional: true }
+    VAE_DECODER_MID: { shape: [], dtype: float32, optional: true }
+    VAE_DECODER_UP: { shape: [], dtype: float32, optional: true }
+    VAE_DECODER_OUT: { shape: [], dtype: float32, optional: true }
+    VAE_ELSE: { shape: [], dtype: float32, optional: true }

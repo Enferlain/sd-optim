@@ -250,8 +250,8 @@ class ComfyUIAdapter(BackendAdapter):
                 inputs["zsnr"] = payload["zsnr"]
 
         # 4. Inject Sampler Settings (Standard KSampler)
-        # Note: If you use custom samplers (SamplerCustom), these won't be found,
-        # protecting your custom JSON settings from being overwritten.
+        # Note: We intentionally keep this limited to KSampler variants so custom
+        # sampler node settings remain workflow-defined unless explicitly supported.
         samplers = find_nodes(["KSampler", "KSamplerAdvanced"])
         if samplers:
             nid = samplers[0]
@@ -276,10 +276,14 @@ class ComfyUIAdapter(BackendAdapter):
             elif "seed" in inputs:
                 inputs["seed"] = seed
 
-            # 5. Trace Prompts from Sampler
+        # 5. Trace prompt links from sampler nodes.
+        # SamplerCustom exposes the same positive/negative links as KSampler, so
+        # text injection should support all of them.
+        prompt_sampler_nodes = find_nodes(["KSampler", "KSamplerAdvanced", "SamplerCustom"])
+        for nid in prompt_sampler_nodes:
+            inputs = workflow[nid]["inputs"]
             if "prompt" in payload and "positive" in inputs:
                 self._inject_text(workflow, inputs["positive"], payload["prompt"])
-
             if "negative_prompt" in payload and "negative" in inputs:
                 self._inject_text(workflow, inputs["negative"], payload["negative_prompt"])
 

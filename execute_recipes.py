@@ -9,9 +9,7 @@ import re
 # --- Configuration Section (Option 1: Hardcoded) ---
 # Easier to start, harder to change without editing code
 MERGE_DEVICE = "cuda"  # "cpu" or "cuda"
-MERGE_DTYPE = (
-    torch.float32
-)  # torch.float16, torch.bfloat16, torch.float32, torch.float64
+MERGE_DTYPE = torch.float32  # torch.float16, torch.bfloat16, torch.float32, torch.float64
 OUTPUT_DTYPE = torch.bfloat16
 THREADS = 4
 ENABLE_CACHING = True  # Enable caching for merge operations
@@ -23,14 +21,14 @@ DEFAULT_CUSTOM_CONFIGS_DIR = PROJECT_ROOT / "sd_optim" / "model_configs"
 DEFAULT_CUSTOM_CONVERSION_DIR = PROJECT_ROOT / "sd_optim" / "model_configs"
 # Directory where your models (.safetensors) are generally located
 # Needed for resolving relative paths in recipes
-DEFAULT_MODELS_BASE_DIR = Path(
-    "D:/stable-diffusion-webui-reforge/models/Stable-diffusion"
-)  # Example absolute path
+DEFAULT_MODELS_BASE_DIR = Path("D:/stable-diffusion-webui-reforge/models/Stable-diffusion")  # Example absolute path
 
 # --- NEW: Fallback Model Setting ---
 # Set to None or "" to disable fallback
 # Use path relative to DEFAULT_MODELS_BASE_DIR or an absolute path
-FALLBACK_MODEL_PATH = "D:/stable-diffusion-webui-reforge/models/Stable-diffusion/2182048-62.safetensors"  # <<< ADD YOUR FALLBACK MODEL PATH HERE
+FALLBACK_MODEL_PATH = (
+    "D:/stable-diffusion-webui-reforge/models/Stable-diffusion/2182048-62.safetensors"  # <<< ADD YOUR FALLBACK MODEL PATH HERE
+)
 
 # --- Configuration Section (Option 2: Simple YAML config like 'exec_config.yaml') ---
 # More flexible
@@ -52,9 +50,7 @@ FALLBACK_MODEL_PATH = "D:/stable-diffusion-webui-reforge/models/Stable-diffusion
 #     exit()
 
 # Configure logging
-logging.basicConfig(
-    level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s"
-)
+logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger("execute_recipe")
 
 
@@ -72,9 +68,7 @@ def main():
 
     # 2. Prompt for Recipe Directory
     while True:
-        recipe_dir_str = input(
-            "Enter the directory containing your .mecha recipe files: "
-        )
+        recipe_dir_str = input("Enter the directory containing your .mecha recipe files: ")
         recipe_dir = Path(recipe_dir_str).resolve()
         if recipe_dir.is_dir():
             break
@@ -91,9 +85,7 @@ def main():
                 return int(match.group(1))
             return 0  # fallback for files that don't match the pattern
 
-        recipes = sorted(
-            [f for f in recipe_dir.glob("*.mecha")], key=numerical_sort_key
-        )
+        recipes = sorted([f for f in recipe_dir.glob("*.mecha")], key=numerical_sort_key)
         if not recipes:
             logger.error(f"No .mecha files found in {recipe_dir}")
             return
@@ -111,9 +103,7 @@ def main():
 
     # 4. Prompt for Selection
     while True:
-        selection_str = input(
-            "Enter indices of recipes to merge (e.g., '0, 2-4, 6', or 'all'): "
-        )
+        selection_str = input("Enter indices of recipes to merge (e.g., '0, 2-4, 6', or 'all'): ")
         selected_indices = set()
         try:
             if selection_str.lower() == "all":
@@ -153,9 +143,7 @@ def main():
     # 6. Determine Models Base Directory (from config section)
     models_base_dir = DEFAULT_MODELS_BASE_DIR  # Or path from exec_cfg
     if not models_base_dir.is_dir():
-        logger.warning(
-            f"Models base directory '{models_base_dir}' not found. Relative paths in recipes might fail."
-        )
+        logger.warning(f"Models base directory '{models_base_dir}' not found. Relative paths in recipes might fail.")
         effective_model_dirs = []
     else:
         effective_model_dirs = [models_base_dir]
@@ -168,30 +156,18 @@ def main():
         if not fallback_full_path.is_absolute():
             resolved_fb_path = DEFAULT_MODELS_BASE_DIR / fallback_full_path
             if resolved_fb_path.exists():
-                fallback_model_node = sd_mecha.model(
-                    FALLBACK_MODEL_PATH
-                )  # Use relative path for sd_mecha
+                fallback_model_node = sd_mecha.model(FALLBACK_MODEL_PATH)  # Use relative path for sd_mecha
                 logger.info(f"Using fallback model (relative): {FALLBACK_MODEL_PATH}")
-            elif (
-                fallback_full_path.exists()
-            ):  # Check if it exists directly (maybe user gave abs path?)
-                fallback_model_node = sd_mecha.model(
-                    str(fallback_full_path)
-                )  # Use absolute path string
+            elif fallback_full_path.exists():  # Check if it exists directly (maybe user gave abs path?)
+                fallback_model_node = sd_mecha.model(str(fallback_full_path))  # Use absolute path string
                 logger.info(f"Using fallback model (absolute): {fallback_full_path}")
             else:
-                logger.warning(
-                    f"Fallback model path not found: {FALLBACK_MODEL_PATH} or {resolved_fb_path}. Proceeding without fallback."
-                )
+                logger.warning(f"Fallback model path not found: {FALLBACK_MODEL_PATH} or {resolved_fb_path}. Proceeding without fallback.")
         elif fallback_full_path.exists():  # If it was absolute path from the start
-            fallback_model_node = sd_mecha.model(
-                str(fallback_full_path)
-            )  # Use absolute path string
+            fallback_model_node = sd_mecha.model(str(fallback_full_path))  # Use absolute path string
             logger.info(f"Using fallback model (absolute): {fallback_full_path}")
         else:
-            logger.warning(
-                f"Fallback model path not found: {FALLBACK_MODEL_PATH}. Proceeding without fallback."
-            )
+            logger.warning(f"Fallback model path not found: {FALLBACK_MODEL_PATH}. Proceeding without fallback.")
     else:
         logger.info("No fallback model specified.")
     # --- End Fallback Prep ---
@@ -204,9 +180,7 @@ def main():
     selected_recipes = sorted([recipes[i] for i in selected_indices])
 
     for i, recipe_path in enumerate(selected_recipes):
-        logger.info(
-            f"\nProcessing [{i + 1}/{len(selected_recipes)}]: {recipe_path.name}"
-        )
+        logger.info(f"\nProcessing [{i + 1}/{len(selected_recipes)}]: {recipe_path.name}")
         output_filename = output_dir / f"{recipe_path.stem}_merged.safetensors"
 
         try:
@@ -216,25 +190,14 @@ def main():
             if ENABLE_CACHING and shared_cache is not None:
                 recipe_node = recipe_node.set_cache(shared_cache)
 
-            if (
-                isinstance(recipe_node, sd_mecha.recipe_nodes.MergeRecipeNode)
-                and recipe_node.merge_method.identifier == "pop_lora"
-            ):
+            if isinstance(recipe_node, sd_mecha.recipe_nodes.MergeRecipeNode) and recipe_node.merge_method.identifier == "pop_lora":
                 alpha_node_from_recipe = recipe_node.kwargs.get("alpha")
                 rank_ratio_node_from_recipe = recipe_node.kwargs.get("rank_ratio")
-                logger.info(
-                    f"Deserialized alpha_node: {type(alpha_node_from_recipe)}, {alpha_node_from_recipe}"
-                )
-                logger.info(
-                    f"Deserialized rank_ratio_node: {type(rank_ratio_node_from_recipe)}, {rank_ratio_node_from_recipe}"
-                )
+                logger.info(f"Deserialized alpha_node: {type(alpha_node_from_recipe)}, {alpha_node_from_recipe}")
+                logger.info(f"Deserialized rank_ratio_node: {type(rank_ratio_node_from_recipe)}, {rank_ratio_node_from_recipe}")
                 # You could try to see their structure more deeply if they are MergeRecipeNodes themselves
-                if isinstance(
-                    alpha_node_from_recipe, sd_mecha.recipe_nodes.MergeRecipeNode
-                ):
-                    logger.info(
-                        f"  Alpha node method: {alpha_node_from_recipe.merge_method.identifier}"
-                    )
+                if isinstance(alpha_node_from_recipe, sd_mecha.recipe_nodes.MergeRecipeNode):
+                    logger.info(f"  Alpha node method: {alpha_node_from_recipe.merge_method.identifier}")
                     logger.info(f"  Alpha node args: {alpha_node_from_recipe.args}")
                     logger.info(f"  Alpha node kwargs: {alpha_node_from_recipe.kwargs}")
             # --- End inspection ---
@@ -260,9 +223,7 @@ def main():
                 logger.info(f"Cache contains {len(shared_cache)} entries")
 
         except Exception as e:
-            logger.error(
-                f"Failed to merge recipe {recipe_path.name}: {e}", exc_info=True
-            )
+            logger.error(f"Failed to merge recipe {recipe_path.name}: {e}", exc_info=True)
 
     logger.info("\n--- All selected merges finished. ---")
 

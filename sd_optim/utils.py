@@ -877,20 +877,21 @@ from sd_mecha.extensions import merge_methods
 # -----------------------------------------------------------------
 def setup_custom_configs():
     """Parses and registers the embedded YAML configs with sd-mecha."""
+    logger = logging.getLogger(__name__)
     embedded_yamls = {embedded_yamls_str}
     if not embedded_yamls:
-        print("No custom YAML configs to register.")
+        logger.info("No custom YAML configs to register.")
         return
     for name, yaml_str in embedded_yamls.items():
         if not name or not yaml_str: continue
-        print(f"Registering custom config: {{name}}")
+        logger.info("Registering custom config: %s", name)
         try:
             config_data = yaml.safe_load(yaml_str)
             sd_mecha.extensions.model_configs.register_aux(
                 sd_mecha.extensions.model_configs.ModelConfigImpl(**config_data)
             )
         except Exception as e:
-            print(f"  ERROR: Could not register config '{{name}}': {{e}}")
+            logger.exception("Could not register config '%s': %s", name, e)
             
 # Run setup
 setup_custom_configs()
@@ -917,6 +918,7 @@ def get_recipe() -> RecipeNode:
 #  Main Execution Blocl
 # -----------------------------------------------------------------
 def main():
+    logger = logging.getLogger(__name__)
     # Configuration from the original run
     MODELS_DIR = Path(r"{models_dir_str}")
     OUTPUT_FILENAME = "{output_filename.replace(".safetensors", "_external.safetensors")}"
@@ -927,11 +929,11 @@ def main():
     FALLBACK_MODEL_PATH = {fallback_model_path_str}
 
     # Get and execute recipe
-    print("Building recipe...")
+    logger.info("Building recipe...")
     recipe_to_run = get_recipe()
     output_path = Path(MODELS_DIR) / OUTPUT_FILENAME
 
-    print(f"Executing merge and saving to {{output_path}}...")
+    logger.info("Executing merge and saving to %s...", output_path)
     sd_mecha.merge(
         recipe=recipe_to_run,
         output=output_path,
@@ -943,7 +945,7 @@ def main():
         model_dirs=[MODELS_DIR],
         check_mandatory_keys=False,
     )
-    print("\\nMerge complete!")
+    logger.info("Merge complete.")
 
 if __name__ == "__main__":
     main()
@@ -1352,11 +1354,11 @@ def fineman(fine, isxl):
             try:
                 fines[i] = float(f)
             except ValueError:
-                print(f"Warning: Could not convert '{f}' to float. Using 0.0 instead.")
+                logger.warning("Could not convert '%s' to float. Using 0.0 instead.", f)
                 fines[i] = 0.0
         fine = fines
     elif not isinstance(fine, list):
-        print("Error: Invalid input type for 'fine'. Expected a comma-separated string or a list.")
+        logger.error("Invalid input type for 'fine'. Expected a comma-separated string or a list.")
         return None
 
     fine = [
@@ -1403,7 +1405,7 @@ def modify_state_dict(state_dict: dict, adjustments: dict, is_xl_model: bool) ->
                     device=state_dict[layer_name].device,
                 )
         else:
-            print(f"Warning: Layer '{layer_name}' not found in the state_dict.")
+            logger.warning("Layer '%s' not found in the state_dict.", layer_name)
 
     return modified_state_dict
 
@@ -1434,10 +1436,10 @@ class HotkeyListener:
         try:
             if key == HOTKEY_SWITCH_MANUAL[1] and all(k in keyboard._pressed_events for k in HOTKEY_SWITCH_MANUAL[0]):
                 self.scoring_mode.value = "manual"  # Assuming scoring_mode is a shared variable
-                print("Switching to manual scoring mode!")
+                logger.info("Switching to manual scoring mode.")
             elif key == HOTKEY_SWITCH_AUTO[1] and all(k in keyboard._pressed_events for k in HOTKEY_SWITCH_AUTO[0]):
                 self.scoring_mode.value = "automatic"
-                print("Switching to automatic scoring mode!")
+                logger.info("Switching to automatic scoring mode.")
         except AttributeError:
             pass
 

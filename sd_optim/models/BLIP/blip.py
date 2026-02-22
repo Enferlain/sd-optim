@@ -3,6 +3,7 @@
 """
 
 import warnings
+import logging
 
 warnings.filterwarnings("ignore")
 
@@ -12,6 +13,8 @@ from urllib.parse import urlparse
 from timm.models.hub import download_cached_file
 from transformers import BertTokenizer
 from .vit import VisionTransformer, interpolate_pos_embed
+
+logger = logging.getLogger(__name__)
 
 
 def init_tokenizer():
@@ -74,9 +77,14 @@ def load_checkpoint(model, url_or_filename):
     for key in model.state_dict().keys():
         if key in state_dict.keys():
             if state_dict[key].shape != model.state_dict()[key].shape:
-                print(key, ": ", state_dict[key].shape, ", ", model.state_dict()[key].shape)
+                logger.warning(
+                    "Checkpoint tensor shape mismatch for %s: %s vs %s",
+                    key,
+                    state_dict[key].shape,
+                    model.state_dict()[key].shape,
+                )
                 del state_dict[key]
 
     msg = model.load_state_dict(state_dict, strict=False)
-    print("load checkpoint from %s" % url_or_filename)
+    logger.info("Loaded checkpoint from %s", url_or_filename)
     return model, msg

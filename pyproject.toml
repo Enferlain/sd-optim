@@ -17,11 +17,12 @@ dependencies = [
   "aiohttp>=3.9.0",
   "Pillow>=10.0.0",
   "optuna>=4.7.0",
-  "transformers",
+  "transformers>=4.56.2",
   "scikit-learn",
   "scikit-image",
   "clip",
   "opencv-python-headless",
+  "pynput",
 ]
 
 [project.optional-dependencies]
@@ -50,12 +51,13 @@ merge = [
   "python-Levenshtein",
   "geoopt",
   "tensordict",
+  "ptwt>=1.0.1",
 ]
 
 # Optuna stack.
 optuna = [
   "optuna",
-  "optuna-dashboard",
+  "optuna-dashboard==0.18.0",
   "optuna-fast-fanova",
   "cmaes",
 ]
@@ -91,14 +93,10 @@ scorer-textureclean = [
   "numba>=0.62; python_version >= '3.13'",
 ]
 
-# Legacy/optional scorers that are currently commented out in scorer.py.
-scorer-hpsv3 = ["hpsv3"]
-
 # Convenience meta-extra when you explicitly want everything scorer-related.
 scorers-all = [
   "open_clip_torch",
   "timm",
-  "hpsv3",
   "aesthetic-predictor-v2-5",
   "opencv-python-headless",
   "rembg>=2.0.69,<2.0.72; python_version < '3.13'",

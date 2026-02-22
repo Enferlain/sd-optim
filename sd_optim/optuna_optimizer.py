@@ -5,12 +5,14 @@ import subprocess
 import time
 import json
 import logging
+import sys
 import optuna.visualization as vis
 import optuna
 import asyncio
+import warnings
 
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
 
 from hydra.core.hydra_config import HydraConfig
 from omegaconf import ListConfig
@@ -215,14 +217,26 @@ class OptunaOptimizer(Optimizer):
 
         elif sampler_type == "cmaes":
             # CMA-ES is good for continuous, non-linear problems
-            cmaes_kwargs = {
+            requested_restart_strategy = sampler_config.get("restart_strategy", None)
+            requested_inc_popsize = sampler_config.get("inc_popsize", None)
+
+            if requested_restart_strategy is not None or (
+                requested_inc_popsize is not None and requested_inc_popsize != -1
+            ):
+                logger.warning(
+                    "CMA-ES restarts are not supported by core Optuna (deprecated since 4.4.0; removal scheduled for 6.0.0). "
+                    "Ignoring sampler.restart_strategy=%r and sampler.inc_popsize=%r. "
+                    "If you need restart strategies, use OptunaHub's RestartCmaEsSampler.",
+                    requested_restart_strategy,
+                    requested_inc_popsize,
+                )
+
+            cmaes_kwargs: dict[str, Any] = {
                 "n_startup_trials": self.cfg.optimizer.init_points,
-                "restart_strategy": sampler_config.get("restart_strategy", None),
                 "sigma0": sampler_config.get("sigma0", None),
                 "warn_independent_sampling": sampler_config.get("warn_independent_sampling", True),
                 # --- ADDED PARAMETERS ---
                 "popsize": sampler_config.get("popsize", None),  # Population size
-                "inc_popsize": sampler_config.get("inc_popsize", 2),  # Population increase factor for restarts
                 "use_separable_cma": sampler_config.get("use_separable_cma", False),  # For high dimensions
                 "lr_adapt": sampler_config.get("lr_adapt", False),  # Learning rate adaptation
                 # --- NEWLY ADDED PARAMETERS from Optuna documentation ---
@@ -232,7 +246,10 @@ class OptunaOptimizer(Optimizer):
                 # Note: source_trials is not configurable from YAML as it requires actual FrozenTrial objects
                 **sampler_kwargs,
             }
-            sampler = CmaEsSampler(**cmaes_kwargs)
+
+            with warnings.catch_warnings():
+                warnings.filterwarnings("ignore", message=r".*use_separable_cma.*", category=Warning)
+                sampler = CmaEsSampler(**cmaes_kwargs)
             logger.info(f"Using CMA-ES Sampler with options: {cmaes_kwargs}")
 
         elif sampler_type == "gp":
@@ -654,7 +671,13 @@ class OptunaOptimizer(Optimizer):
             result = asyncio.run(self.sd_target_function(params))
 
             # --- NEW: Capture and store individual scorer results --- TODO: correct?
-            if hasattr(self.scorer, "last_scorer_results") and self.scorer.last_scorer_results:
+            trial_scorer_summary = getattr(self, "last_trial_scorer_summary", {})
+            if isinstance(trial_scorer_summary, dict) and isinstance(trial_scorer_summary.get("aggregate"), dict):
+                trial.set_user_attr("scorer_results", trial_scorer_summary.get("aggregate", {}))
+                trial.set_user_attr("scorer_results_payloads", trial_scorer_summary.get("payloads", []))
+                logger.debug(f"Stored aggregated scorer summary for trial {trial.number}")
+            elif hasattr(self.scorer, "last_scorer_results") and self.scorer.last_scorer_results:
+                # Backward-compatible fallback: keep previous behavior if summary was not produced.
                 trial.set_user_attr("scorer_results", self.scorer.last_scorer_results)
                 logger.debug(f"Stored scorer_results for trial {trial.number}")
 
@@ -707,6 +730,7 @@ class OptunaOptimizer(Optimizer):
                 "elapsed_seconds": elapsed_time,
             },
             "scorer_results": trial.user_attrs.get("scorer_results", {}),  # Capture from user_attrs
+            "scorer_results_payloads": trial.user_attrs.get("scorer_results_payloads", []),
         }
 
         # Write to the JSON logger
@@ -1137,7 +1161,7 @@ class OptunaOptimizer(Optimizer):
             logger.error(f"Error generating visualization report: {e}", exc_info=True)
 
     # --- New Method ---
-    def start_dashboard_background(self, port=8080):
+    def start_dashboard_background(self, port: int = 8080) -> Optional[subprocess.Popen]:
         """Determines DB path and starts Optuna Dashboard in background."""
         logger.info("Preparing to launch Optuna Dashboard in background...")
         storage_uri = None
@@ -1191,20 +1215,20 @@ class OptunaOptimizer(Optimizer):
 
 
 # --- Helper Function (can be outside the class) ---
-def run_dashboard_in_background(storage_uri, port):
+def run_dashboard_in_background(storage_uri: str, port: int) -> Optional[subprocess.Popen]:
     """Run the Optuna dashboard as a separate process that won't block."""
-    print(f"\n{'=' * 80}")
-    print("LAUNCHING OPTUNA DASHBOARD")
-    print(f"{'=' * 80}")
-    print(f"Access the dashboard at: http://localhost:{port}")
-    print("The dashboard will run in the background.")
-    print("(Check console running sd_optim.py for dashboard process status/errors on exit)")
-    print(f"{'=' * 80}\n")
+    logger.info("=" * 80)
+    logger.info("LAUNCHING OPTUNA DASHBOARD")
+    logger.info("=" * 80)
+    logger.info("Access the dashboard at: http://localhost:%s", port)
+    logger.info("The dashboard will run in the background.")
+    logger.info("Check sd_optim.log for dashboard process status/errors on exit.")
+    logger.info("=" * 80)
     # Small delay to potentially let prints appear before subprocess output might start
     time.sleep(0.5)
 
-    # Command list for Popen
-    cmd = ["optuna-dashboard", storage_uri, "--port", str(port)]
+    # Always run the dashboard from the same interpreter/environment as sd_optim.
+    cmd = [sys.executable, "-m", "optuna_dashboard", storage_uri, "--port", str(port)]
 
     try:
         # Launch without waiting, pipe output to avoid cluttering main console
@@ -1220,13 +1244,40 @@ def run_dashboard_in_background(storage_uri, port):
             text=True,
             creationflags=creationflags,  # Prevent console window on Windows
         )
-        logger.info(f"Launched background dashboard process (PID: {dashboard_process.pid})")
+        time.sleep(1.0)
+        return_code = dashboard_process.poll()
+        if return_code is not None:
+            stderr_output = ""
+            stdout_output = ""
+            try:
+                stdout_output, stderr_output = dashboard_process.communicate(timeout=0.2)
+            except Exception:
+                pass
+            logger.error(
+                "Optuna dashboard exited immediately (return code %s). Command: %s",
+                return_code,
+                " ".join(cmd),
+            )
+            if stderr_output:
+                logger.error("Dashboard stderr: %s", stderr_output.strip())
+            if stdout_output:
+                logger.error("Dashboard stdout: %s", stdout_output.strip())
+            logger.error("Optuna dashboard exited immediately. Check sd_optim.log for details.")
+            return None
+
+        logger.info(
+            "Launched background dashboard process (PID: %s) with command: %s",
+            dashboard_process.pid,
+            " ".join(cmd),
+        )
         return dashboard_process
     except FileNotFoundError:
-        logger.error(f"Could not find '{cmd[0]}' command. Is optuna-dashboard installed and in PATH?")
-        print(f"ERROR: Failed to launch dashboard - command '{cmd[0]}' not found.")
+        logger.error(
+            "Could not launch dashboard with '%s'. Is optuna-dashboard installed in this environment?",
+            " ".join(cmd),
+        )
+        logger.error("Failed to launch dashboard: optuna-dashboard module not found in current environment.")
         return None
     except Exception as e:
         logger.error(f"Failed to launch dashboard process: {e}", exc_info=True)
-        print(f"ERROR: Failed to launch dashboard process: {e}")
         return None

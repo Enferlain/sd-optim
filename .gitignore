@@ -162,3 +162,6 @@ TEST.py
 *.7z
 *.png
 analysis_*/
+analysis_output/
+conductor/
+.hf-cache

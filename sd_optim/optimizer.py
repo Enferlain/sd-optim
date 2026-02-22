@@ -16,7 +16,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 from hydra.core.hydra_config import HydraConfig
-from omegaconf import DictConfig
+from omegaconf import DictConfig, OmegaConf
 from PIL import Image, PngImagePlugin
 from hydra import utils as hydra_utils
 
@@ -29,6 +29,7 @@ from sd_optim.generator import Generator
 from sd_optim.merger import Merger
 from sd_optim.prompter import Prompter
 from sd_optim.scorer import AestheticScorer
+from sd_optim.trial_scorer_summary import build_trial_scorer_summary
 
 logger = logging.getLogger(__name__)
 
@@ -36,6 +37,46 @@ logger = logging.getLogger(__name__)
 logging.getLogger("PIL.PngImagePlugin").setLevel(logging.WARNING)
 
 PathT = os.PathLike
+
+
+def _compute_scorer_setup_fingerprint(cfg: DictConfig) -> str:
+    """
+    Fingerprint the scoring objective so cached `final_score` is only reused when
+    scorer configuration is effectively identical.
+    """
+    cfg_dict = OmegaConf.to_container(cfg, resolve=True)
+    if not isinstance(cfg_dict, dict):
+        cfg_dict = {}
+
+    scorer_method_raw = cfg_dict.get("scorer_method", []) or []
+    scorer_method = [str(s).lower() for s in scorer_method_raw]
+
+    scorer_weight_raw = cfg_dict.get("scorer_weight", {}) or {}
+    if not isinstance(scorer_weight_raw, dict):
+        scorer_weight_raw = {}
+    scorer_weight = {name: scorer_weight_raw.get(name, scorer_weight_raw.get(name.lower(), 1.0)) for name in scorer_method}
+
+    scorer_filters_raw = cfg_dict.get("scorer_filters", {}) or {}
+    if not isinstance(scorer_filters_raw, dict):
+        scorer_filters_raw = {}
+    scorer_filters = {name: scorer_filters_raw.get(name, scorer_filters_raw.get(name.lower(), {})) for name in scorer_method}
+
+    per_scorer_cfg: dict[str, dict[str, Any]] = {}
+    for name in scorer_method:
+        prefix = f"{name}_"
+        per_scorer_cfg[name] = {k: v for k, v in cfg_dict.items() if isinstance(k, str) and k.lower().startswith(prefix)}
+
+    fingerprint_input = {
+        "v": 1,
+        "scorer_method": scorer_method,
+        "scorer_average_type": cfg_dict.get("scorer_average_type"),
+        "scorer_weight": scorer_weight,
+        "scorer_filters": scorer_filters,
+        "per_scorer_cfg": per_scorer_cfg,
+        "scorer_model_dir": cfg_dict.get("scorer_model_dir"),
+    }
+    recipe_json = json.dumps(fingerprint_input, sort_keys=True, separators=(",", ":"), default=str)
+    return hashlib.sha256(recipe_json.encode("utf-8")).hexdigest()
 
 
 @dataclass
@@ -46,6 +87,7 @@ class Optimizer:
     optimizer_pbounds: dict[str, tuple[float, float] | float | int | list] = field(default_factory=dict, init=False)
     optimization_start_time: float | None = None  # Add start time tracker
     completed_trials: int = 0  # To track trials from resumed studies
+    scorer_setup_fp: str = field(default="", init=False)
 
     def __post_init__(self) -> None:
         # --- STAGE 1: VALIDATE THE ENTIRE CONFIG FIRST ---
@@ -121,10 +163,12 @@ class Optimizer:
         self.setup_parameter_space()
         self.generator = Generator(self.cfg.url, self.cfg.batch_size, self.cfg.webui)
         self.scorer = AestheticScorer(self.cfg)
+        self.scorer_setup_fp = _compute_scorer_setup_fingerprint(self.cfg)
         self.prompter = Prompter(self.cfg)
         self.iteration = -1
         self.best_model_path = None
         self.cache = {}
+        self.last_trial_scorer_summary: dict[str, Any] = {"aggregate": {}, "payloads": []}
 
         # --- REUSE CACHE SETUP ---
         # Maps image hash -> {full_path, scores, final_score}
@@ -351,6 +395,7 @@ class Optimizer:
 
     async def sd_target_function(self, params: dict[str, Any]) -> float | None:
         self.iteration += 1
+        self.last_trial_scorer_summary = {"aggregate": {}, "payloads": []}
         # Adjust iteration number for resumed runs ---
         effective_iteration = self.iteration + self.completed_trials
         iteration_start_time = time.time()
@@ -375,6 +420,7 @@ class Optimizer:
 
         # Determine current scorer set for validation
         current_scorers = set(s.lower() for s in self.cfg.scorer_method)
+        scorer_setup_fp = self.scorer_setup_fp
 
         # Calculate hashes and check cache for all payloads
         cache_results = []  # list of (hash, cached_data, tier) tuples
@@ -387,7 +433,13 @@ class Optimizer:
             if cached and cached.get("final_score") is not None:
                 # Hash found — check if scorers match
                 cached_scorers = set(cached.get("scores", {}).keys()) - {"combined"}
-                if cached_scorers and cached_scorers == current_scorers:
+                cached_fp = cached.get("scorer_setup_fp")
+                if (
+                    cached_scorers
+                    and cached_scorers == current_scorers
+                    and isinstance(cached_fp, str)
+                    and cached_fp == scorer_setup_fp
+                ):
                     cache_results.append((img_hash, cached, payload, "full_hit"))
                 elif cached.get("full_path") and Path(cached["full_path"]).exists():
                     # Image exists but scorer data doesn't match — need re-scoring
@@ -409,6 +461,22 @@ class Optimizer:
             cached_scores = [c[1]["final_score"] for c in cache_results]
             cached_weights = [c[2].get("score_weight", 1.0) for c in cache_results]
             avg_score = self.scorer.average_calc(cached_scores, cached_weights, self.cfg.img_average_type)
+            payload_entries: list[dict[str, Any]] = []
+            for idx, (_, cached, payload, _) in enumerate(cache_results):
+                payload_name = target_paths[idx] if idx < len(target_paths) else f"payload_{idx}"
+                payload_entries.append(
+                    {
+                        "name": payload_name,
+                        "weight": payload.get("score_weight", 1.0),
+                        "scores": dict(cached.get("scores", {})),
+                        "combined": cached.get("final_score"),
+                    }
+                )
+            self.last_trial_scorer_summary = build_trial_scorer_summary(
+                payload_entries,
+                avg_score,
+                lambda values, weights: self.scorer.average_calc(values, weights, self.cfg.img_average_type),
+            )
             elapsed = time.time() - iteration_start_time
             logger.info(f"CACHE HIT: All {len(cached_scores)} images reused. Score: {avg_score:.4f} ({elapsed:.2f}s)")
             return avg_score
@@ -421,11 +489,21 @@ class Optimizer:
             )
             rescored_scores = []
             rescored_weights = []
-            for img_hash, cached, payload, tier in cache_results:
+            payload_entries: list[dict[str, Any]] = []
+            for idx, (img_hash, cached, payload, tier) in enumerate(cache_results):
+                payload_name = target_paths[idx] if idx < len(target_paths) else f"payload_{idx}"
                 if tier == "full_hit":
                     # This one already has matching scores
                     rescored_scores.append(cached["final_score"])
                     rescored_weights.append(payload.get("score_weight", 1.0))
+                    payload_entries.append(
+                        {
+                            "name": payload_name,
+                            "weight": payload.get("score_weight", 1.0),
+                            "scores": dict(cached.get("scores", {})),
+                            "combined": cached.get("final_score"),
+                        }
+                    )
                     continue
 
                 # Load image from disk and re-score
@@ -435,7 +513,7 @@ class Optimizer:
                     individual_score = await self.scorer.score(
                         image,
                         prompt_for_scorer,
-                        name=target_paths[0] if target_paths else "rescore",
+                        name=payload_name,
                     )
                     rescored_scores.append(individual_score)
                     rescored_weights.append(payload.get("score_weight", 1.0))
@@ -445,6 +523,7 @@ class Optimizer:
                     scorer_results["combined"] = individual_score
                     cached["scores"] = scorer_results
                     cached["final_score"] = individual_score
+                    cached["scorer_setup_fp"] = scorer_setup_fp
 
                     # Update manifest for this run
                     try:
@@ -453,6 +532,7 @@ class Optimizer:
                             "path": str(Path(cached["full_path"]).relative_to(output_dir)),
                             "scores": scorer_results,
                             "final_score": individual_score,
+                            "scorer_setup_fp": scorer_setup_fp,
                         }
                     except Exception:
                         # Image from different run dir — store absolute
@@ -460,8 +540,17 @@ class Optimizer:
                             "path": str(cached["full_path"]),
                             "scores": scorer_results,
                             "final_score": individual_score,
+                            "scorer_setup_fp": scorer_setup_fp,
                         }
 
+                    payload_entries.append(
+                        {
+                            "name": payload_name,
+                            "weight": payload.get("score_weight", 1.0),
+                            "scores": scorer_results,
+                            "combined": individual_score,
+                        }
+                    )
                     logger.info(f"  Re-scored: {individual_score:.4f}")
                     image.close()
                 except Exception as e:
@@ -471,6 +560,11 @@ class Optimizer:
 
             if overall_tier == "partial_hit" and rescored_scores:
                 avg_score = self.scorer.average_calc(rescored_scores, rescored_weights, self.cfg.img_average_type)
+                self.last_trial_scorer_summary = build_trial_scorer_summary(
+                    payload_entries,
+                    avg_score,
+                    lambda values, weights: self.scorer.average_calc(values, weights, self.cfg.img_average_type),
+                )
                 elapsed = time.time() - iteration_start_time
                 logger.info(f"PARTIAL HIT complete: Score: {avg_score:.4f} (re-scored in {elapsed:.2f}s, skipped merge+gen)")
                 self._save_run_manifest()
@@ -572,6 +666,7 @@ class Optimizer:
             start_gen_score_time = time.time()
             scores = []
             norm_weights = []
+            payload_entries = []
             # NOTE: payloads and target_paths already rendered in early cache check section
 
             # Determine queue size: number of concurrent generators + maybe 1 buffer slot
@@ -661,14 +756,27 @@ class Optimizer:
                         logger.debug(f"Scoring index {i} took {score_duration:.2f}s.")
 
                         weight = current_payload.get("score_weight", 1.0)
+                        scorer_results = dict(self.scorer.last_scorer_results)
                         scores.append(individual_score)
                         norm_weights.append(weight)
-                        print(f"  Image {i + 1}/{total_expected_images} scored: {individual_score:.4f} (Weight: {weight})")
+                        payload_entries.append(
+                            {
+                                "name": current_target_base_name,
+                                "weight": weight,
+                                "scores": scorer_results,
+                                "combined": individual_score,
+                            }
+                        )
+                        logger.info(
+                            "Image %s/%s scored: %.4f (Weight: %.3f)",
+                            i + 1,
+                            total_expected_images,
+                            individual_score,
+                            weight,
+                        )
 
                         if self.cfg.save_imgs:
                             effective_iteration = self.iteration + self.completed_trials
-                            # Use individual scorer results from last score() call
-                            scorer_results = dict(self.scorer.last_scorer_results)
                             scorer_results["combined"] = individual_score
                             self.save_img(
                                 image,
@@ -735,6 +843,12 @@ class Optimizer:
             except Exception as e_avg:
                 logger.error(f"Error calculating average score: {e_avg}", exc_info=True)
                 raise RuntimeError(f"Score calculation error: {e_avg}")
+
+        self.last_trial_scorer_summary = build_trial_scorer_summary(
+            payload_entries,
+            avg_score,
+            lambda values, weights: self.scorer.average_calc(values, weights, self.cfg.img_average_type),
+        )
 
         # --- Update Best Score & Logging ---
         self.update_best_score(params, avg_score)
@@ -808,6 +922,7 @@ class Optimizer:
                     "path": str(img_path.relative_to(output_dir)),
                     "scores": scorer_results or {"combined": score},
                     "final_score": score,
+                    "scorer_setup_fp": self.scorer_setup_fp,
                 }
             except Exception:
                 pass  # Non-critical, continue saving

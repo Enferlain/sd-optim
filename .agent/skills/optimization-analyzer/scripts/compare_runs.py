@@ -1,6 +1,5 @@
 import json
 import argparse
-import sys
 from pathlib import Path
 import sqlite3
 import statistics
@@ -8,7 +7,7 @@ import statistics
 
 def get_stats_from_jsonl(file_path):
     trials = []
-    with open(file_path, "r", encoding="utf-8") as f:
+    with open(file_path, encoding="utf-8") as f:
         for line in f:
             if line.strip():
                 try:
@@ -16,11 +15,7 @@ def get_stats_from_jsonl(file_path):
                 except json.JSONDecodeError:
                     continue
 
-    complete = [
-        t
-        for t in trials
-        if t.get("state") == "COMPLETE" and t.get("target") is not None
-    ]
+    complete = [t for t in trials if t.get("state") == "COMPLETE" and t.get("target") is not None]
     if not complete:
         return None
 
@@ -43,9 +38,7 @@ def get_stats_from_db(db_path):
     cursor = conn.cursor()
 
     try:
-        cursor.execute(
-            "SELECT study_name, study_id FROM studies ORDER BY study_id DESC LIMIT 1"
-        )
+        cursor.execute("SELECT study_name, study_id FROM studies ORDER BY study_id DESC LIMIT 1")
         row = cursor.fetchone()
         if not row:
             return None
@@ -117,9 +110,7 @@ def main():
     print("-" * 80)
 
     for r in results:
-        print(
-            f"{r['name'][:40]:<40} | {r['best']:<8.4f} | {r['avg']:<8.4f} | {r['stdev']:<8.4f}"
-        )
+        print(f"{r['name'][:40]:<40} | {r['best']:<8.4f} | {r['avg']:<8.4f} | {r['stdev']:<8.4f}")
 
     print("=" * 80 + "\n")
 

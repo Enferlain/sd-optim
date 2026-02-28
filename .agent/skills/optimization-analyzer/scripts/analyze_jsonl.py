@@ -1,6 +1,5 @@
 import json
 import argparse
-import sys
 from pathlib import Path
 
 
@@ -11,7 +10,7 @@ def analyze_jsonl(file_path):
         return
 
     trials = []
-    with open(path, "r", encoding="utf-8") as f:
+    with open(path, encoding="utf-8") as f:
         for line in f:
             if line.strip():
                 try:
@@ -41,9 +40,7 @@ def analyze_jsonl(file_path):
 
     print(f"Analysis of {path.name}:")
     print(f"  Total Trials: {len(trials)} ({len(complete_trials)} complete)")
-    print(
-        f"  Best Score: {best_trial.get('target'):.4f} (Trial #{best_trial.get('trial_number')})"
-    )
+    print(f"  Best Score: {best_trial.get('target'):.4f} (Trial #{best_trial.get('trial_number')})")
     print(f"  Average Score: {avg_score:.4f}")
     print(f"  Total Time: {total_time:.2f}s (Avg: {avg_trial_time:.2f}s/trial)")
     print("\nBest Parameters:")

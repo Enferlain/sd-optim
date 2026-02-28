@@ -161,7 +161,7 @@ TEST.py
 # --- etc ---
 *.7z
 *.png
-analysis_*/
+!analysis_*/
 analysis_output/
 conductor/
 .hf-cache

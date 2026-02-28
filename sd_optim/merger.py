@@ -868,6 +868,10 @@ class Merger:
         recipe_path = Path(recipe_cfg.recipe_path)
         original_recipe_text = recipe_path.read_text(encoding="utf-8")
 
+        # Preprocess: insert conversion lines for LoRA/LyCORIS models so that
+        # sd_mecha's merge-space validation passes (e.g., delta_widen expects delta).
+        # original_recipe_text = utils.preprocess_recipe_merge_spaces(original_recipe_text)
+
         # --- Step 1: VALIDATION (The "Thinker" validates its own plan) ---
         target_node_ref = recipe_cfg.target_nodes
         target_node_idx = int(target_node_ref.strip("&"))
@@ -900,14 +904,14 @@ class Merger:
         new_param_nodes = self._prepare_param_recipe_args(params, param_info, target_node.merge_method)
 
         # --- Step 3: SERIALIZATION (Call a simple utility) ---
-        new_node_strings, param_to_final_idx = utils.serialize_nodes_for_rewrite(new_param_nodes)
+        new_node_strings, param_to_replacement = utils.serialize_nodes_for_rewrite(new_param_nodes)
 
         # --- Step 4: REWRITING (Call the main "doer" utility) ---
         final_recipe_text = utils.rewrite_recipe_text(
             original_recipe_text=original_recipe_text,
             target_node_idx=target_node_idx,
             new_node_strings=new_node_strings,
-            param_to_final_idx=param_to_final_idx,
+            param_to_replacement=param_to_replacement,
         )
 
         # --- Step 5: EXECUTION ---

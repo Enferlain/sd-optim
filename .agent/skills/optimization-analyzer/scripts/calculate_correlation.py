@@ -26,18 +26,14 @@ def calculate_pearson(x, y):
 
 def get_data_from_jsonl(file_path):
     trials = []
-    with open(file_path, "r", encoding="utf-8") as f:
+    with open(file_path, encoding="utf-8") as f:
         for line in f:
             if line.strip():
                 try:
                     trials.append(json.loads(line))
                 except json.JSONDecodeError:
                     continue
-    return [
-        t
-        for t in trials
-        if t.get("state") == "COMPLETE" and t.get("target") is not None
-    ]
+    return [t for t in trials if t.get("state") == "COMPLETE" and t.get("target") is not None]
 
 
 def get_data_from_db(db_path, study_name=None):
@@ -47,9 +43,7 @@ def get_data_from_db(db_path, study_name=None):
 
     try:
         if not study_name:
-            cursor.execute(
-                "SELECT study_name FROM studies ORDER BY study_id DESC LIMIT 1"
-            )
+            cursor.execute("SELECT study_name FROM studies ORDER BY study_id DESC LIMIT 1")
             row = cursor.fetchone()
             if not row:
                 return []
@@ -57,9 +51,7 @@ def get_data_from_db(db_path, study_name=None):
             print(f"Using latest study: {study_name}")
 
         # Get the study_id
-        cursor.execute(
-            "SELECT study_id FROM studies WHERE study_name = ?", (study_name,)
-        )
+        cursor.execute("SELECT study_id FROM studies WHERE study_name = ?", (study_name,))
         study_id = cursor.fetchone()[0]
 
         # Get trials with their values
@@ -94,9 +86,7 @@ def get_data_from_db(db_path, study_name=None):
 
 
 def main():
-    parser = argparse.ArgumentParser(
-        description="Calculate parameter correlations with the target score."
-    )
+    parser = argparse.ArgumentParser(description="Calculate parameter correlations with the target score.")
     parser.add_argument("source", help="Path to .jsonl or .db file")
     parser.add_argument("--study", help="Study name (for .db files)")
     args = parser.parse_args()

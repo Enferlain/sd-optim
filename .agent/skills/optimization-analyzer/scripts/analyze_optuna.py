@@ -1,6 +1,5 @@
 import optuna
 import argparse
-import sys
 from pathlib import Path
 
 
@@ -23,18 +22,14 @@ def analyze_optuna(db_path, study_name=None):
                 return
             # Sorting by id usually gets the latest, but let's be safe
             latest_summary = summaries[-1]
-            study = optuna.load_study(
-                study_name=latest_summary.study_name, storage=storage
-            )
+            study = optuna.load_study(study_name=latest_summary.study_name, storage=storage)
             print(f"Loading latest study: {study.study_name}")
 
         print(f"Analysis of study: {study.study_name}")
         print(f"  Total Trials: {len(study.trials)}")
 
         if study.best_trial:
-            print(
-                f"  Best Score: {study.best_value:.4f} (Trial #{study.best_trial.number})"
-            )
+            print(f"  Best Score: {study.best_value:.4f} (Trial #{study.best_trial.number})")
 
             # Parameter Importance
             print("\nParameter Importance:")

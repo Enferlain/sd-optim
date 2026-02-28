@@ -1009,7 +1009,7 @@ class MergeMethods:
         - wave: Wavelet to use (default: 'db4')
         - level: Number of decomposition levels
         - mode:
-        - compute_dtype: 
+        - compute_dtype:
         """
         if a.shape != b.shape:
             raise ValueError(f"Shape mismatch: {a.shape} vs {b.shape}")
@@ -1026,7 +1026,7 @@ class MergeMethods:
         # Choose a level that always makes sense for these tiny kernels.
         # 1x1: no meaningful decomposition -> just linear blend.
         if (kH, kW) == (1, 1):
-            return (alpha * a + (1.0 - alpha) * b)
+            return alpha * a + (1.0 - alpha) * b
 
         # 3x3: one level is the only practical choice.
         if level is None:
@@ -1034,7 +1034,7 @@ class MergeMethods:
         level = int(level)
         if level < 1:
             # treat as no decomposition
-            return (alpha * a + (1.0 - alpha) * b)
+            return alpha * a + (1.0 - alpha) * b
 
         # Compute in fp32 by default, cast back at end
         orig_dtype = a.dtype
@@ -2046,7 +2046,7 @@ class MergeMethods:
         critical_quantile: Parameter(float) = 0.80,  # pooled per-parameter threshold across models
         topk: Parameter(int) = 0,  # 0=off; 1..M enables per-column top-k gating
         rank_blend: Parameter(float) = 0.0,  # 0=off; 0.3–0.6 blends rank with raw divergences
-        baseline_index: Parameter(int) = -1,  # -1 = zero baseline; >=0 = anchor model
+        baseline_index: Parameter(int) = 1,  # -1 = zero baseline; >=0 = anchor model
         baseline_bias: Parameter(float) = 0.0,  # logit boost for baseline model when anchoring
         keep_baseline: Parameter(float) = 0.0,  # convex blend with baseline delta
         early_exit: Parameter(bool) = False,  # fast path when both ratios are 0
@@ -2074,7 +2074,7 @@ class MergeMethods:
         """
 
         if len(deltas) == 0:
-            raise ValueError("At least one model delta is required. [delta_widen_sd]")
+            raise ValueError("At least one model delta is required.")
 
         ref = deltas[baseline_index] if 0 <= baseline_index < len(deltas) else torch.zeros_like(deltas[0])
         dtype, device = deltas[0].dtype, deltas[0].device
@@ -2118,7 +2118,7 @@ class MergeMethods:
                 dirs.append(torch.zeros_like(Wdk))
                 continue
             if meta[1] in ("scalar", "vec"):
-                mags.append(Wdk.abs().reshape(-1))  # magnitude-only for 1D
+                mags.append(Wdk.reshape(-1))  # KEEP SIGN for 1D
                 dirs.append(None)
             else:
                 mcol, D = components_dk(Wdk)
@@ -2127,17 +2127,20 @@ class MergeMethods:
 
         ref_dk, ref_meta = to_dk(ref)
         if ref_meta[1] in ("scalar", "vec"):
-            ref_mag = ref_dk.abs().reshape(-1)
+            ref_mag = ref_dk.reshape(-1)  # KEEP SIGN for 1D
             ref_dir = None
+            is_zero_baseline = False
         else:
             ref_mag, ref_dir = components_dk(ref_dk)
+            # Check if reference is effectively zero
+            is_zero_baseline = torch.all(ref_mag < 1e-12).item()
 
         # Compute divergences per column j
         mag_divs, dir_divs = [], []
         for i in range(M):
-            md = (mags[i] - ref_mag).abs()
+            md = (mags[i] - ref_mag).abs()  # Correct for 1D because mags/ref_mag kept their signs
             mag_divs.append(md)
-            if dirs[i] is None or ref_dir is None:
+            if dirs[i] is None or ref_dir is None or is_zero_baseline:
                 dd = torch.zeros_like(md)
             else:
                 # per-column cosine similarity (dim=0 across rows)

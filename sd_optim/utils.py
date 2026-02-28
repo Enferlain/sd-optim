@@ -324,22 +324,119 @@ def resolve_merge_method(merge_method_name: str) -> merge_methods.MergeMethod:
 ###########################
 ### Recipe Optimization ###
 ###########################
+# def preprocess_recipe_merge_spaces(recipe_text: str) -> str:
+#     """
+#     Preprocesses a .mecha recipe text to insert proper conversion lines for
+#     LoRA/LyCORIS models. This mirrors what ``_prepare_model_recipe_args`` does
+#     programmatically via ``sd_mecha.convert()``, but at the text level.
+
+#     For each ``model`` line whose ``model_config`` contains "lora" or "lycoris",
+#     this function:
+#     1. Inserts a ``merge "convert_'{config}'_to_base" &{ref}`` line after it.
+#     2. Shifts all subsequent ``&`` references to account for the inserted lines.
+
+#     Returns the modified recipe text, or the original text unchanged if no
+#     LoRA/LyCORIS models are found.
+#     """
+#     lines = recipe_text.strip().split("\n")
+#     if not lines:
+#         return recipe_text
+
+#     # Pattern to parse model lines:  model "file" model_config="config" merge_space="space"
+#     model_line_re = re.compile(r'^model\s+"[^"]+"\s+model_config="([^"]+)"\s+merge_space="([^"]+)"')
+
+#     # First pass: identify which lines (0-indexed from header) need conversion inserted
+#     # We work with data-line indices (lines[1:] = data lines, index 0 = first data line)
+#     insertions = []  # list of (data_line_index, model_config_id)
+#     for data_idx, line in enumerate(lines[1:]):  # skip version header
+#         m = model_line_re.match(line.strip())
+#         if m:
+#             config_id = m.group(1)
+#             if "lora" in config_id.lower() or "lycoris" in config_id.lower():
+#                 insertions.append((data_idx, config_id))
+
+#     if not insertions:
+#         return recipe_text
+
+#     logger.info(f"preprocess_recipe_merge_spaces: Found {len(insertions)} LoRA/LyCORIS model(s) requiring conversion lines.")
+
+#     # Build the new data lines with insertions and reference shifts.
+#     # We process the original data lines in order, keeping a running offset
+#     # that tracks how many lines have been inserted so far.
+#     new_data_lines = []
+#     # Pre-compute which original data indices get an insertion AFTER them
+#     insertion_set = {idx for idx, _ in insertions}
+#     insertion_config = dict(insertions)
+
+#     # We also need to know, for each original line, the total offset that
+#     # applies to references ON that line. References on a line point to
+#     # earlier lines, so the offset for references on original line `i` is
+#     # the number of insertions that happened at lines *before* `i`.
+#     # After line `i` is emitted, if `i` is in insertion_set, offset increases by 1.
+#     offsets_before = {}
+#     running = 0
+#     for i in range(len(lines) - 1):  # iterate over data line indices
+#         offsets_before[i] = running
+#         if i in insertion_set:
+#             running += 1
+
+#     for data_idx, line in enumerate(lines[1:]):
+#         line_stripped = line.strip()
+#         if not line_stripped:
+#             continue
+
+#         current_offset = offsets_before[data_idx]
+
+#         # Shift all & references in this line by the current offset
+#         def shift_ref(match, _offset=current_offset):
+#             original_idx = int(match.group(1))
+#             return f"&{original_idx + _offset}"
+
+#         shifted_line = re.sub(r"&(\d+)", shift_ref, line_stripped)
+#         new_data_lines.append(shifted_line)
+
+#         # If this line needs a conversion insertion after it, add the merge line
+#         if data_idx in insertion_set:
+#             config_id = insertion_config[data_idx]
+#             # The LoRA model we just emitted is at new index = data_idx + current_offset
+#             lora_new_idx = data_idx + current_offset
+#             convert_line = f"merge \"convert_'{config_id}'_to_base\" &{lora_new_idx}"
+#             new_data_lines.append(convert_line)
+
+#     result = lines[0] + "\n" + "\n".join(new_data_lines)
+#     logger.debug(f"preprocess_recipe_merge_spaces: Result:\n{result}")
+#     return result
+
+
 def serialize_nodes_for_rewrite(
     nodes_dict: dict[str, sd_mecha.recipe_nodes.RecipeNode],
-) -> tuple[list[str], dict[str, int]]:
+) -> tuple[list[str], dict[str, str]]:
     """
     Takes a dictionary of named RecipeNode objects and serializes them into
-    a list of .mecha string lines and a map of name to final line index.
+    a list of .mecha string lines and a map of param name to replacement token.
+    Replacement token is either:
+    - an ``&N`` reference to a newly inserted node
+    - an inline literal (e.g. ``0.5``) for scalar-only literal nodes
+
     This is a generic utility for preparing nodes for rewriting.
     """
-    all_new_lines = []
-    param_to_final_idx = {}
+    all_new_lines: list[str] = []
+    param_to_replacement: dict[str, str] = {}
     current_offset = 0
 
     # Sort for deterministic output
     for param_name, node in sorted(nodes_dict.items()):
         serialized_text = sd_mecha.serialize(node)
         node_lines = serialized_text.strip().split("\n")[1:]
+
+        # Scalar literal nodes serialize as only "version 0.1.0".
+        # In that case we must inline the value in the merge line instead of
+        # creating an "&N" reference that aliases another parameter.
+        if not node_lines:
+            if isinstance(node, recipe_nodes.LiteralRecipeNode):
+                param_to_replacement[param_name] = _to_mecha_inline_literal(node.value)
+                continue
+            raise ValueError(f"Recipe node for '{param_name}' produced no serializable lines.")
 
         def shift_ref(match):
             original_idx = int(match.group(1))
@@ -348,17 +445,30 @@ def serialize_nodes_for_rewrite(
         shifted_lines = [re.sub(r"&(\d+)", shift_ref, line) for line in node_lines]
 
         all_new_lines.extend(shifted_lines)
-        param_to_final_idx[param_name] = current_offset + len(node_lines) - 1
+        param_to_replacement[param_name] = f"&{current_offset + len(node_lines) - 1}"
         current_offset += len(node_lines)
 
-    return all_new_lines, param_to_final_idx
+    return all_new_lines, param_to_replacement
+
+
+def _to_mecha_inline_literal(value: Any) -> str:
+    """Serialize a Python scalar into a valid inline .mecha literal token."""
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if value is None:
+        return "null"
+    if isinstance(value, str):
+        return json.dumps(value)
+    if isinstance(value, (int, float)):
+        return str(value)
+    raise TypeError(f"Unsupported inline literal type for recipe rewrite: {type(value)}")
 
 
 def rewrite_recipe_text(
     original_recipe_text: str,
     target_node_idx: int,
     new_node_strings: list[str],
-    param_to_final_idx: dict[str, int],
+    param_to_replacement: dict[str, str],
 ) -> str:
     """
     Rewrites a .mecha recipe text by prepending new nodes and patching a target line.
@@ -386,12 +496,12 @@ def rewrite_recipe_text(
 
         # STEP 2: NOW, check if this is the target line we need to patch.
         if i == target_node_idx:
-            # We take the *already shifted* line and patch in our new, correct, and final parameter references.
-            # These new references (e.g., `&5`, `&11`) will NOT be shifted again.
+            # We take the *already shifted* line and patch in final parameter tokens.
+            # Tokens can be references (e.g. "&5") or inline literals (e.g. "0.5").
             line_to_append = shifted_line
-            for param_name, new_node_index in param_to_final_idx.items():
+            for param_name, replacement_token in param_to_replacement.items():
                 pattern = re.compile(f"({re.escape(param_name)}=)([^ ]+)")
-                line_to_append = pattern.sub(f"\\1&{new_node_index}", line_to_append)
+                line_to_append = pattern.sub(lambda match, token=replacement_token: f"{match.group(1)}{token}", line_to_append)
         else:
             # If it's not the target line, the globally shifted version is all we need.
             line_to_append = shifted_line

@@ -129,10 +129,11 @@ optimizer:
 
       # --- CMA-ES specific ---
       # warn_independent_sampling: True
-      # restart_strategy: null # 'ipop', 'bipop', or null for no restart
+      # NOTE: Optuna removed CMA-ES restart knobs from core; use OptunaHub's RestartCmaEsSampler if needed.
+      # restart_strategy: null # OptunaHub-only (ignored by core Optuna).
       # sigma0: null           # Initial step size (null = auto)
       # popsize: null          # Population size (null = auto)
-      # inc_popsize: 2         # Population increase factor for IPOP restarts
+      # inc_popsize: -1        # OptunaHub-only (ignored by core Optuna).
       # use_separable_cma: False  # Use separable CMA for high dimensions (80-100+ params)
       # lr_adapt: False        # Learning rate adaptation
       # x0: null               # Initial parameter values (dict of initial values for each parameter)

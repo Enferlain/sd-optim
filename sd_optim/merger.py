@@ -9,11 +9,11 @@ import safetensors.torch
 from hydra.core.hydra_config import HydraConfig
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, TypeVar
 
 from omegaconf import DictConfig, ListConfig
 from sd_mecha import extensions, recipe_nodes
-from sd_mecha.extensions.merge_methods import MergeMethod, RecipeNodeOrValue
+from sd_mecha.extensions.merge_methods import MergeMethod, RecipeNodeOrValue, Parameter, Return, StateDict, merge_method
 from sd_mecha.recipe_nodes import (
     RecipeNodeOrValue,
     ModelRecipeNode,
@@ -21,11 +21,13 @@ from sd_mecha.recipe_nodes import (
     MergeRecipeNode,
 )
 from sd_mecha.extensions import merge_methods  # Import model_configs
+from sd_mecha.streaming import StateDictKeyError
 
 from sd_optim import utils
 from sd_optim.bounds import BoundsInfo, ParameterHandler
 
 logger = logging.getLogger(__name__)
+T = TypeVar("T")
 
 # Map precision strings to torch.dtype objects
 precision_mapping = {
@@ -34,6 +36,30 @@ precision_mapping = {
     "fp32": torch.float32,
     "fp64": torch.float64,
 }
+
+
+def _sanitize_recipe_text_for_deserialize(recipe_text: str) -> str:
+    """
+    Normalize recipe text before sd_mecha deserialization.
+
+    sd_mecha's parser raises on empty lines, so we drop blank/whitespace-only lines.
+    """
+    return "\n".join(line for line in recipe_text.splitlines() if line.strip())
+
+
+@merge_method(identifier="fallback_debug_logged")
+def fallback_debug_logged(
+    a: Parameter(StateDict[T]),
+    default: Parameter(StateDict[T]),
+    **kwargs,
+) -> Return(T):
+    """Fallback wrapper that mirrors sd_mecha fallback behavior with DEBUG key logs."""
+    key = kwargs["key"]
+    try:
+        return a[key]
+    except StateDictKeyError:
+        logger.debug("Using fallback for key: %s", key)
+        return default[key]
 
 
 @dataclass
@@ -287,9 +313,10 @@ class Merger:
             logger.debug("Scanning recipe for the first valid base model to use as context...")
             recipe_path = Path(self.cfg.recipe_optimization.recipe_path)
             original_recipe_text = recipe_path.read_text(encoding="utf-8")
+            sanitized_recipe_text = _sanitize_recipe_text_for_deserialize(original_recipe_text)
 
             # We deserialize the whole recipe to inspect its nodes
-            recipe_graph = sd_mecha.deserialize(original_recipe_text)
+            recipe_graph = sd_mecha.deserialize(sanitized_recipe_text)
             visitor = utils.ModelVisitor()
             recipe_graph.accept(visitor)
 
@@ -558,6 +585,7 @@ class Merger:
 
             if not base_param:
                 continue
+
             handled_base_params.add(base_param)  # Mark this base_param as handled
 
             if target_type == "block":
@@ -682,11 +710,30 @@ class Merger:
         # Get custom bounds config safely and validate it
         custom_bounds_config = self.cfg.optimization_guide.get("custom_bounds", {})
         validated_custom_bounds = ParameterHandler.validate_custom_bounds(custom_bounds_config)
+        recipe_target_params: set[str] = set()
+        if self.cfg.optimization_mode == "recipe":
+            target_params_raw = self.cfg.recipe_optimization.get("target_params", [])
+            if isinstance(target_params_raw, (list, ListConfig)):
+                recipe_target_params = {str(name) for name in target_params_raw}
 
         for kwarg_name in unhandled_kwargs:
+            if self.cfg.optimization_mode == "recipe" and kwarg_name not in recipe_target_params:
+                logger.info(
+                    f"Parameter '{kwarg_name}' is not targeted by recipe_optimization.target_params; "
+                    "using value from source .mecha line (or merge-method default if absent)."
+                )
+                continue
+
             if kwarg_name in validated_custom_bounds:
                 # Fixed value provided directly in custom_bounds
                 fixed_value = validated_custom_bounds[kwarg_name]
+                if isinstance(fixed_value, (list, tuple, dict, ListConfig, DictConfig)):
+                    raise ValueError(
+                        f"custom_bounds['{kwarg_name}'] must be a scalar fixed value in this run. "
+                        f"Got {type(fixed_value).__name__}: {fixed_value}. "
+                        "Use a scalar value for fixed behavior. For optimization, define the parameter "
+                        "through optimization_guide component strategies so it is generated in param metadata."
+                    )
                 final_param_nodes[kwarg_name] = sd_mecha.literal(fixed_value)
                 logger.info(f"Using fixed value for '{kwarg_name}' from custom_bounds: {fixed_value}")
             else:
@@ -745,11 +792,17 @@ class Merger:
             if not self.models_dir or not self.models_dir.is_dir():
                 raise FileNotFoundError("Merger.models_dir is not set or is not a valid directory.")
 
-            logger.info(f"Calling sd_mecha.merge with fallback_model: {fallback_node}")
+            recipe_for_merge = final_recipe_node
+            merge_fallback_model = fallback_node
+            if fallback_node is not None:
+                recipe_for_merge = merge_methods.resolve("fallback_debug_logged")(final_recipe_node, fallback_node)
+                merge_fallback_model = None
+
+            logger.info(f"Calling sd_mecha.merge with fallback_model: {merge_fallback_model}")
             sd_mecha.merge(
-                recipe=final_recipe_node,
+                recipe=recipe_for_merge,
                 output=model_path,
-                fallback_model=fallback_node,  # Pass the selected node (or None)
+                fallback_model=merge_fallback_model,  # Fallback is wrapped into recipe when provided
                 merge_device=self.cfg.get("device", "cpu"),  # Default merge device if not set
                 merge_dtype=precision_mapping.get(self.cfg.merge_dtype),  # Get dtype object
                 output_device="cpu",  # Keep saving to CPU
@@ -916,7 +969,7 @@ class Merger:
 
         # --- Step 5: EXECUTION ---
         try:
-            final_recipe_node = sd_mecha.deserialize(final_recipe_text)
+            final_recipe_node = sd_mecha.deserialize(_sanitize_recipe_text_for_deserialize(final_recipe_text))
         except Exception as e:
             debug_path = Path(HydraConfig.get().runtime.output_dir) / f"iteration_{iteration}_failed_recipe.mecha"
             debug_path.write_text(final_recipe_text, encoding="utf-8")

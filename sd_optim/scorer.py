@@ -40,12 +40,20 @@ SCORER_CLASS_PATHS = {
     "lumidinov2g": ("sd_optim.models.LumiAnatomyv2", "Dinov3AnatomyScorer"),
     "simplequality": ("sd_optim.models.SimpleQuality", "SimpleQualityScorer"),
     "hybridnoise": ("sd_optim.models.HybridNoiseScorer", "HybridNoiseScorer"),
+    "hybridnoise_fullimg": (
+        "sd_optim.models.HybridNoiseScorer",
+        "HybridNoiseFullImageScorer",
+    ),
     "backgroundblackness": (
         "sd_optim.models.BackgroundBlacknessScorer",
         "BackgroundBlacknessScorer",
     ),
     "pcascorer": ("sd_optim.models.PCAScorer", "PCAScorer"),
     "textureclean": ("sd_optim.models.TextureScorer", "TextureScorer"),
+    "textureclean_fullimg": (
+        "sd_optim.models.TextureScorer",
+        "TextureScorerFullImage",
+    ),
 }
 
 
@@ -179,6 +187,10 @@ MODEL_DATA = {
         "url": None,
         "file_name": None,
     },
+    "hybridnoise_fullimg": {
+        "url": None,
+        "file_name": None,
+    },
     "backgroundblackness": {
         "url": None,
         "file_name": None,
@@ -188,6 +200,10 @@ MODEL_DATA = {
         "file_name": None,
     },
     "textureclean": {
+        "url": None,
+        "file_name": None,
+    },
+    "textureclean_fullimg": {
         "url": None,
         "file_name": None,
     },
@@ -210,7 +226,11 @@ class AestheticScorer:
         # Stores individual scorer results from the last score() call for metadata
         self.last_scorer_results: dict[str, float] = {}
         self.rembg_session: Any | None = None
-        self._scorers_needing_rembg = {"hybridnoise", "backgroundblackness", "textureclean"}
+        self._scorers_needing_rembg = {
+            "hybridnoise",
+            "backgroundblackness",
+            "textureclean",
+        }
         self._rembg_required = any(
             str(s).lower() in self._scorers_needing_rembg for s in self.cfg.get("scorer_method", [])
         )
@@ -562,6 +582,11 @@ class AestheticScorer:
                 "files": {},
                 "extra_args": {"rembg_session": "self.rembg_session"},
             },
+            "hybridnoise_fullimg": {
+                "class_ref": "hybridnoise_fullimg",
+                "files": {},
+                "extra_args": {},
+            },
             "backgroundblackness": {
                 "class_ref": "backgroundblackness",
                 "files": {},
@@ -576,6 +601,11 @@ class AestheticScorer:
                 "class_ref": "textureclean",
                 "files": {},
                 "extra_args": {"rembg_session": "self.rembg_session"},
+            },
+            "textureclean_fullimg": {
+                "class_ref": "textureclean_fullimg",
+                "files": {},
+                "extra_args": {},
             },
         }
 
@@ -779,10 +809,11 @@ class AestheticScorer:
                         resolved_extra_args[k] = str(v) if isinstance(v, Path) else v
                 constructor_args.update(resolved_extra_args)
 
-            if evaluator_lower == "hybridnoise":
+            if evaluator_lower in {"hybridnoise", "hybridnoise_fullimg"}:
                 constructor_args["kernel_size"] = self.cfg.get("hybridnoise_kernel_size", 3)
                 constructor_args["noise_threshold"] = self.cfg.get("hybridnoise_noise_threshold", 20.0)
-                constructor_args["color_tolerance"] = self.cfg.get("hybridnoise_color_tolerance", 30)
+                if evaluator_lower == "hybridnoise":
+                    constructor_args["color_tolerance"] = self.cfg.get("hybridnoise_color_tolerance", 30)
 
             # 4. Instantiate
             try:

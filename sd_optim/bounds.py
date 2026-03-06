@@ -545,7 +545,7 @@ class ParameterHandler:
 
             if not found_match:
                 logger.debug(
-                    f"Custom bound key '{custom_key}' did not match any generated parameter name or base_param. It may be used as a fixed keyword argument if applicable."
+                    f"Custom bound key '{custom_key}' did not match any generated optimizer parameter or base_param. It will not be optimized."
                 )
 
         # Step 3: Extract bounds for the optimizer (remains the same)
@@ -706,6 +706,8 @@ class ParameterHandler:
                     validated_bounds[param_name] = bound_config
 
                 # Case 4: Fixed value
+                elif isinstance(bound_config, bool):
+                    validated_bounds[param_name] = bound_config
                 elif isinstance(bound_config, (int, float)):
                     validated_bounds[param_name] = bound_config
 

@@ -39,6 +39,15 @@ logging.getLogger("PIL.PngImagePlugin").setLevel(logging.WARNING)
 PathT = os.PathLike
 
 
+def fail_on_error_enabled(cfg: Any) -> bool:
+    """Return whether runtime errors should stop the optimization immediately."""
+    if cfg is None:
+        return True
+    if hasattr(cfg, "get"):
+        return bool(cfg.get("fail_on_error", True))
+    return bool(getattr(cfg, "fail_on_error", True))
+
+
 def _compute_scorer_setup_fingerprint(cfg: DictConfig) -> str:
     """
     Fingerprint the scoring objective so cached `final_score` is only reused when
@@ -79,6 +88,56 @@ def _compute_scorer_setup_fingerprint(cfg: DictConfig) -> str:
     return hashlib.sha256(recipe_json.encode("utf-8")).hexdigest()
 
 
+def _compute_generation_setup_fingerprint(cfg: DictConfig) -> str:
+    """Fingerprint the generation/merge setup used to produce images for reuse."""
+    cfg_dict = OmegaConf.to_container(cfg, resolve=True)
+    if not isinstance(cfg_dict, dict):
+        cfg_dict = {}
+
+    models_dir_raw = cfg_dict.get("models_dir")
+    models_dir = Path(models_dir_raw).resolve() if models_dir_raw else None
+
+    model_paths_raw = cfg_dict.get("model_paths", []) or []
+    normalized_model_paths = [
+        _normalize_model_path_for_fingerprint(model_path, models_dir)
+        for model_path in model_paths_raw
+    ]
+
+    recipe_optimization_raw = cfg_dict.get("recipe_optimization", {}) or {}
+    if not isinstance(recipe_optimization_raw, dict):
+        recipe_optimization_raw = {}
+
+    recipe_path_raw = recipe_optimization_raw.get("recipe_path")
+    recipe_path = str(Path(recipe_path_raw).resolve()) if recipe_path_raw else None
+
+    fingerprint_input = {
+        "v": 1,
+        "optimization_mode": cfg_dict.get("optimization_mode"),
+        "merge_method": cfg_dict.get("merge_method"),
+        "model_paths": normalized_model_paths,
+        "base_model_index": cfg_dict.get("base_model_index"),
+        "fallback_model_index": cfg_dict.get("fallback_model_index"),
+        "add_extra_keys": cfg_dict.get("add_extra_keys"),
+        "merge_dtype": cfg_dict.get("merge_dtype"),
+        "save_dtype": cfg_dict.get("save_dtype"),
+        "webui": cfg_dict.get("webui"),
+        "recipe_optimization": {
+            "recipe_path": recipe_path,
+            "target_nodes": recipe_optimization_raw.get("target_nodes"),
+            "target_params": recipe_optimization_raw.get("target_params"),
+        },
+    }
+    recipe_json = json.dumps(fingerprint_input, sort_keys=True, separators=(",", ":"), default=str)
+    return hashlib.sha256(recipe_json.encode("utf-8")).hexdigest()
+
+
+def _normalize_model_path_for_fingerprint(model_path: Any, models_dir: Path | None) -> str:
+    raw_path = Path(str(model_path))
+    if raw_path.is_absolute() or models_dir is None:
+        return str(raw_path.resolve())
+    return str((models_dir / raw_path).resolve())
+
+
 @dataclass
 class Optimizer:
     cfg: DictConfig
@@ -88,6 +147,7 @@ class Optimizer:
     optimization_start_time: float | None = None  # Add start time tracker
     completed_trials: int = 0  # To track trials from resumed studies
     scorer_setup_fp: str = field(default="", init=False)
+    generation_setup_fp: str = field(default="", init=False)
 
     def __post_init__(self) -> None:
         # --- STAGE 1: VALIDATE THE ENTIRE CONFIG FIRST ---
@@ -162,6 +222,7 @@ class Optimizer:
         self.generator = Generator(self.cfg.url, self.cfg.batch_size, self.cfg.webui)
         self.scorer = AestheticScorer(self.cfg)
         self.scorer_setup_fp = _compute_scorer_setup_fingerprint(self.cfg)
+        self.generation_setup_fp = _compute_generation_setup_fingerprint(self.cfg)
         self.prompter = Prompter(self.cfg)
         self.iteration = -1
         self.best_model_path = None
@@ -299,7 +360,7 @@ class Optimizer:
             logger.warning(f"Could not save run manifest: {e}")
 
     @staticmethod
-    def calculate_image_hash(params: dict, payload: dict) -> str:
+    def calculate_image_hash(params: dict, payload: dict, generation_setup_fp: str = "") -> str:
         """
         Creates a deterministic SHA256 hash from generation recipe.
         This fingerprint uniquely identifies an image based on:
@@ -324,7 +385,11 @@ class Optimizer:
         stable_params = {k: params[k] for k in sorted(params.keys())}
         stable_payload = {k: payload.get(k) for k in gen_keys if k in payload}
 
-        recipe = {"params": stable_params, "payload": stable_payload}
+        recipe = {
+            "generation_setup_fp": generation_setup_fp,
+            "params": stable_params,
+            "payload": stable_payload,
+        }
         recipe_json = json.dumps(recipe, sort_keys=True, default=str)
         return hashlib.sha256(recipe_json.encode("utf-8")).hexdigest()
 
@@ -417,15 +482,15 @@ class Optimizer:
             raise RuntimeError("Prompter failed to generate any payloads.")
 
         # Determine current scorer set for validation
-        current_scorers = set(s.lower() for s in self.cfg.scorer_method)
+        current_scorers = {s.lower() for s in self.cfg.scorer_method}
         scorer_setup_fp = self.scorer_setup_fp
 
         # Calculate hashes and check cache for all payloads
         cache_results = []  # list of (hash, cached_data, tier) tuples
         overall_tier = "full_hit"  # optimistic, downgrade as needed
 
-        for i, payload in enumerate(payloads):
-            img_hash = self.calculate_image_hash(params, payload)
+        for payload in payloads:
+            img_hash = self.calculate_image_hash(params, payload, self.generation_setup_fp)
             cached = self.history_cache.get(img_hash)
 
             if cached and cached.get("final_score") is not None:
@@ -472,8 +537,8 @@ class Optimizer:
                 )
             self.last_trial_scorer_summary = build_trial_scorer_summary(
                 payload_entries,
-                avg_score,
-                lambda values, weights: self.scorer.average_calc(values, weights, self.cfg.img_average_type),
+                final_score=avg_score,
+                combine_scores=lambda values, weights: self.scorer.average_calc(values, weights, self.cfg.img_average_type),
             )
             elapsed = time.time() - iteration_start_time
             logger.info(f"CACHE HIT: All {len(cached_scores)} images reused. Score: {avg_score:.4f} ({elapsed:.2f}s)")
@@ -560,8 +625,8 @@ class Optimizer:
                 avg_score = self.scorer.average_calc(rescored_scores, rescored_weights, self.cfg.img_average_type)
                 self.last_trial_scorer_summary = build_trial_scorer_summary(
                     payload_entries,
-                    avg_score,
-                    lambda values, weights: self.scorer.average_calc(values, weights, self.cfg.img_average_type),
+                    final_score=avg_score,
+                    combine_scores=lambda values, weights: self.scorer.average_calc(values, weights, self.cfg.img_average_type),
                 )
                 elapsed = time.time() - iteration_start_time
                 logger.info(f"PARTIAL HIT complete: Score: {avg_score:.4f} (re-scored in {elapsed:.2f}s, skipped merge+gen)")
@@ -625,18 +690,28 @@ class Optimizer:
                 logger.info(f"Model processing took {merge_duration:.2f} seconds.")
 
             except (ValueError, TypeError, FileNotFoundError) as config_error:
-                # These errors indicate a fundamental problem with the user's setup or config.
-                logger.error(f"FATAL CONFIGURATION ERROR: {config_error}", exc_info=True)
-                logger.error("Halting optimization due to unrecoverable setup error.")
-                raise config_error
+                if fail_on_error_enabled(self.cfg):
+                    logger.error(f"FATAL CONFIGURATION ERROR: {config_error}", exc_info=True)
+                    logger.error("Halting optimization due to unrecoverable setup error.")
+                    raise config_error
+
+                logger.error(
+                    "Trial failed during model processing with a configuration/runtime error: %s",
+                    config_error,
+                    exc_info=True,
+                )
+                logger.warning("Continuing optimization because fail_on_error is disabled.")
+                return float("-inf")
 
             except Exception as e:
-                # --- THIS IS THE PART WE CHANGE ---
-                logger.error(f"A runtime error occurred during the trial: {e}", exc_info=True)
-                logger.error("Halting optimization because fail_on_error is enabled.")
-                # Instead of returning 0.0, we re-raise the exception.
-                raise e
-                # --- END OF CHANGE ---
+                if fail_on_error_enabled(self.cfg):
+                    logger.error(f"A runtime error occurred during the trial: {e}", exc_info=True)
+                    logger.error("Halting optimization because fail_on_error is enabled.")
+                    raise e
+
+                logger.error("Trial failed during model processing: %s", e, exc_info=True)
+                logger.warning("Continuing optimization because fail_on_error is disabled.")
+                return float("-inf")
 
             if not model_path or not model_path.exists():
                 error_message = f"CRITICAL: Model processing finished but the output file was not created at '{model_path}'. Halting."
@@ -671,7 +746,6 @@ class Optimizer:
             image_queue = asyncio.Queue(maxsize=concurrency_limit)
             interrupt_event = asyncio.Event()  # Event for interrupt signal
             total_expected_images = len(payloads)
-            final_score_for_optimizer = 0.0  # Default score
             interrupt_triggered = False
             fake_score_value = 0.0  # Value entered by user on override
 
@@ -840,12 +914,12 @@ class Optimizer:
                 logger.info(f"Calculated average score: {avg_score:.4f}")
             except Exception as e_avg:
                 logger.error(f"Error calculating average score: {e_avg}", exc_info=True)
-                raise RuntimeError(f"Score calculation error: {e_avg}")
+                raise RuntimeError(f"Score calculation error: {e_avg}") from e_avg
 
         self.last_trial_scorer_summary = build_trial_scorer_summary(
             payload_entries,
-            avg_score,
-            lambda values, weights: self.scorer.average_calc(values, weights, self.cfg.img_average_type),
+            final_score=avg_score,
+            combine_scores=lambda values, weights: self.scorer.average_calc(values, weights, self.cfg.img_average_type),
         )
 
         # --- Update Best Score & Logging ---
@@ -891,10 +965,8 @@ class Optimizer:
         if hasattr(image, "info") and image.info:
             for k, v in image.info.items():
                 if isinstance(v, str):
-                    try:
+                    with suppress(Exception):
                         pnginfo.add_text(str(k), v)
-                    except Exception:
-                        pass  # Skip non-serializable keys
 
         # --- PHASE 2: Add payload generation parameters ---
         for k, v in payload.items():
@@ -905,7 +977,7 @@ class Optimizer:
 
         # --- PHASE 3: Inject reuse/identity metadata ---
         if params is not None:
-            img_hash = self.calculate_image_hash(params, payload)
+            img_hash = self.calculate_image_hash(params, payload, self.generation_setup_fp)
             pnginfo.add_text("sd_optim_hash", img_hash)
 
             # Store individual scorer results if available

@@ -424,14 +424,15 @@ class Merger:
         # Instead of just counting all arguments, we check their types.
         input_types = merge_method.get_input_types().args
 
-        # Count how many arguments expect a StateDict (i.e., a model) vs a plain Tensor/value
+        # Count only StateDict-like inputs as model arguments.
+        # Tensor-valued merge parameters such as `alpha` for `weighted_sum`
+        # are positional in sd-mecha's signature but are still parameters, not
+        # extra model inputs.
         expected_num_models = 0
         for arg_type in input_types:
             # get_origin helps handle types like StateDict[Tensor]
             origin_type = getattr(arg_type, "__origin__", arg_type)
-            if origin_type and (
-                issubclass(origin_type, sd_mecha.extensions.merge_methods.StateDict) or issubclass(origin_type, torch.Tensor)
-            ):
+            if isinstance(origin_type, type) and issubclass(origin_type, sd_mecha.extensions.merge_methods.StateDict):
                 expected_num_models += 1
         # For weighted_sum, this will correctly count 2 (for 'a' and 'b').
 

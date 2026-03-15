@@ -40,6 +40,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Fixed a startup regression where `sd_optim.optimizer` imported `sd_optim.trial_scorer_summary` but the module was missing from the package, causing `sd_optim.py` to fail before optimizer initialization
+- Fixed scorer-summary aggregation call sites after the helper moved to a keyword-only signature, which had been causing runs to fail immediately after the first scored trial
+- Fixed a universal reuse regression where the image hash ignored merge/generation setup, allowing different merge methods or recipe setups to be treated as cache hits when params and payloads happened to match
+- Fixed merge-method invocation for positional-parameter methods like `weighted_sum` by ensuring tensor-valued parameters such as `alpha` are not counted as extra model inputs
+- Fixed fail-on-error handling so real trial crashes stop the optimization by default again, while explicit `fail_on_error: false` still allows continue-on-error behavior
+- Fixed Optuna postprocess recap to avoid raising a second error when all completed trials have failed and no best trial exists yet
 - Fixed startup and model-inspection crashes against `sd-mecha` 1.1.x caused by removed top-level APIs such as `open_input_dicts` and `infer_model_configs`
 - Fixed stale package-local SVD helper imports after the helper implementation moved to `sd_optim/builtin/merge_methods/svd.py`
 - Fixed builtin-layout import fallout after package moves by updating scorer registry module paths, converter discovery imports, and default builtin config locations

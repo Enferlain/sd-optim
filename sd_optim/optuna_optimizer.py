@@ -6,13 +6,14 @@ import time
 import json
 import logging
 import sys
+import contextlib
 import optuna.visualization as vis
 import optuna
 import asyncio
 import warnings
 
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 from hydra.core.hydra_config import HydraConfig
 from omegaconf import ListConfig
@@ -27,7 +28,7 @@ from optuna.samplers import (
     NSGAIISampler,
     GPSampler,
 )
-from sd_optim.optimizer import Optimizer
+from sd_optim.optimizer import Optimizer, fail_on_error_enabled
 
 logger = logging.getLogger(__name__)
 
@@ -447,7 +448,7 @@ class OptunaOptimizer(Optimizer):
                     current_scorers_for_error = list(flatten_scorers(current_scorers_raw))
                     raise ValueError(
                         f"FATAL: Cannot resume study '{parent_study_name_to_load}' because scorers have changed. "
-                        f"(Study used {sorted(list(parent_scorers))}, config has {sorted(current_scorers_for_error)}). "
+                        f"(Study used {sorted(parent_scorers)}, config has {sorted(current_scorers_for_error)}). "
                         "To proceed, set 'fork_study: true'."
                     )
 
@@ -506,7 +507,7 @@ class OptunaOptimizer(Optimizer):
             except (KeyboardInterrupt, Exception) as e:
                 logger.error(
                     f"Optimization loop stopped: {e}",
-                    exc_info=True if not isinstance(e, KeyboardInterrupt) else False,
+                    exc_info=not isinstance(e, KeyboardInterrupt),
                 )
                 if not isinstance(e, KeyboardInterrupt):
                     raise
@@ -700,6 +701,9 @@ class OptunaOptimizer(Optimizer):
         except optuna.exceptions.TrialPruned:
             raise
         except Exception as e:
+            if fail_on_error_enabled(self.cfg):
+                logger.error("Error in objective function: %s", e, exc_info=True)
+                raise
             logger.error(f"Error in objective function: {e}", exc_info=True)
             return float("-inf")  # Return very negative score on error
 
@@ -977,6 +981,10 @@ class OptunaOptimizer(Optimizer):
         # Log best trials
         logger.info("\nTop 5 Trials:")
         completed_trials = [t for t in self.study.trials if t.value is not None]
+        if not completed_trials:
+            logger.warning("No successful completed trials to summarize yet.")
+            return
+
         sorted_trials = sorted(completed_trials, key=lambda t: t.value, reverse=True)
 
         for i, trial in enumerate(sorted_trials[:5]):
@@ -986,8 +994,9 @@ class OptunaOptimizer(Optimizer):
 
         # Log best trial details
         logger.info("\nBest Trial:")
-        logger.info(f"Value: {self.study.best_value:.4f}")
-        logger.info(f"Parameters: {self.study.best_params}")
+        best_trial = sorted_trials[0]
+        logger.info(f"Value: {best_trial.value:.4f}")
+        logger.info(f"Parameters: {best_trial.params}")
 
         # --- ADD Optuna Plot Generation ---
         logger.info("Generating Optuna visualizations...")
@@ -1161,7 +1170,7 @@ class OptunaOptimizer(Optimizer):
             logger.error(f"Error generating visualization report: {e}", exc_info=True)
 
     # --- New Method ---
-    def start_dashboard_background(self, port: int = 8080) -> Optional[subprocess.Popen]:
+    def start_dashboard_background(self, port: int = 8080) -> subprocess.Popen | None:
         """Determines DB path and starts Optuna Dashboard in background."""
         logger.info("Preparing to launch Optuna Dashboard in background...")
         storage_uri = None
@@ -1215,7 +1224,7 @@ class OptunaOptimizer(Optimizer):
 
 
 # --- Helper Function (can be outside the class) ---
-def run_dashboard_in_background(storage_uri: str, port: int) -> Optional[subprocess.Popen]:
+def run_dashboard_in_background(storage_uri: str, port: int) -> subprocess.Popen | None:
     """Run the Optuna dashboard as a separate process that won't block."""
     logger.info("=" * 80)
     logger.info("LAUNCHING OPTUNA DASHBOARD")
@@ -1249,10 +1258,8 @@ def run_dashboard_in_background(storage_uri: str, port: int) -> Optional[subproc
         if return_code is not None:
             stderr_output = ""
             stdout_output = ""
-            try:
+            with contextlib.suppress(Exception):
                 stdout_output, stderr_output = dashboard_process.communicate(timeout=0.2)
-            except Exception:
-                pass
             logger.error(
                 "Optuna dashboard exited immediately (return code %s). Command: %s",
                 return_code,

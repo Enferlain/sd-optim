@@ -13,7 +13,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from PIL import Image
-from sd_optim.builtin.scorers.BLIP.blip_pretrain import BLIP_Pretrain
+from sd_optim.builtin.scorers.models.BLIP.blip_pretrain import BLIP_Pretrain
 from torchvision.transforms import Compose, Resize, CenterCrop, ToTensor, Normalize
 
 try:

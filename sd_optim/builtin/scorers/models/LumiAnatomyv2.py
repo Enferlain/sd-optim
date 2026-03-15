@@ -16,7 +16,7 @@ logger = logging.getLogger(__name__)
 
 # Import your HybridHeadModel
 try:
-    from sd_optim.builtin.scorers.lumi_model import HybridHeadModel
+    from sd_optim.builtin.scorers.models.lumi_model import HybridHeadModel
 
     logger.debug("Successfully imported HybridHeadModel.")
 except ImportError:

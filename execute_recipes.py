@@ -85,7 +85,7 @@ def main():
                 return int(match.group(1))
             return 0  # fallback for files that don't match the pattern
 
-        recipes = sorted([f for f in recipe_dir.glob("*.mecha")], key=numerical_sort_key)
+        recipes = sorted(recipe_dir.glob("*.mecha"), key=numerical_sort_key)
         if not recipes:
             logger.error(f"No .mecha files found in {recipe_dir}")
             return
@@ -202,7 +202,8 @@ def main():
                     logger.info(f"  Alpha node kwargs: {alpha_node_from_recipe.kwargs}")
             # --- End inspection ---
 
-            sd_mecha.merge(
+            utils.merge_with_model_dirs(
+                model_dirs_to_add=effective_model_dirs,
                 recipe=recipe_node,
                 output=output_filename,
                 # --- PASS FALLBACK MODEL NODE ---
@@ -213,8 +214,7 @@ def main():
                 output_device="cpu",
                 output_dtype=OUTPUT_DTYPE,
                 threads=THREADS,
-                model_dirs=effective_model_dirs,
-                check_mandatory_keys=False,  # Keep this
+                strict_mandatory_keys=False,
             )
             logger.info(f"Successfully merged and saved: {output_filename}")
 

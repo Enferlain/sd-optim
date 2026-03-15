@@ -3,6 +3,7 @@
 - [ ] ComfyUI: confirm seed is always explicit (avoid `seed=-1` random fallback) and ensure generation fingerprint uses the post-injection workflow
 - [ ] Deterministic image reuse + incremental rescoring: implement per `conductor/tracks/image_reuse_p1_20260210/plan.md`
 - [ ] Optuna: fork and fix `PedAnovaImportanceEvaluator` (direction inversion bug) and `optuna-dashboard` (target negation for maximization)
+- [ ] Recipe mode/artifacts: replace `.mecha` text rewrite flow with graph-level node replacement, and add a small manifest artifact so reproduction does not depend only on the generated Python script
 
 ---
 

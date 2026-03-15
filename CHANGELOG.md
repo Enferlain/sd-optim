@@ -23,6 +23,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Upgraded the merger fallback wrapper to a class-based method that mirrors `sd_mecha.fallback` key planning and emits a visible INFO log on the first actual fallback hit
 - Replaced removed `sd_mecha.open_input_dicts` / `sd_mecha.infer_model_configs` usage with `open_graph`-based compatibility helpers for optimizer and merger model inspection
 - Replaced active runtime `sd_mecha.merge(..., model_dirs=..., check_mandatory_keys=...)` and `sd_mecha.convert(..., model_dirs=...)` call patterns with helper wrappers that use the new `model_dirs` registry and `strict_mandatory_keys`
+- Replaced removed recipe-node `.set_cache(...)` usage with merge-time cache maps built from the recipe graph
+- Updated active `MergeRecipeNode` handling to use `bound_args` instead of removed `.args` / `.kwargs`, and avoided eager `sd_mecha.add_difference(...)` wrapper logic that expects finalized merge-space metadata
+- Added a shared non-finalizing recipe serialization helper for artifact generation and recipe saving under `sd-mecha` 1.1.x
+- Updated saved recipe artifacts to serialize the finalized fallback-wrapped execution graph instead of the raw pre-finalized recipe
+- Refined saved recipe artifacts to keep logical merge structure by dropping runtime output-cast wrappers and restoring relative model paths when possible
 - Added an `sd_optim.svd` compatibility shim so runtime merge helpers still import after the helper move into `sd_optim/merge_methods/svd.py`
 
 ### Fixed
@@ -30,6 +35,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Fixed startup and model-inspection crashes against `sd-mecha` 1.1.x caused by removed top-level APIs such as `open_input_dicts` and `infer_model_configs`
 - Fixed stale package-local SVD helper imports after the helper implementation moved to `sd_optim/merge_methods/svd.py`
 - Fixed fallback visibility during merging by making real fallback hits visible at `INFO` level and per-key fallback usage visible at `DEBUG`
+- Fixed merge-mode and recipe-mode cache wiring against `sd-mecha` 1.1.x by passing explicit node-to-cache mappings into `sd_mecha.merge(...)`
+- Fixed delta-output wrapping and recipe traversal against the 1.1.x node API by using `bound_args` and direct merge-method recipe construction
+- Fixed recipe artifact generation and runnable-script export against the 1.1.x literal-node API by traversing `LiteralRecipeNode.value_dict`
+- Fixed `.mecha` recipe saving for relative model paths by avoiding unnecessary graph finalization during serialization
+- Fixed saved recipe artifacts showing unresolved `null` metadata by finalizing the same model-dir-aware execution graph that `sd_mecha.merge(...)` uses
+- Fixed saved recipe artifacts leaking finalized absolute model paths and runtime `cast` wrapper nodes into the human-facing `.mecha` output
 
 ## [Unreleased] - 2026-02-22
 

@@ -107,6 +107,124 @@ def merge_with_model_dirs(
         return sd_mecha.merge(**merge_kwargs)
 
 
+def serialize_recipe_text(
+    node: sd_mecha.recipe_nodes.RecipeNode,
+    *,
+    model_dirs_to_add: list[Path] | tuple[Path, ...] = (),
+    finalize: bool = False,
+) -> str:
+    """Serialize a recipe graph while honoring temporary model directories."""
+    with temporary_model_dirs(model_dirs_to_add):
+        return sd_mecha.serialize(node, finalize=finalize)
+
+
+def finalize_recipe_with_model_dirs(
+    node: sd_mecha.recipe_nodes.RecipeNode,
+    *,
+    model_dirs_to_add: list[Path] | tuple[Path, ...] = (),
+    model_config_preference: tuple[str, ...] = ("singleton-mecha",),
+    merge_space_preference: list[sd_mecha.extensions.merge_spaces.MergeSpace] | tuple[sd_mecha.extensions.merge_spaces.MergeSpace, ...] | None = None,
+    check_extra_keys: bool = True,
+    check_mandatory_keys: bool = False,
+) -> sd_mecha.recipe_nodes.RecipeNode:
+    """Finalize a recipe graph while honoring temporary model directories."""
+    with temporary_model_dirs(model_dirs_to_add):
+        with sd_mecha.open_graph(node) as graph:
+            return graph.finalize_root(
+                model_config_preference=model_config_preference,
+                merge_space_preference=merge_space_preference,
+                check_extra_keys=check_extra_keys,
+                check_mandatory_keys=check_mandatory_keys,
+            )
+
+
+class MergeNodeCollector(recipe_nodes.RecipeVisitor):
+    """Collect each unique MergeRecipeNode reachable from a recipe graph."""
+
+    def __init__(self) -> None:
+        self.nodes: list[recipe_nodes.MergeRecipeNode] = []
+        self.visited: set[recipe_nodes.RecipeNode] = set()
+
+    def visit(self, node: recipe_nodes.RecipeNode):
+        if node not in self.visited:
+            self.visited.add(node)
+            node.accept(self)
+
+    def visit_model(self, node: recipe_nodes.ModelRecipeNode):
+        return None
+
+    def visit_literal(self, node: recipe_nodes.LiteralRecipeNode):
+        for nested in node.value_dict.values():
+            if isinstance(nested, recipe_nodes.RecipeNode):
+                self.visit(nested)
+        return None
+
+    def visit_merge(self, node: recipe_nodes.MergeRecipeNode):
+        self.nodes.append(node)
+        for child in (*node.bound_args.args, *node.bound_args.kwargs.values()):
+            self.visit(child)
+        return None
+
+
+def build_recipe_cache_map(
+    root_node: recipe_nodes.RecipeNode,
+    shared_cache: dict,
+) -> dict[recipe_nodes.MergeRecipeNode, dict]:
+    """Build a node->cache mapping for sd-mecha 1.1.x merge execution."""
+    collector = MergeNodeCollector()
+    collector.visit(root_node)
+    return {node: shared_cache for node in collector.nodes}
+
+
+class RelativeModelPathVisitor(recipe_nodes.RecipeVisitor):
+    """Rewrite model node paths to be relative to a chosen base directory when possible."""
+
+    def __init__(self, base_dir: Path) -> None:
+        self.base_dir = base_dir.resolve()
+        self.visited: dict[recipe_nodes.RecipeNode, recipe_nodes.RecipeNode] = {}
+
+    def rewrite(self, node: recipe_nodes.RecipeNode) -> recipe_nodes.RecipeNode:
+        cached = self.visited.get(node)
+        if cached is not None:
+            return cached
+        rewritten = node.accept(self)
+        self.visited[node] = rewritten
+        return rewritten
+
+    def visit_literal(self, node: recipe_nodes.LiteralRecipeNode) -> recipe_nodes.LiteralRecipeNode:
+        value_dict = {
+            key: self.rewrite(value) if isinstance(value, recipe_nodes.RecipeNode) else value
+            for key, value in node.value_dict.items()
+        }
+        return recipe_nodes.LiteralRecipeNode(value_dict, node.model_config, node.merge_space)
+
+    def visit_model(self, node: recipe_nodes.ModelRecipeNode) -> recipe_nodes.ModelRecipeNode:
+        path = node.path.resolve()
+        try:
+            relative_path = path.relative_to(self.base_dir)
+        except ValueError:
+            relative_path = node.path
+
+        if node.is_open:
+            return recipe_nodes.OpenModelRecipeNode(node.state_dict, relative_path, node.model_config, node.merge_space)
+        return recipe_nodes.ClosedModelRecipeNode(relative_path, node.model_config, node.merge_space)
+
+    def visit_merge(self, node: recipe_nodes.MergeRecipeNode) -> recipe_nodes.MergeRecipeNode:
+        args = tuple(self.rewrite(value) for value in node.bound_args.args)
+        kwargs = {key: self.rewrite(value) for key, value in node.bound_args.kwargs.items()}
+        bound_args = node.merge_method.get_signature().bind(*args, **kwargs)
+        return recipe_nodes.MergeRecipeNode(node.merge_method, bound_args, node.model_config, node.merge_space)
+
+
+def relativize_model_paths(
+    node: recipe_nodes.RecipeNode,
+    *,
+    base_dir: Path,
+) -> recipe_nodes.RecipeNode:
+    """Return a recipe graph with model paths rewritten relative to `base_dir` when possible."""
+    return RelativeModelPathVisitor(base_dir).rewrite(node)
+
+
 #####################################
 ### --- Run Config validation --- ###
 #####################################
@@ -483,7 +601,7 @@ def serialize_nodes_for_rewrite(
 
     # Sort for deterministic output
     for param_name, node in sorted(nodes_dict.items()):
-        serialized_text = sd_mecha.serialize(node)
+        serialized_text = serialize_recipe_text(node, finalize=False)
         node_lines = serialized_text.strip().split("\n")[1:]
 
         # Scalar literal nodes serialize as only "version 0.1.0".
@@ -491,7 +609,7 @@ def serialize_nodes_for_rewrite(
         # creating an "&N" reference that aliases another parameter.
         if not node_lines:
             if isinstance(node, recipe_nodes.LiteralRecipeNode):
-                param_to_replacement[param_name] = _to_mecha_inline_literal(node.value)
+                param_to_replacement[param_name] = _to_mecha_inline_literal(_get_inline_literal_value(node))
                 continue
             raise ValueError(f"Recipe node for '{param_name}' produced no serializable lines.")
 
@@ -506,6 +624,13 @@ def serialize_nodes_for_rewrite(
         current_offset += len(node_lines)
 
     return all_new_lines, param_to_replacement
+
+
+def _get_inline_literal_value(node: recipe_nodes.LiteralRecipeNode) -> Any:
+    """Extract the scalar payload from a singleton literal node."""
+    if len(node.value_dict) != 1:
+        raise TypeError("Cannot inline a literal recipe node with multiple values during recipe rewrite.")
+    return next(iter(node.value_dict.values()))
 
 
 def _to_mecha_inline_literal(value: Any) -> str:
@@ -597,16 +722,18 @@ class ModelVisitor(recipe_nodes.RecipeVisitor):
 
         # CORRECT TRAVERSAL:
         # Politely ask each child node to accept this visitor, which continues the process.
-        for arg in node.args:
+        for arg in node.bound_args.args:
             arg.accept(self)
-        for kwarg in node.kwargs.values():
+        for kwarg in node.bound_args.kwargs.values():
             kwarg.accept(self)
 
     def visit_literal(self, node: recipe_nodes.LiteralRecipeNode):
-        # Literals don't contain models, so we just mark as visited and stop.
         if node in self.visited:
             return
         self.visited.add(node)
+        for nested in node.value_dict.values():
+            if isinstance(nested, recipe_nodes.RecipeNode):
+                nested.accept(self)
 
 
 def get_info_from_target_node(root_node: recipe_nodes.RecipeNode, target_node_ref: str) -> dict[str, Any]:
@@ -623,7 +750,7 @@ def get_info_from_target_node(root_node: recipe_nodes.RecipeNode, target_node_re
         # This is complex, a simpler way is to build a map first.
         # Let's reuse the helper from the merger.
         def get_all_nodes(node_to_serialize):
-            text = sd_mecha.serialize(node_to_serialize)
+            text = serialize_recipe_text(node_to_serialize, finalize=False)
             lines = text.strip().split("\n")
             node_map = {}
             for i in range(1, len(lines)):
@@ -649,49 +776,6 @@ def get_info_from_target_node(root_node: recipe_nodes.RecipeNode, target_node_re
         "method_name": target_node.merge_method.identifier,
         "model_names": model_names,
     }
-
-
-class CacheInjectorVisitor(RecipeVisitor):
-    """
-    A visitor that performs a deep traversal of a recipe graph and injects
-    a cache object into every single MergeRecipeNode it finds.
-    """
-
-    def __init__(self, cache: dict):
-        self.cache = cache
-        # Keep track of visited nodes to avoid infinite loops in complex graphs
-        self.visited = set()
-
-    def visit(self, node: RecipeNode) -> RecipeNode:
-        """Helper to handle traversal and avoid re-visiting nodes."""
-        if node not in self.visited:
-            self.visited.add(node)
-            node.accept(self)
-        return node
-
-    def visit_model(self, node: ModelRecipeNode):
-        # Models don't have caches, nothing to do here.
-        pass
-
-    def visit_literal(self, node: LiteralRecipeNode):
-        # Literals don't have caches, but they might contain other nodes.
-        if isinstance(node.value, dict):
-            for value in node.value.values():
-                if isinstance(value, RecipeNode):
-                    self.visit(value)
-
-    def visit_merge(self, node: MergeRecipeNode):
-        # This is the important part!
-
-        # 1. First, recursively visit all the children to ensure the whole tree is covered.
-        for arg in node.args:
-            self.visit(arg)
-        for kwarg in node.kwargs.values():
-            self.visit(kwarg)
-
-        # 2. NOW, inject the cache into the current merge node.
-        node.set_cache(self.cache)
-
 
 #######################
 ### Save Artifacts  ###
@@ -736,7 +820,13 @@ def save_merge_artifacts(
         fallback_path_str = get_fallback_model_path_str(cfg, merger)
 
         # --- Step 5: Transpile the Recipe to Python ---
-        recipe_python_code = MechaToPythonConverter(sd_mecha.serialize(final_recipe_node)).convert()
+        recipe_python_code = MechaToPythonConverter(
+            serialize_recipe_text(
+                final_recipe_node,
+                model_dirs_to_add=[Path(merger.models_dir)],
+                finalize=False,
+            )
+        ).convert()
 
         # --- Step 6: Assemble the Final Script ---
         all_imports = method_imports | converter_imports
@@ -849,9 +939,9 @@ class ConverterFinder(recipe_nodes.RecipeVisitor):
                 pass
 
         # Continue traversal for the rest of the recipe
-        for arg in node.args:
+        for arg in node.bound_args.args:
             self.visit(arg)
-        for kwarg in node.kwargs.values():
+        for kwarg in node.bound_args.kwargs.values():
             self.visit(kwarg)
 
     # visit_model and visit_literal can remain the same
@@ -859,10 +949,9 @@ class ConverterFinder(recipe_nodes.RecipeVisitor):
         pass
 
     def visit_literal(self, node: recipe_nodes.LiteralRecipeNode):
-        if isinstance(node.value, dict):
-            for v in node.value.values():
-                if isinstance(v, recipe_nodes.RecipeNode):
-                    self.visit(v)
+        for value in node.value_dict.values():
+            if isinstance(value, recipe_nodes.RecipeNode):
+                self.visit(value)
 
 
 def find_used_converters(root_node: recipe_nodes.RecipeNode) -> set[str]:

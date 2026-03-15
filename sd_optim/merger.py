@@ -422,15 +422,26 @@ class Merger:
         merge_method: MergeMethod,
     ) -> recipe_nodes.RecipeNode:
         """Wraps the core recipe with add_difference if the output is a delta and a base model exists."""
-        # Now accessing .args and .kwargs is safe according to the type hint
-        input_spaces_args = [node.merge_space for node in core_recipe_node.args]
-        input_spaces_kwargs = {k: node.merge_space for k, node in core_recipe_node.kwargs.items()}
+        input_spaces_args = [node.merge_space for node in core_recipe_node.bound_args.args]
+        input_spaces_kwargs = {k: node.merge_space for k, node in core_recipe_node.bound_args.kwargs.items()}
 
         try:
-            output_space = merge_method.get_return_merge_space(input_spaces_args, input_spaces_kwargs)
+            return_data = merge_method.get_return_type().data
+            output_space = return_data.merge_space
+            if output_space is None:
+                output_space = merge_method.default_merge_space
+
+            if isinstance(output_space, sd_mecha.extensions.merge_spaces.MergeSpaceSymbol):
+                concrete_inputs = [space for space in (*input_spaces_args, *input_spaces_kwargs.values()) if space is not None]
+                output_space = next(
+                    (space for space in concrete_inputs if space in output_space),
+                    None,
+                )
+
+            if output_space is None:
+                raise ValueError("Could not resolve a concrete output merge space from the merge method signature.")
         except Exception as e:
             logger.error(f"Could not determine output merge space for {merge_method.identifier}: {e}. Assuming 'weight'.")
-            # Resolve the 'weight' space correctly using sd_mecha's tools
             output_space = sd_mecha.extensions.merge_spaces.resolve("weight")
 
         # Resolve the 'delta' space correctly
@@ -439,8 +450,8 @@ class Merger:
         if output_space == delta_space:
             if base_model_node:
                 logger.info("Output is a delta, applying to base model.")
-                # Ensure we use sd_mecha's add_difference
-                return sd_mecha.add_difference(base_model_node, core_recipe_node, alpha=1.0)
+                add_difference_method = sd_mecha.extensions.merge_methods.resolve("add_difference")
+                return add_difference_method(base_model_node, core_recipe_node, alpha=1.0)
             else:
                 logger.warning(
                     f"Merge method '{merge_method.identifier}' outputs a delta, but no base model was selected. Returning the delta directly."
@@ -462,12 +473,91 @@ class Merger:
         recipe_file_path = recipes_dir / f"{iteration_file_name}.mecha"
 
         try:
-            serialized_recipe = sd_mecha.serialization.serialize(final_recipe_node)
+            recipe_for_artifact = self._build_recipe_for_artifacts(final_recipe_node)
+            finalized_recipe = utils.finalize_recipe_with_model_dirs(
+                recipe_for_artifact,
+                model_dirs_to_add=[self.models_dir],
+                model_config_preference=("singleton-mecha",),
+                merge_space_preference=sd_mecha.extensions.merge_spaces.get_all(),
+                check_mandatory_keys=False,
+            )
+            artifact_recipe = utils.relativize_model_paths(finalized_recipe, base_dir=self.models_dir)
+            serialized_recipe = utils.serialize_recipe_text(
+                artifact_recipe,
+                model_dirs_to_add=[self.models_dir],
+                finalize=False,
+            )
             with open(recipe_file_path, "w", encoding="utf-8") as f:
                 f.write(serialized_recipe)
             logger.info(f"Saved recipe to {recipe_file_path}")
         except Exception as e:
             logger.error(f"Failed to serialize or save recipe: {e}")
+
+    def _get_models_for_fallback_lookup(self, final_recipe_node: recipe_nodes.RecipeNode) -> list[ModelRecipeNode]:
+        """Return the model nodes available for fallback lookup in the current mode."""
+        if self.cfg.optimization_mode == "merge":
+            return self.models
+        if self.cfg.optimization_mode == "recipe":
+            visitor = utils.ModelVisitor()
+            final_recipe_node.accept(visitor)
+            return visitor.models
+        return []
+
+    def _resolve_fallback_node(
+        self,
+        final_recipe_node: recipe_nodes.RecipeNode,
+        *,
+        log_resolution: bool = True,
+    ) -> ModelRecipeNode | None:
+        """Resolve the configured fallback node for the current merge context."""
+        models_for_lookup = self._get_models_for_fallback_lookup(final_recipe_node)
+        fallback_node: ModelRecipeNode | None = None
+        fallback_index = self.cfg.get("fallback_model_index", -1)
+
+        if fallback_index is None or fallback_index == -1:
+            if log_resolution:
+                logger.info("No fallback model specified.")
+        elif not isinstance(fallback_index, int):
+            if log_resolution:
+                logger.error(
+                    f"Invalid fallback_model_index type: {type(fallback_index)}. Must be an integer or null. No fallback will be used."
+                )
+        elif not models_for_lookup:
+            if log_resolution:
+                logger.error(
+                    f"fallback_model_index {fallback_index} specified, but no models were found in the current context. No fallback will be used."
+                )
+        elif not (0 <= fallback_index < len(models_for_lookup)):
+            if log_resolution:
+                logger.error(
+                    f"Invalid fallback_model_index: {fallback_index}. Must be between 0 and {len(models_for_lookup) - 1}. No fallback will be used."
+                )
+        else:
+            fallback_node = models_for_lookup[fallback_index]
+            if log_resolution:
+                logger.info(f"Using model at index {fallback_index} ('{fallback_node.path}') as fallback source for missing keys.")
+
+        return fallback_node
+
+    def _build_recipe_to_merge(
+        self,
+        final_recipe_node: recipe_nodes.RecipeNode,
+        *,
+        log_resolution: bool = True,
+    ) -> tuple[recipe_nodes.RecipeNode, ModelRecipeNode | None]:
+        """Build the effective recipe mecha will execute before graph finalization."""
+        fallback_node = self._resolve_fallback_node(final_recipe_node, log_resolution=log_resolution)
+        recipe_to_merge = final_recipe_node
+        if fallback_node is not None:
+            if log_resolution:
+                logger.info("Wrapping final recipe in fallback_debug_logged for per-key fallback visibility.")
+            recipe_to_merge = fallback_debug_logged(final_recipe_node, fallback_node)
+        return recipe_to_merge, fallback_node
+
+    def _build_recipe_for_artifacts(self, final_recipe_node: recipe_nodes.RecipeNode) -> recipe_nodes.RecipeNode:
+        """Build the logical recipe artifact root without runtime output-cast wrappers."""
+        recipe_to_merge, _ = self._build_recipe_to_merge(final_recipe_node, log_resolution=False)
+        return recipe_to_merge
 
     def _prepare_model_recipe_args(
         self,
@@ -779,48 +869,15 @@ class Merger:
         return final_param_nodes
 
     # V1.2 - fallback_model_index for merge and recipe properly
-    def _execute_recipe(self, final_recipe_node: recipe_nodes.RecipeNode, model_path: Path):
+    def _execute_recipe(
+        self,
+        final_recipe_node: recipe_nodes.RecipeNode,
+        model_path: Path,
+        cache_map: dict[recipe_nodes.MergeRecipeNode, dict] | None = None,
+    ):
         """Executes the final recipe, correctly handling the fallback model for ALL modes."""
         logger.info(f"Executing merge recipe and saving to: {model_path}")
-
-        # --- Step 1: Determine the list of models available for fallback ---
-        models_for_lookup: list[ModelRecipeNode] = []
-        if self.cfg.optimization_mode == "merge":
-            models_for_lookup = self.models
-        elif self.cfg.optimization_mode == "recipe":
-            # In recipe mode, we parse the FINAL recipe to get an accurate list.
-            visitor = utils.ModelVisitor()
-            final_recipe_node.accept(visitor)
-            models_for_lookup = visitor.models
-
-        # --- Step 2: Determine the Fallback Node using EXPLICIT checks ---
-        fallback_node: ModelRecipeNode | None = None
-        fallback_index = self.cfg.get("fallback_model_index", -1)
-
-        # This is the original, explicit checking structure you liked, now made mode-aware.
-        if fallback_index is None or fallback_index == -1:
-            logger.info("No fallback model specified.")
-        elif not isinstance(fallback_index, int):
-            logger.error(
-                f"Invalid fallback_model_index type: {type(fallback_index)}. Must be an integer or null. No fallback will be used."
-            )
-        elif not models_for_lookup:  # This check now works for both modes.
-            logger.error(
-                f"fallback_model_index {fallback_index} specified, but no models were found in the current context. No fallback will be used."
-            )
-        elif not (0 <= fallback_index < len(models_for_lookup)):  # This check also now works for both modes.
-            logger.error(
-                f"Invalid fallback_model_index: {fallback_index}. Must be between 0 and {len(models_for_lookup) - 1}. No fallback will be used."
-            )
-        else:
-            # If all checks pass, we have a valid index for our lookup list.
-            fallback_node = models_for_lookup[fallback_index]
-            logger.info(f"Using model at index {fallback_index} ('{fallback_node.path}') as fallback source for missing keys.")
-
-        recipe_to_merge = final_recipe_node
-        if fallback_node is not None:
-            logger.info("Wrapping final recipe in fallback_debug_logged for per-key fallback visibility.")
-            recipe_to_merge = fallback_debug_logged(final_recipe_node, fallback_node)
+        recipe_to_merge, fallback_node = self._build_recipe_to_merge(final_recipe_node)
 
         # --- Step 3: Execute the Merge (this part was already correct) ---
         try:
@@ -839,6 +896,7 @@ class Merger:
                 output_dtype=precision_mapping.get(self.cfg.save_dtype),  # Get dtype object
                 threads=self.cfg.get("threads"),
                 strict_mandatory_keys=False,
+                cache=cache_map,
                 # Add other relevant sd_mecha.merge options as needed:
                 # strict_merge_space="weight", check_finite_output=True, etc.
             )
@@ -865,7 +923,8 @@ class Merger:
             # --- Step 2: OPTIONALLY save the new runnable script ---
             # We add a new config option for this to keep it separate.
             if self.cfg.get("save_merge_artifacts", False):
-                utils.save_merge_artifacts(self.cfg, self, final_recipe_node, model_path, iteration)
+                artifact_recipe_node = self._build_recipe_for_artifacts(final_recipe_node)
+                utils.save_merge_artifacts(self.cfg, self, artifact_recipe_node, model_path, iteration)
 
         except Exception as e:
             logger.error(f"Error during post-merge saving operations: {e}", exc_info=True)
@@ -916,19 +975,20 @@ class Merger:
             merge_func,  # Pass metadata here
         )
 
-        # 7. Build the core merge recipe node, applying cache
+        # 7. Build the core merge recipe node
         logger.info(f"Calling '{merge_func.identifier}' with {len(sliced_model_nodes)} model args, {len(param_nodes)} param nodes.")
-        core_recipe_node = merge_func(*sliced_model_nodes, **param_nodes).set_cache(cache)
+        core_recipe_node = merge_func(*sliced_model_nodes, **param_nodes)
 
         # 8. Handle potential delta output (wrap with add_difference)
         final_recipe_node = self._handle_delta_output(core_recipe_node, base_model_node, merge_func)
+        cache_map = utils.build_recipe_cache_map(final_recipe_node, cache)
         # --- End Recipe Building ---
 
         # 9. Optional steps (save recipe, code, add keys)
         self._save_recipe_etc(final_recipe_node, model_path, iteration)
 
         # 10. Execute the final recipe (includes fallback logic)
-        self._execute_recipe(final_recipe_node, model_path)
+        self._execute_recipe(final_recipe_node, model_path, cache_map=cache_map)
 
         logger.info(f"Merge process completed. Output: {model_path}")
         return model_path
@@ -946,6 +1006,7 @@ class Merger:
         "doer" utilities to rewrite the recipe text and execute.
         """
         logger.info(f"--- Coordinating Recipe Optimization for Iteration {iteration} ---")
+        cache = cache if cache is not None else {}
         recipe_cfg = self.cfg.recipe_optimization
         recipe_path = Path(recipe_cfg.recipe_path)
         original_recipe_text = recipe_path.read_text(encoding="utf-8")
@@ -1004,14 +1065,11 @@ class Merger:
             debug_path.write_text(final_recipe_text, encoding="utf-8")
             raise ValueError(f"Final recipe deserialization failed. Saved debug recipe to {debug_path}: {e}") from e
 
-        # We now perform a DEEP injection of the cache into every merge node.
-        logger.info("Performing deep injection of the shared cache into the recipe graph...")
-        cache_injector = utils.CacheInjectorVisitor(cache)
-        final_recipe_node_with_cache = cache_injector.visit(final_recipe_node)
+        cache_map = utils.build_recipe_cache_map(final_recipe_node, cache)
 
         model_path = self.output_file
-        self._save_recipe_etc(final_recipe_node_with_cache, model_path, iteration)
-        self._execute_recipe(final_recipe_node_with_cache, model_path)
+        self._save_recipe_etc(final_recipe_node, model_path, iteration)
+        self._execute_recipe(final_recipe_node, model_path, cache_map=cache_map)
 
         logger.info(f"Recipe optimization coordination complete. Output: {model_path}")
         return model_path

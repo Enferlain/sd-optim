@@ -417,8 +417,18 @@ def load_and_register_custom_conversion(conversion_dir: Path):
         logger.warning(f"Custom conversion directory not found: {conversion_dir}. Skipping registration.")
         return
 
-    # Add the conversion directory to the Python path temporarily to allow direct imports
-    sys.path.insert(0, str(conversion_dir.parent.resolve()))  # Add parent directory
+    package_root_dir = conversion_dir.parent.resolve()
+    package_name_parts = [conversion_dir.name]
+    current_dir = conversion_dir.parent.resolve()
+    while (current_dir / "__init__.py").exists():
+        package_name_parts.append(current_dir.name)
+        package_root_dir = current_dir.parent.resolve()
+        current_dir = current_dir.parent.resolve()
+
+    import_package = ".".join(reversed(package_name_parts))
+
+    # Add the package root to the Python path temporarily to allow direct imports.
+    sys.path.insert(0, str(package_root_dir))
 
     try:
         for module_info in pkgutil.iter_modules([str(conversion_dir)]):
@@ -427,10 +437,8 @@ def load_and_register_custom_conversion(conversion_dir: Path):
                 continue
             try:
                 logger.debug(f"  Importing conversion module: {module_name}")
-                # Perform the import - this triggers the @merge_method decorators inside
-                # Need to construct the full import path relative to something in sys.path
-                # Assuming conversion_dir is like 'sd_optim/model_configs'
-                import_path = f"{conversion_dir.parent.name}.{conversion_dir.name}.{module_name}"
+                # Perform the import - this triggers the @merge_method decorators inside.
+                import_path = f"{import_package}.{module_name}"
                 importlib.import_module(import_path)
                 logger.info(f"  Successfully imported and potentially registered methods from: {module_name}.py")
                 registered_count += 1  # Count modules imported, not methods registered
@@ -443,7 +451,7 @@ def load_and_register_custom_conversion(conversion_dir: Path):
                 )
     finally:
         # Clean up sys.path
-        if str(conversion_dir.parent.resolve()) in sys.path:
+        if str(package_root_dir) in sys.path:
             sys.path.pop(0)
 
     logger.info(f"Finished custom conversion scan. Imported {registered_count} module(s).")

@@ -19,6 +19,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - Updated custom block converters to work with sd-mecha 1.1.3
+- Reorganized bundled repository assets so builtin scorers now live under `sd_optim/builtin/scorers/`, builtin model configs under `sd_optim/builtin/model_configs/`, and non-runtime debug artifacts live under `tools/` and `assets/`
 - Restored the merger's recipe-level fallback wrapper for per-key DEBUG fallback logging under sd-mecha 1.1.x
 - Upgraded the merger fallback wrapper to a class-based method that mirrors `sd_mecha.fallback` key planning and emits a visible INFO log on the first actual fallback hit
 - Replaced removed `sd_mecha.open_input_dicts` / `sd_mecha.infer_model_configs` usage with `open_graph`-based compatibility helpers for optimizer and merger model inspection
@@ -29,12 +30,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Updated saved recipe artifacts to serialize the finalized fallback-wrapped execution graph instead of the raw pre-finalized recipe
 - Refined saved recipe artifacts to keep logical merge structure by dropping runtime output-cast wrappers and restoring relative model paths when possible
 - Centralized adapter config detection so LoRA/LyCORIS checks reuse cached sd-mecha config inference instead of repeated substring-based scans
-- Added an `sd_optim.svd` compatibility shim so runtime merge helpers still import after the helper move into `sd_optim/merge_methods/svd.py`
+- Added an `sd_optim.svd` compatibility shim so runtime merge helpers still import after the helper move into `sd_optim/builtin/merge_methods/svd.py`
+- Made `sd_optim.builtin.merge_methods` the explicit package surface for bundled SVD helpers and updated runtime/config defaults to point at the builtin layout
 
 ### Fixed
 
 - Fixed startup and model-inspection crashes against `sd-mecha` 1.1.x caused by removed top-level APIs such as `open_input_dicts` and `infer_model_configs`
-- Fixed stale package-local SVD helper imports after the helper implementation moved to `sd_optim/merge_methods/svd.py`
+- Fixed stale package-local SVD helper imports after the helper implementation moved to `sd_optim/builtin/merge_methods/svd.py`
+- Fixed builtin-layout import fallout after package moves by updating scorer registry module paths, converter discovery imports, and default builtin config locations
 - Fixed fallback visibility during merging by making real fallback hits visible at `INFO` level and per-key fallback usage visible at `DEBUG`
 - Fixed merge-mode and recipe-mode cache wiring against `sd-mecha` 1.1.x by passing explicit node-to-cache mappings into `sd_mecha.merge(...)`
 - Fixed delta-output wrapping and recipe traversal against the 1.1.x node API by using `bound_args` and direct merge-method recipe construction

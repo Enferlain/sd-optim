@@ -17,8 +17,8 @@ ENABLE_CACHING = True  # Enable caching for merge operations
 # Assume sd-optim structure: execute_recipes.py is at root, sd_optim/ is the package
 SCRIPT_DIR = Path(__file__).parent.resolve()
 PROJECT_ROOT = SCRIPT_DIR  # Assuming script is at project root
-DEFAULT_CUSTOM_CONFIGS_DIR = PROJECT_ROOT / "sd_optim" / "model_configs"
-DEFAULT_CUSTOM_CONVERSION_DIR = PROJECT_ROOT / "sd_optim" / "model_configs"
+DEFAULT_CUSTOM_CONFIGS_DIR = PROJECT_ROOT / "sd_optim" / "builtin" / "model_configs"
+DEFAULT_CUSTOM_CONVERSION_DIR = PROJECT_ROOT / "sd_optim" / "builtin" / "model_configs"
 # Directory where your models (.safetensors) are generally located
 # Needed for resolving relative paths in recipes
 DEFAULT_MODELS_BASE_DIR = Path("D:/stable-diffusion-webui-reforge/models/Stable-diffusion")  # Example absolute path

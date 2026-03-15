@@ -17,7 +17,9 @@ if str(REPO_ROOT) not in sys.path:
 
 
 def _register_test_config(identifier: str) -> None:
-    config_path = REPO_ROOT / "sd_optim" / "model_configs" / f"{identifier}.yaml"
+    config_path = (
+        REPO_ROOT / "sd_optim" / "builtin" / "model_configs" / f"{identifier}.yaml"
+    )
     with open(config_path, encoding="utf-8") as handle:
         config_data = yaml.safe_load(handle)
 
@@ -46,7 +48,9 @@ def _register_custom_configs() -> None:
 
 
 def test_main_converter_imports_as_class_method_and_builds_explicit_key_map() -> None:
-    module = _import_converter("sd_optim.model_configs.convert_sdxl_optim_blocks")
+    module = _import_converter(
+        "sd_optim.builtin.model_configs.convert_sdxl_optim_blocks"
+    )
     converter = module.convert_sdxl_optim_blocks_to_sdxl_sgm
 
     assert converter.wrapped_is_class is True
@@ -61,7 +65,9 @@ def test_main_converter_imports_as_class_method_and_builds_explicit_key_map() ->
 
 
 def test_main_converter_uses_skip_key_for_missing_optimized_block() -> None:
-    module = _import_converter("sd_optim.model_configs.convert_sdxl_optim_blocks")
+    module = _import_converter(
+        "sd_optim.builtin.model_configs.convert_sdxl_optim_blocks"
+    )
     converter = module.convert_sdxl_optim_blocks_to_sdxl_sgm
     context = converter.instantiate()
 
@@ -81,7 +87,9 @@ def test_main_converter_uses_skip_key_for_missing_optimized_block() -> None:
 
 
 def test_granular_converter_imports_as_class_method_and_builds_explicit_key_map() -> None:
-    module = _import_converter("sd_optim.model_configs.convert_sdxl_optim_blocks_sub")
+    module = _import_converter(
+        "sd_optim.builtin.model_configs.convert_sdxl_optim_blocks_sub"
+    )
     converter = module.convert_sdxl_optim_blocks_sub_to_sdxl_sgm
 
     assert converter.wrapped_is_class is True
@@ -96,7 +104,9 @@ def test_granular_converter_imports_as_class_method_and_builds_explicit_key_map(
 
 
 def test_granular_converter_returns_optimized_value_for_mapped_block() -> None:
-    module = _import_converter("sd_optim.model_configs.convert_sdxl_optim_blocks_sub")
+    module = _import_converter(
+        "sd_optim.builtin.model_configs.convert_sdxl_optim_blocks_sub"
+    )
     converter = module.convert_sdxl_optim_blocks_sub_to_sdxl_sgm
     context = converter.instantiate()
 

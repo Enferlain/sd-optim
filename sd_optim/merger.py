@@ -98,6 +98,7 @@ class Merger:
 
         self.output_file: Path | None = None
         self.best_output_file: Path | None = None
+        self._model_config_candidates_cache: dict[tuple[str, str], tuple[sd_mecha.extensions.model_configs.ModelConfig, ...]] = {}
 
         self.models: list[ModelRecipeNode] = []
         if self.cfg.optimization_mode == "merge":
@@ -263,6 +264,42 @@ class Merger:
         output_dir.mkdir(parents=True, exist_ok=True)
         return output_dir / f"{combined_name}.safetensors"
 
+    def _get_model_config_cache_key(self, node: recipe_nodes.ModelRecipeNode) -> tuple[str, str]:
+        """Build a stable cache key for inferred model-config candidates."""
+        return (type(node).__name__, str(node.path))
+
+    def _get_model_config_candidates_cached(
+        self,
+        node: recipe_nodes.ModelRecipeNode,
+    ) -> tuple[sd_mecha.extensions.model_configs.ModelConfig, ...]:
+        """Return cached sd-mecha model-config candidates for a model node."""
+        cache_key = self._get_model_config_cache_key(node)
+        cached = self._model_config_candidates_cache.get(cache_key)
+        if cached is not None:
+            return cached
+
+        inferred_candidates = utils.get_model_config_candidates(node, [self.models_dir])
+        candidates = tuple(inferred_candidates)
+        self._model_config_candidates_cache[cache_key] = candidates
+        return candidates
+
+    def _is_adapter_model_config(self, config: sd_mecha.extensions.model_configs.ModelConfig) -> bool:
+        """Return True when a config represents an adapter-style model rather than a base checkpoint."""
+        identifier = getattr(config, "identifier", "")
+        implementation = ""
+        get_impl = getattr(config, "get_implementation_identifier", None)
+        if callable(get_impl):
+            try:
+                implementation = get_impl()
+            except Exception:
+                implementation = ""
+        return identifier.endswith("_lora") or implementation.endswith("_lora")
+
+    def _get_adapter_candidate_ids(self, node: recipe_nodes.ModelRecipeNode) -> tuple[str, ...]:
+        """Return the inferred adapter-style config identifiers for a model node."""
+        candidates = self._get_model_config_candidates_cached(node)
+        return tuple(cfg.identifier for cfg in candidates if self._is_adapter_model_config(cfg))
+
     def _select_base_model(self) -> recipe_nodes.ModelRecipeNode | None:
         """Selects the base model node based on configuration index."""
         base_model_index = self.cfg.get("base_model_index", None)
@@ -281,8 +318,7 @@ class Merger:
             if not hasattr(self, "models_dir") or not self.models_dir:
                 raise FileNotFoundError("Merger's models_dir attribute is not set.")
 
-            inferred_candidates = utils.get_model_config_candidates(base_model_node, [self.models_dir])
-            if any("lora" in cfg.identifier or "lycoris" in cfg.identifier for cfg in inferred_candidates):
+            if self._get_adapter_candidate_ids(base_model_node):
                 raise ValueError(
                     f"The selected base model ('{base_model_node.path}') appears to be a LoRA/LyCORIS. These cannot be used as base models."
                 )
@@ -363,8 +399,7 @@ class Merger:
     def _validate_node_is_not_lora(self, node: recipe_nodes.ModelRecipeNode, raise_error: bool = True):
         """Checks if a given ModelRecipeNode is a LoRA/LyCORIS. Raises ValueError if it is."""
         try:
-            inferred_candidates = utils.get_model_config_candidates(node, [self.models_dir])
-            if any("lora" in cfg.identifier or "lycoris" in cfg.identifier for cfg in inferred_candidates):
+            if self._get_adapter_candidate_ids(node):
                 raise ValueError(f"Model '{node.path}' appears to be a LoRA/LyCORIS and cannot be used as a base/context model.")
         except ValueError as e:
             if raise_error:
@@ -590,11 +625,7 @@ class Merger:
 
             # --- Step 1: LoRA Detection ---
             try:
-                inferred_candidates = utils.get_model_config_candidates(current_node, [self.models_dir])
-                inferred_lora_configs = [
-                    cfg.identifier for cfg in inferred_candidates
-                    if "lora" in cfg.identifier or "lycoris" in cfg.identifier
-                ]
+                inferred_lora_configs = list(self._get_adapter_candidate_ids(model_node))
                 if inferred_lora_configs:
                     is_lora = True
                     logger.info(

@@ -28,6 +28,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Added a shared non-finalizing recipe serialization helper for artifact generation and recipe saving under `sd-mecha` 1.1.x
 - Updated saved recipe artifacts to serialize the finalized fallback-wrapped execution graph instead of the raw pre-finalized recipe
 - Refined saved recipe artifacts to keep logical merge structure by dropping runtime output-cast wrappers and restoring relative model paths when possible
+- Centralized adapter config detection so LoRA/LyCORIS checks reuse cached sd-mecha config inference instead of repeated substring-based scans
 - Added an `sd_optim.svd` compatibility shim so runtime merge helpers still import after the helper move into `sd_optim/merge_methods/svd.py`
 
 ### Fixed
@@ -41,6 +42,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Fixed `.mecha` recipe saving for relative model paths by avoiding unnecessary graph finalization during serialization
 - Fixed saved recipe artifacts showing unresolved `null` metadata by finalizing the same model-dir-aware execution graph that `sd_mecha.merge(...)` uses
 - Fixed saved recipe artifacts leaking finalized absolute model paths and runtime `cast` wrapper nodes into the human-facing `.mecha` output
+- Fixed repeated adapter validation work by caching inferred model-config candidates for LoRA/LyCORIS checks across the merger flow
 
 ## [Unreleased] - 2026-02-22
 

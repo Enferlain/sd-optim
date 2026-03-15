@@ -172,3 +172,35 @@ def test_serialize_and_save_recipe_uses_finalized_execution_recipe(monkeypatch, 
     assert captured["serialize_node"].path == finalized_model_path.relative_to(merger.models_dir)
     assert captured["serialize_model_dirs"] == [merger.models_dir]
     assert captured["serialize_finalize"] is False
+
+
+def test_get_adapter_candidate_ids_caches_model_config_inference(monkeypatch, tmp_path) -> None:
+    merger = object.__new__(merger_mod.Merger)
+    merger.models_dir = tmp_path
+    merger._model_config_candidates_cache = {}
+
+    adapter_cfg = types.SimpleNamespace(identifier="sdxl-kohya_kohya_lora")
+    base_cfg = types.SimpleNamespace(identifier="sdxl-sgm")
+    calls = {"count": 0}
+
+    def fake_get_model_config_candidates(node, model_dirs_to_add):  # noqa: ARG001 - mirrors helper signature.
+        calls["count"] += 1
+        return (adapter_cfg, base_cfg)
+
+    monkeypatch.setattr(merger_mod.utils, "get_model_config_candidates", fake_get_model_config_candidates)
+
+    node = sd_mecha.model("adapter.safetensors")
+
+    first = merger._get_adapter_candidate_ids(node)
+    second = merger._get_adapter_candidate_ids(node)
+
+    assert first == ("sdxl-kohya_kohya_lora",)
+    assert second == ("sdxl-kohya_kohya_lora",)
+    assert calls["count"] == 1
+
+
+def test_is_adapter_model_config_uses_identifier_suffix() -> None:
+    merger = object.__new__(merger_mod.Merger)
+
+    assert merger._is_adapter_model_config(types.SimpleNamespace(identifier="sdxl-kohya_kohya_lora")) is True
+    assert merger._is_adapter_model_config(types.SimpleNamespace(identifier="sdxl-sgm")) is False

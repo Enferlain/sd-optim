@@ -61,7 +61,7 @@ components:
         target_type: key
         keys:
           - "*.embedding.*" # A wildcard pattern for keys.
-          # Note: The 'single' strategy also needs a 'keys' list to know what to apply the single param to.
+        # Note: The 'single' strategy also needs a 'keys' list to know what to apply the single param to.
 
       # Strategy B: Don't optimize the rest of the clip_g layers at all.
       - type: none # 'none' is a special strategy that does nothing. Useful for excluding parts of a component.

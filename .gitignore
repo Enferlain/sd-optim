@@ -118,6 +118,7 @@ logs/**/*.jpg
 !conf/payloads/*.tmpl.yaml # Match any cargo_*.tmpl.yaml
 !conf/payloads/cargo/payload.tmpl.yaml
 !conf/optimization_guide/guide.tmpl.yaml
+conf/payloads/*.json
 
 # --- Other Project Files ---
 # Ignore contents of the logs folder, but not the folder itself
@@ -144,6 +145,10 @@ conf/**/*.yaml
 # --- Local Test/Demo Scripts ---
 scorer_demo.py
 TEST.py
+sd_optim/models/test_*
+sd_optim/models/lumi_*
+sd_optim/models/*.jpg
+sd_optim/models/*.png
 
 # --- Explicitly Tracked ---
 # Ensure core files and specified directories aren't accidentally ignored
@@ -161,7 +166,7 @@ TEST.py
 # --- etc ---
 *.7z
 *.png
-!analysis_*/
+analysis_*/
 analysis_output/
 conductor/
 .hf-cache

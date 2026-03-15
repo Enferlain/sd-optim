@@ -123,13 +123,11 @@ class Optimizer:
         # We assert that the node is the specific type we need. This makes the linter happy and the code safer!
         assert isinstance(rep_model_node, ModelRecipeNode), "The representative model must be a file path, not a literal dict."
 
-        with sd_mecha.open_input_dicts(rep_model_node, [models_dir]):
-            # Now the linter knows rep_model_node has .state_dict because of the assertion above.
-            inferred_sets = sd_mecha.infer_model_configs(rep_model_node.state_dict.keys())
-            if not inferred_sets:
-                raise ValueError(f"Could not infer a ModelConfig for {representative_model_path}.")
-            base_model_config = next(iter(inferred_sets[0]))
-            logger.info(f"Inferred base ModelConfig: {base_model_config.identifier}")
+        inferred_candidates = utils.get_model_config_candidates(rep_model_node, [models_dir])
+        if not inferred_candidates:
+            raise ValueError(f"Could not infer a ModelConfig for {representative_model_path}.")
+        base_model_config = inferred_candidates[0]
+        logger.info(f"Inferred base ModelConfig: {base_model_config.identifier}")
 
         # 1c. Load the custom block config ONCE
         custom_block_config_id = self.cfg.optimization_guide.get("custom_block_config_id")

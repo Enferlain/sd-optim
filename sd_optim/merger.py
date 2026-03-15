@@ -14,12 +14,8 @@ from typing import Any, TypeVar
 from omegaconf import DictConfig, ListConfig
 from sd_mecha import extensions, recipe_nodes
 from sd_mecha.extensions.merge_methods import MergeMethod, RecipeNodeOrValue, Parameter, Return, StateDict, merge_method
-from sd_mecha.recipe_nodes import (
-    RecipeNodeOrValue,
-    ModelRecipeNode,
-    RecipeNode,
-    MergeRecipeNode,
-)
+from sd_mecha.keys_map import KeyMapBuilder
+from sd_mecha.recipe_nodes import ModelRecipeNode, RecipeNode, MergeRecipeNode
 from sd_mecha.extensions import merge_methods  # Import model_configs
 from sd_mecha.streaming import StateDictKeyError
 
@@ -47,19 +43,43 @@ def _sanitize_recipe_text_for_deserialize(recipe_text: str) -> str:
     return "\n".join(line for line in recipe_text.splitlines() if line.strip())
 
 
-@merge_method(identifier="fallback_debug_logged")
-def fallback_debug_logged(
-    a: Parameter(StateDict[T]),
-    default: Parameter(StateDict[T]),
-    **kwargs,
-) -> Return(T):
-    """Fallback wrapper that mirrors sd_mecha fallback behavior with DEBUG key logs."""
-    key = kwargs["key"]
-    try:
-        return a[key]
-    except StateDictKeyError:
-        logger.debug("Using fallback for key: %s", key)
-        return default[key]
+@merge_method(identifier="fallback_debug_logged", reuse_outputs=False)
+class fallback_debug_logged:
+    """Fallback wrapper that mirrors `sd_mecha.fallback` and surfaces first-hit visibility."""
+
+    def __init__(self) -> None:
+        self.fallback_hits = 0
+
+    @staticmethod
+    def map_keys(builder: KeyMapBuilder) -> None:
+        for key in builder.keys():  # noqa: SIM118 - sd_mecha exposes a callable accessor, not a dict view.
+            a_inputs = builder.a.keys[key] @ dict.fromkeys(["a"])
+            default_inputs = builder.default.keys[key] @ dict.fromkeys(["default"])
+            builder[key] = a_inputs & default_inputs | a_inputs | default_inputs
+
+    def __call__(
+        self,
+        a: Parameter(StateDict[T]),
+        default: Parameter(StateDict[T]),
+        **kwargs,
+    ) -> Return(T):
+        (key,), _ = relation = kwargs["key_relation"]
+        params = tuple(relation.meta) if relation.meta is not None else ("a", "default")
+
+        for param in params:
+            try:
+                value = locals()[param][key]
+            except StateDictKeyError:
+                continue
+
+            if param != "a":
+                self.fallback_hits += 1
+                if self.fallback_hits == 1:
+                    logger.info("Fallback hit 1 for key: %s; per-key fallback logs continue at DEBUG.", key)
+                logger.debug("Using fallback for key: %s", key)
+            return value
+
+        raise StateDictKeyError(key)
 
 
 @dataclass
@@ -261,14 +281,11 @@ class Merger:
             if not hasattr(self, "models_dir") or not self.models_dir:
                 raise FileNotFoundError("Merger's models_dir attribute is not set.")
 
-            with sd_mecha.open_input_dicts(base_model_node, [self.models_dir]):
-                # The LoRA check logic itself is fine.
-                if base_model_node.model_config and (
-                    "lora" in base_model_node.model_config.identifier or "lycoris" in base_model_node.model_config.identifier
-                ):
-                    raise ValueError(
-                        f"The selected base model ('{base_model_node.path}') appears to be a LoRA/LyCORIS. These cannot be used as base models."
-                    )
+            inferred_candidates = utils.get_model_config_candidates(base_model_node, [self.models_dir])
+            if any("lora" in cfg.identifier or "lycoris" in cfg.identifier for cfg in inferred_candidates):
+                raise ValueError(
+                    f"The selected base model ('{base_model_node.path}') appears to be a LoRA/LyCORIS. These cannot be used as base models."
+                )
         except (ValueError, FileNotFoundError) as e:
             # Re-raise configuration and setup errors as they are critical.
             logger.error(f"Error during base model validation: {e}")
@@ -346,10 +363,9 @@ class Merger:
     def _validate_node_is_not_lora(self, node: recipe_nodes.ModelRecipeNode, raise_error: bool = True):
         """Checks if a given ModelRecipeNode is a LoRA/LyCORIS. Raises ValueError if it is."""
         try:
-            with sd_mecha.open_input_dicts(node, [self.models_dir]):
-                config_id = node.model_config.identifier
-                if "lora" in config_id or "lycoris" in config_id:
-                    raise ValueError(f"Model '{node.path}' appears to be a LoRA/LyCORIS and cannot be used as a base/context model.")
+            inferred_candidates = utils.get_model_config_candidates(node, [self.models_dir])
+            if any("lora" in cfg.identifier or "lycoris" in cfg.identifier for cfg in inferred_candidates):
+                raise ValueError(f"Model '{node.path}' appears to be a LoRA/LyCORIS and cannot be used as a base/context model.")
         except ValueError as e:
             if raise_error:
                 raise e
@@ -484,12 +500,18 @@ class Merger:
 
             # --- Step 1: LoRA Detection ---
             try:
-                with sd_mecha.open_input_dicts(current_node, [self.models_dir]):
-                    inferred_config_id = current_node.model_config.identifier
-                    if "lora" in inferred_config_id or "lycoris" in inferred_config_id:
-                        is_lora = True
-                        # FIX 2: We use the guaranteed original path for this log message
-                        logger.info(f"Identified LoRA/LyCORIS: '{original_path_for_logging}' with config '{inferred_config_id}'")
+                inferred_candidates = utils.get_model_config_candidates(current_node, [self.models_dir])
+                inferred_lora_configs = [
+                    cfg.identifier for cfg in inferred_candidates
+                    if "lora" in cfg.identifier or "lycoris" in cfg.identifier
+                ]
+                if inferred_lora_configs:
+                    is_lora = True
+                    logger.info(
+                        "Identified LoRA/LyCORIS: '%s' with candidate config(s) %s",
+                        original_path_for_logging,
+                        inferred_lora_configs,
+                    )
             except Exception as e:
                 logger.error(f"Could not infer config for model {original_path_for_logging}: {e}")
                 is_lora = False
@@ -787,22 +809,21 @@ class Merger:
             fallback_node = models_for_lookup[fallback_index]
             logger.info(f"Using model at index {fallback_index} ('{fallback_node.path}') as fallback source for missing keys.")
 
+        recipe_to_merge = final_recipe_node
+        if fallback_node is not None:
+            logger.info("Wrapping final recipe in fallback_debug_logged for per-key fallback visibility.")
+            recipe_to_merge = fallback_debug_logged(final_recipe_node, fallback_node)
+
         # --- Step 3: Execute the Merge (this part was already correct) ---
         try:
             if not self.models_dir or not self.models_dir.is_dir():
                 raise FileNotFoundError("Merger.models_dir is not set or is not a valid directory.")
 
-            recipe_for_merge = final_recipe_node
-            merge_fallback_model = fallback_node
-            if fallback_node is not None:
-                recipe_for_merge = merge_methods.resolve("fallback_debug_logged")(final_recipe_node, fallback_node)
-                merge_fallback_model = None
-
-            logger.info(f"Calling sd_mecha.merge with fallback_model: {merge_fallback_model}")
+            logger.info("Calling sd_mecha.merge with recipe-level fallback: %s", fallback_node)
             sd_mecha.merge(
-                recipe=recipe_for_merge,
+                recipe=recipe_to_merge,
                 output=model_path,
-                fallback_model=merge_fallback_model,  # Fallback is wrapped into recipe when provided
+                fallback_model=None,
                 merge_device=self.cfg.get("device", "cpu"),  # Default merge device if not set
                 merge_dtype=precision_mapping.get(self.cfg.merge_dtype),  # Get dtype object
                 output_device="cpu",  # Keep saving to CPU
@@ -973,7 +994,7 @@ class Merger:
         except Exception as e:
             debug_path = Path(HydraConfig.get().runtime.output_dir) / f"iteration_{iteration}_failed_recipe.mecha"
             debug_path.write_text(final_recipe_text, encoding="utf-8")
-            raise ValueError(f"Final recipe deserialization failed. Saved debug recipe to {debug_path}: {e}")
+            raise ValueError(f"Final recipe deserialization failed. Saved debug recipe to {debug_path}: {e}") from e
 
         # We now perform a DEEP injection of the cache into every merge node.
         logger.info("Performing deep injection of the shared cache into the recipe graph...")
@@ -1034,7 +1055,7 @@ class Merger:
 
         # Determine if the model is an SDXL model by checking for a characteristic key
         # Use 'any' for efficiency - stops searching once found
-        is_xl_model = any("conditioner.embedders.1" in key for key in state_dict.keys())
+        is_xl_model = any("conditioner.embedders.1" in key for key in state_dict)
         logger.info(f"Determined model type for layer adjustment: {'SDXL' if is_xl_model else 'Non-SDXL'}")
 
         # Apply adjustments (Assuming utils.modify_state_dict handles the logic)

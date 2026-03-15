@@ -14,6 +14,7 @@ import sd_mecha
 import logging
 import ast
 import yaml
+import contextlib
 
 from pathlib import Path
 from typing import (
@@ -48,6 +49,41 @@ precision_mapping = {
     "fp32": torch.float32,
     "fp64": torch.float64,
 }
+
+
+@contextlib.contextmanager
+def temporary_model_dirs(model_dirs_to_add: list[Path] | tuple[Path, ...]):
+    """Temporarily extend sd-mecha's global model-dir registry for graph opening."""
+    registry = sd_mecha.extensions.model_dirs._registry
+    original_registry = registry.copy()
+    try:
+        for model_dir in model_dirs_to_add:
+            if model_dir not in registry:
+                registry.append(model_dir)
+        yield
+    finally:
+        registry[:] = original_registry
+
+
+@contextlib.contextmanager
+def open_model_graph_root(
+    node: sd_mecha.recipe_nodes.RecipeNodeOrValue,
+    model_dirs_to_add: list[Path] | tuple[Path, ...],
+):
+    """Open a recipe graph root while honoring the run's temporary model-dir search paths."""
+    with temporary_model_dirs(model_dirs_to_add):
+        with sd_mecha.open_graph(node, root_only=True) as graph:
+            yield graph.root_non_finalized
+
+
+def get_model_config_candidates(
+    node: sd_mecha.recipe_nodes.RecipeNodeOrValue,
+    model_dirs_to_add: list[Path] | tuple[Path, ...],
+) -> tuple[sd_mecha.extensions.model_configs.ModelConfig, ...]:
+    """Return sd-mecha's current root model-config candidates for a node."""
+    with temporary_model_dirs(model_dirs_to_add):
+        with sd_mecha.open_graph(node, root_only=True) as graph:
+            return tuple(graph.root_candidates().model_config)
 
 
 #####################################

@@ -5,6 +5,30 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased] - 2026-03-15
+
+### Added
+
+- Added focused `sd-mecha` 1.1.x regression tests for:
+  - class-based converter compatibility
+  - fallback logging and key planning behavior
+  - graph/model-dir compatibility helpers
+  - moved SVD helper import compatibility
+
+### Changed
+
+- Updated custom block converters to work with sd-mecha 1.1.3
+- Restored the merger's recipe-level fallback wrapper for per-key DEBUG fallback logging under sd-mecha 1.1.x
+- Upgraded the merger fallback wrapper to a class-based method that mirrors `sd_mecha.fallback` key planning and emits a visible INFO log on the first actual fallback hit
+- Replaced removed `sd_mecha.open_input_dicts` / `sd_mecha.infer_model_configs` usage with `open_graph`-based compatibility helpers for optimizer and merger model inspection
+- Added an `sd_optim.svd` compatibility shim so runtime merge helpers still import after the helper move into `sd_optim/merge_methods/svd.py`
+
+### Fixed
+
+- Fixed startup and model-inspection crashes against `sd-mecha` 1.1.x caused by removed top-level APIs such as `open_input_dicts` and `infer_model_configs`
+- Fixed stale package-local SVD helper imports after the helper implementation moved to `sd_optim/merge_methods/svd.py`
+- Fixed fallback visibility during merging by making real fallback hits visible at `INFO` level and per-key fallback usage visible at `DEBUG`
+
 ## [Unreleased] - 2026-02-22
 
 ### Added

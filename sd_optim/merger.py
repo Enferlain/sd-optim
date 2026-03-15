@@ -523,10 +523,10 @@ class Merger:
 
                 logger.info(f"Converting LoRA '{original_path_for_logging}' to a delta...")
                 try:
-                    current_node = sd_mecha.convert(
+                    current_node = utils.convert_with_model_dirs(
                         current_node,
                         conversion_target_node,
-                        model_dirs=[self.models_dir],
+                        model_dirs_to_add=[self.models_dir],
                     )
                     logger.info(f"LoRA converted successfully. New node is in '{current_node.merge_space.identifier}' space.")
                 except Exception as e:
@@ -658,7 +658,11 @@ class Merger:
                     continue
                 try:
                     literal_node = sd_mecha.literal(block_dict, config=self.custom_block_config.identifier)
-                    converted_node = sd_mecha.convert(literal_node, target_model_node, model_dirs=[self.models_dir])
+                    converted_node = utils.convert_with_model_dirs(
+                        literal_node,
+                        target_model_node,
+                        model_dirs_to_add=[self.models_dir],
+                    )
                     final_param_nodes[base_param] = converted_node
                     logger.debug(f"Created BLOCK-ONLY node for '{base_param}' ({len(block_dict)} blocks).")
                 except Exception as e:
@@ -699,7 +703,11 @@ class Merger:
                     block_literal = sd_mecha.literal(block_dict, config=self.custom_block_config.identifier)
 
                     # Step 2: Convert blocks to base config (same as models)
-                    block_converted = sd_mecha.convert(block_literal, target_model_node, model_dirs=[self.models_dir])
+                    block_converted = utils.convert_with_model_dirs(
+                        block_literal,
+                        target_model_node,
+                        model_dirs_to_add=[self.models_dir],
+                    )
 
                     # Step 3: Create key literal with base config (already compatible)
                     key_literal = sd_mecha.literal(key_dict, config=self.base_model_config.identifier)
@@ -820,7 +828,8 @@ class Merger:
                 raise FileNotFoundError("Merger.models_dir is not set or is not a valid directory.")
 
             logger.info("Calling sd_mecha.merge with recipe-level fallback: %s", fallback_node)
-            sd_mecha.merge(
+            utils.merge_with_model_dirs(
+                model_dirs_to_add=[self.models_dir],
                 recipe=recipe_to_merge,
                 output=model_path,
                 fallback_model=None,
@@ -829,10 +838,9 @@ class Merger:
                 output_device="cpu",  # Keep saving to CPU
                 output_dtype=precision_mapping.get(self.cfg.save_dtype),  # Get dtype object
                 threads=self.cfg.get("threads"),
-                model_dirs=[self.models_dir],  # Use the directory containing models
-                check_mandatory_keys=False,
+                strict_mandatory_keys=False,
                 # Add other relevant sd_mecha.merge options as needed:
-                # strict_weight_space=True, check_finite=True, etc.
+                # strict_merge_space="weight", check_finite_output=True, etc.
             )
             logging.info(f"Successfully merged and saved model to {model_path}")
         except Exception as e:

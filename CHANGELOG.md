@@ -14,6 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - fallback logging and key planning behavior
   - graph/model-dir compatibility helpers
   - moved SVD helper import compatibility
+  - merge/convert wrapper compatibility against the 1.1.x runtime signatures
 
 ### Changed
 
@@ -21,6 +22,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Restored the merger's recipe-level fallback wrapper for per-key DEBUG fallback logging under sd-mecha 1.1.x
 - Upgraded the merger fallback wrapper to a class-based method that mirrors `sd_mecha.fallback` key planning and emits a visible INFO log on the first actual fallback hit
 - Replaced removed `sd_mecha.open_input_dicts` / `sd_mecha.infer_model_configs` usage with `open_graph`-based compatibility helpers for optimizer and merger model inspection
+- Replaced active runtime `sd_mecha.merge(..., model_dirs=..., check_mandatory_keys=...)` and `sd_mecha.convert(..., model_dirs=...)` call patterns with helper wrappers that use the new `model_dirs` registry and `strict_mandatory_keys`
 - Added an `sd_optim.svd` compatibility shim so runtime merge helpers still import after the helper move into `sd_optim/merge_methods/svd.py`
 
 ### Fixed

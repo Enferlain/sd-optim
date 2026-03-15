@@ -86,6 +86,27 @@ def get_model_config_candidates(
             return tuple(graph.root_candidates().model_config)
 
 
+def convert_with_model_dirs(
+    recipe: sd_mecha.recipe_nodes.RecipeNodeOrValue,
+    config: str | sd_mecha.extensions.model_configs.ModelConfig | sd_mecha.recipe_nodes.RecipeNode,
+    *,
+    model_dirs_to_add: list[Path] | tuple[Path, ...],
+):
+    """Call `sd_mecha.convert` while temporarily registering model search paths."""
+    with temporary_model_dirs(model_dirs_to_add):
+        return sd_mecha.convert(recipe, config)
+
+
+def merge_with_model_dirs(
+    *,
+    model_dirs_to_add: list[Path] | tuple[Path, ...],
+    **merge_kwargs,
+):
+    """Call `sd_mecha.merge` while temporarily registering model search paths."""
+    with temporary_model_dirs(model_dirs_to_add):
+        return sd_mecha.merge(**merge_kwargs)
+
+
 #####################################
 ### --- Run Config validation --- ###
 #####################################
@@ -1080,7 +1101,10 @@ def main():
     output_path = Path(MODELS_DIR) / OUTPUT_FILENAME
 
     logger.info("Executing merge and saving to %s...", output_path)
-    sd_mecha.merge(
+    from sd_optim import utils
+
+    utils.merge_with_model_dirs(
+        model_dirs_to_add=[MODELS_DIR],
         recipe=recipe_to_run,
         output=output_path,
         fallback_model=sd_mecha.model(FALLBACK_MODEL_PATH) if FALLBACK_MODEL_PATH != "None" else None,
@@ -1088,8 +1112,7 @@ def main():
         merge_dtype=MERGE_DTYPE,
         output_dtype=SAVE_DTYPE,
         threads=THREADS,
-        model_dirs=[MODELS_DIR],
-        check_mandatory_keys=False,
+        strict_mandatory_keys=False,
     )
     logger.info("Merge complete.")
 

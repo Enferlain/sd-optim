@@ -22,6 +22,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Reorganized bundled repository assets so builtin scorers now live under `sd_optim/builtin/scorers/`, builtin model configs under `sd_optim/builtin/model_configs/`, and non-runtime debug artifacts live under `tools/` and `assets/`
 - Split builtin scorer registry data and lazy class resolution into `sd_optim/builtin/scorers/registry.py` so `sd_optim.scorer` no longer eagerly imports every scorer module at import time
 - Moved builtin scorer implementation modules into `sd_optim/builtin/scorers/models/` so the scorer package root only contains package/registry code
+- Extracted scorer asset/download helpers into `sd_optim/builtin/scorers/assets.py` and scorer factory/loading helpers into `sd_optim/builtin/scorers/loading.py` so `sd_optim.scorer` can focus on runtime orchestration
+- Extracted manual scorer prompt/image-opening helpers into `sd_optim/builtin/scorers/interaction.py` and updated `sd_optim.scorer` to delegate to that focused support module
+- Updated the manual scoring runtime to save stable preview images into the scorer `imgs/` directory, open them through the normalized platform opener path, and record manual scorer output in `last_scorer_results`
 - Restored the merger's recipe-level fallback wrapper for per-key DEBUG fallback logging under sd-mecha 1.1.x
 - Upgraded the merger fallback wrapper to a class-based method that mirrors `sd_mecha.fallback` key planning and emits a visible INFO log on the first actual fallback hit
 - Replaced removed `sd_mecha.open_input_dicts` / `sd_mecha.infer_model_configs` usage with `open_graph`-based compatibility helpers for optimizer and merger model inspection
@@ -42,6 +45,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Fixed builtin-layout import fallout after package moves by updating scorer registry module paths, converter discovery imports, and default builtin config locations
 - Fixed scorer registry eager-import overhead by resolving builtin scorer classes lazily through the extracted registry module
 - Fixed scorer package sprawl by separating registry/package files from concrete scorer implementation modules
+- Fixed scorer runtime sprawl by moving path/download and model-loading concerns into dedicated builtin helper modules
+- Fixed scorer interaction platform handling by using `os.startfile(...)` on Windows and preferring `wslview` / `xdg-open-wsl` before falling back to `xdg-open` under WSL
+- Fixed manual scoring behavior so it no longer depends on transient `PIL.Image.show()` temp-file behavior and now reports manual scorer results consistently with automatic scorers
 - Fixed fallback visibility during merging by making real fallback hits visible at `INFO` level and per-key fallback usage visible at `DEBUG`
 - Fixed merge-mode and recipe-mode cache wiring against `sd-mecha` 1.1.x by passing explicit node-to-cache mappings into `sd_mecha.merge(...)`
 - Fixed delta-output wrapping and recipe traversal against the 1.1.x node API by using `bound_args` and direct merge-method recipe construction

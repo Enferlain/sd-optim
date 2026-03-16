@@ -11,10 +11,8 @@ from typing import Any
 from hydra.core.hydra_config import HydraConfig
 from omegaconf import DictConfig, open_dict
 from PIL import Image
-from sd_optim.builtin.scorers import assets as scorer_assets
-from sd_optim.builtin.scorers import interaction as scorer_interaction
-from sd_optim.builtin.scorers import loading as scorer_loading
-from sd_optim.builtin.scorers.registry import get_scorer_class
+from sd_optim.scoring import assets as scorer_assets, interaction as scorer_interaction, loading as scorer_loading
+from sd_optim.scoring.registry import get_scorer_class
 
 try:
     from rembg import new_session

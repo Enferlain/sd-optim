@@ -10,7 +10,7 @@ from omegaconf import OmegaConf
 def _reload_scorer_module():
     for module_name in [
         "sd_optim.scorer",
-        "sd_optim.extensions.bundled.scorers.registry",
+        "sd_optim.scoring.registry",
         "sd_optim.extensions.bundled.scorers.models.Laion",
         "sd_optim.extensions.bundled.scorers.models.CityAesthetics",
     ]:
@@ -60,7 +60,7 @@ def test_scorer_module_import_does_not_eagerly_import_all_builtin_scorers():
 
 
 def test_scorer_registry_points_at_models_subpackage():
-    registry_mod = importlib.import_module("sd_optim.extensions.bundled.scorers.registry")
+    registry_mod = importlib.import_module("sd_optim.scoring.catalog")
 
     assert registry_mod.SCORER_CLASS_PATHS["cityaes"][0].startswith(
         "sd_optim.extensions.bundled.scorers.models."

@@ -7,7 +7,8 @@ import logging
 from pathlib import Path
 from typing import Any
 
-from sd_optim.extensions.bundled.scorers.registry import MODEL_DATA, get_scorer_class
+from .catalog import MODEL_DATA
+from .registry import get_scorer_class
 
 logger = logging.getLogger(__name__)
 
@@ -30,22 +31,10 @@ def build_scorer_factory(clip_l_path: Path, clip_b_path: Path) -> dict[str, dict
             "files": {"model_path": "file_name"},
             "extra_args": {"clip_path": str(clip_b_path)},
         },
-        "clip": {
-            "class_ref": "clip",
-            "files": {"model_path": "file_name"},
-        },
-        "pick": {
-            "class_ref": "pick",
-            "files": {"model_path": "file_name"},
-        },
-        "shadowv2": {
-            "class_ref": "shadowv2",
-            "files": {"model_path": "file_name"},
-        },
-        "cafe": {
-            "class_ref": "cafe",
-            "files": {"model_path": "file_name"},
-        },
+        "clip": {"class_ref": "clip", "files": {"model_path": "file_name"}},
+        "pick": {"class_ref": "pick", "files": {"model_path": "file_name"}},
+        "shadowv2": {"class_ref": "shadowv2", "files": {"model_path": "file_name"}},
+        "cafe": {"class_ref": "cafe", "files": {"model_path": "file_name"}},
         "noai": {
             "class_ref": "noai",
             "files": {
@@ -54,14 +43,8 @@ def build_scorer_factory(clip_l_path: Path, clip_b_path: Path) -> dict[str, dict
                 "model_path_anime": "anime",
             },
         },
-        "cityaes": {
-            "class_ref": "cityaes",
-            "files": {"pathname": "file_name"},
-        },
-        "aestheticv25": {
-            "class_ref": "aestheticv25",
-            "files": {"model_path": "file_name"},
-        },
+        "cityaes": {"class_ref": "cityaes", "files": {"pathname": "file_name"}},
+        "aestheticv25": {"class_ref": "aestheticv25", "files": {"model_path": "file_name"}},
         "luminaflex": {
             "class_ref": "luminaflex",
             "files": {"model_path": "file_name", "config_path": "config_name"},
@@ -78,11 +61,7 @@ def build_scorer_factory(clip_l_path: Path, clip_b_path: Path) -> dict[str, dict
             "class_ref": "lumidinov2g",
             "files": {"model_path": "file_name", "config_path": "config_name"},
         },
-        "simplequality": {
-            "class_ref": "simplequality",
-            "files": {},
-            "extra_args": {},
-        },
+        "simplequality": {"class_ref": "simplequality", "files": {}, "extra_args": {}},
         "hybridnoise": {
             "class_ref": "hybridnoise",
             "files": {},
@@ -98,11 +77,7 @@ def build_scorer_factory(clip_l_path: Path, clip_b_path: Path) -> dict[str, dict
             "files": {},
             "extra_args": {"rembg_session": "self.rembg_session"},
         },
-        "pcascorer": {
-            "class_ref": "pcascorer",
-            "files": {},
-            "extra_args": {},
-        },
+        "pcascorer": {"class_ref": "pcascorer", "files": {}, "extra_args": {}},
         "textureclean": {
             "class_ref": "textureclean",
             "files": {},
@@ -153,10 +128,7 @@ def load_model(scorer: Any, evaluator_lower: str) -> bool:
 
     try:
         scorer.model[evaluator_lower] = scorer_class(**constructor_args)
-        logger.info(
-            "Successfully lazy-loaded instance for scorer: '%s'",
-            evaluator_lower,
-        )
+        logger.info("Successfully lazy-loaded instance for scorer: '%s'", evaluator_lower)
         return True
     except Exception as init_error:
         logger.error(
@@ -183,10 +155,7 @@ def load_all_models(scorer: Any) -> None:
             continue
 
         if evaluator_lower in lazy_load_list:
-            logger.info(
-                "Deferring loading of scorer '%s' due to lazy load list.",
-                evaluator,
-            )
+            logger.info("Deferring loading of scorer '%s' due to lazy load list.", evaluator)
             continue
 
         logger.info("Loading instance for scorer: '%s'", evaluator)
@@ -218,26 +187,13 @@ def load_all_models(scorer: Any) -> None:
             continue
 
         if evaluator_lower in {"hybridnoise", "hybridnoise_fullimg"}:
-            constructor_args["kernel_size"] = scorer.cfg.get(
-                "hybridnoise_kernel_size",
-                3,
-            )
-            constructor_args["noise_threshold"] = scorer.cfg.get(
-                "hybridnoise_noise_threshold",
-                20.0,
-            )
+            constructor_args["kernel_size"] = scorer.cfg.get("hybridnoise_kernel_size", 3)
+            constructor_args["noise_threshold"] = scorer.cfg.get("hybridnoise_noise_threshold", 20.0)
             if evaluator_lower == "hybridnoise":
-                constructor_args["color_tolerance"] = scorer.cfg.get(
-                    "hybridnoise_color_tolerance",
-                    30,
-                )
+                constructor_args["color_tolerance"] = scorer.cfg.get("hybridnoise_color_tolerance", 30)
 
         try:
-            logger.debug(
-                "Instantiating %s with args: %s",
-                scorer_class.__name__,
-                constructor_args,
-            )
+            logger.debug("Instantiating %s with args: %s", scorer_class.__name__, constructor_args)
             scorer.model[evaluator_lower] = scorer_class(**constructor_args)
             logger.info("Successfully loaded instance for scorer: '%s'", evaluator)
         except Exception as init_error:
@@ -257,96 +213,50 @@ def _resolve_constructor_args(
 ) -> tuple[dict[str, Any], bool]:
     constructor_args: dict[str, Any] = {}
     scorer_model_dir_path = Path(scorer.cfg.scorer_model_dir)
+    signature = inspect.signature(scorer_class.__init__)
+    extra_args_config = config.get("extra_args", {})
 
-    if "device" in inspect.signature(scorer_class.__init__).parameters:
+    for arg_name, model_data_key in config.get("files", {}).items():
+        if arg_name not in signature.parameters:
+            continue
+
         try:
-            constructor_args["device"] = scorer.cfg.scorer_device.get(
+            model_data_entry = MODEL_DATA.get(evaluator_lower)
+            if model_data_entry is None:
+                raise KeyError("MODEL_DATA entry missing")
+
+            filename = model_data_entry.get(model_data_key)
+            if not filename:
+                raise KeyError(
+                    f"Filename key '{model_data_key}' not found in MODEL_DATA "
+                    f"for '{evaluator_lower}'"
+                )
+            constructor_args[arg_name] = scorer_model_dir_path / filename
+        except KeyError as path_key_error:
+            logger.error(
+                "Error getting file path info for '%s': %s. Skipping.",
                 evaluator_lower,
-                scorer.cfg.scorer_default_device,
+                path_key_error,
             )
-        except KeyError:
-            logger.error("Device config missing for '%s'.", evaluator_lower)
-            return constructor_args, False
+            return {}, False
 
-    if "files" in config:
-        for arg_name, model_data_key in config["files"].items():
-            try:
-                model_data_entry = MODEL_DATA.get(evaluator_lower)
-                if not model_data_entry:
-                    raise KeyError("MODEL_DATA entry missing")
+    constructor_args.update(_resolve_extra_args(scorer, extra_args_config))
 
-                filename = model_data_entry.get(model_data_key)
-                if not filename:
-                    raise KeyError(
-                        f"Filename key '{model_data_key}' not found in MODEL_DATA "
-                        f"for '{evaluator_lower}'"
-                    )
-
-                if (
-                    arg_name in ["model_path", "pathname"]
-                    and evaluator_lower in scorer.model_path
-                ):
-                    file_path = scorer.model_path[evaluator_lower]
-                    if file_path.name != filename:
-                        logger.warning(
-                            "Filename mismatch for %s arg %s: Expected %s, "
-                            "Path has %s. Using path.",
-                            evaluator_lower,
-                            arg_name,
-                            filename,
-                            file_path.name,
-                        )
-                else:
-                    file_path = scorer_model_dir_path / filename
-
-                if not file_path.is_file():
-                    logger.error(
-                        "Required file for '%s', arg '%s' not found: %s",
-                        evaluator_lower,
-                        arg_name,
-                        file_path,
-                    )
-                    return constructor_args, False
-                constructor_args[arg_name] = str(file_path)
-            except KeyError as config_error:
-                logger.error(
-                    "Config error resolving file for '%s', arg '%s': %s",
-                    evaluator_lower,
-                    arg_name,
-                    config_error,
-                )
-                return constructor_args, False
-            except Exception as path_error:
-                logger.error(
-                    "Error resolving path for '%s', arg '%s': %s",
-                    evaluator_lower,
-                    arg_name,
-                    path_error,
-                )
-                return constructor_args, False
-
-    if "extra_args" in config:
-        constructor_args.update(_resolve_extra_args(scorer, config["extra_args"]))
+    if "device" in signature.parameters and "device" not in constructor_args:
+        constructor_args["device"] = scorer.cfg.scorer_device.get(evaluator_lower, "cpu")
 
     return constructor_args, True
 
 
-def _resolve_extra_args(
-    scorer: Any,
-    extra_args: dict[str, Any],
-) -> dict[str, Any]:
-    resolved_extra_args: dict[str, Any] = {}
-    for key, value in extra_args.items():
-        if key == "rembg_session" and value == "self.rembg_session":
-            if scorer.rembg_session:
-                resolved_extra_args[key] = scorer.rembg_session
-            else:
-                logger.warning(
-                    "rembg_session not available, but it was requested."
-                )
+def _resolve_extra_args(scorer: Any, extra_args_config: dict[str, Any]) -> dict[str, Any]:
+    resolved_args: dict[str, Any] = {}
+    for arg_name, arg_value in extra_args_config.items():
+        if isinstance(arg_value, str) and arg_value.startswith("self."):
+            attr_name = arg_value.split(".", 1)[1]
+            resolved_args[arg_name] = getattr(scorer, attr_name, None)
         else:
-            resolved_extra_args[key] = str(value) if isinstance(value, Path) else value
-    return resolved_extra_args
+            resolved_args[arg_name] = arg_value
+    return resolved_args
 
 
 __all__ = ["build_scorer_factory", "load_all_models", "load_model"]

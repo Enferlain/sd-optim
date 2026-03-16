@@ -1,13 +1,6 @@
-"""Registry data and lazy class resolution for bundled scorers."""
+"""Metadata for scorer implementations shipped with sd-optim."""
 
 from __future__ import annotations
-
-import importlib
-import logging
-from functools import cache
-from typing import Any
-
-logger = logging.getLogger(__name__)
 
 SCORER_CLASS_PATHS: dict[str, tuple[str, str]] = {
     "laion": ("sd_optim.extensions.bundled.scorers.models.Laion", "Laion"),
@@ -148,72 +141,13 @@ MODEL_DATA: dict[str, dict[str, str | None]] = {
         "file_name": "AnatomyFlaws-v6.4_adabeleif_fl_sigmoid_dinov2_giant_efinal_s10K_final.safetensors",
         "config_name": "AnatomyFlaws-v6.4_adabeleif_fl_sigmoid_dinov2_giant.config.json",
     },
-    "simplequality": {
-        "url": None,
-        "file_name": None,
-    },
-    "hybridnoise": {
-        "url": None,
-        "file_name": None,
-    },
-    "hybridnoise_fullimg": {
-        "url": None,
-        "file_name": None,
-    },
-    "backgroundblackness": {
-        "url": None,
-        "file_name": None,
-    },
-    "pcascorer": {
-        "url": None,
-        "file_name": None,
-    },
-    "textureclean": {
-        "url": None,
-        "file_name": None,
-    },
-    "textureclean_fullimg": {
-        "url": None,
-        "file_name": None,
-    },
+    "simplequality": {"url": None, "file_name": None},
+    "hybridnoise": {"url": None, "file_name": None},
+    "hybridnoise_fullimg": {"url": None, "file_name": None},
+    "backgroundblackness": {"url": None, "file_name": None},
+    "pcascorer": {"url": None, "file_name": None},
+    "textureclean": {"url": None, "file_name": None},
+    "textureclean_fullimg": {"url": None, "file_name": None},
 }
 
-
-@cache
-def _import_attr(module_path: str, attr_name: str) -> Any | None:
-    try:
-        module = importlib.import_module(module_path)
-        return getattr(module, attr_name)
-    except ImportError as exc:
-        logger.warning(
-            "Optional scorer dependency missing while importing %s.%s: %s",
-            module_path,
-            attr_name,
-            exc,
-        )
-    except AttributeError:
-        logger.error(
-            "Scorer class '%s' not found in module '%s'.",
-            attr_name,
-            module_path,
-        )
-    except Exception as exc:
-        logger.error(
-            "Unexpected error while importing %s.%s: %s",
-            module_path,
-            attr_name,
-            exc,
-        )
-    return None
-
-
-def get_scorer_class(scorer_name: str) -> Any | None:
-    """Resolve a bundled scorer class lazily by configured scorer name."""
-    class_path = SCORER_CLASS_PATHS.get(scorer_name.lower())
-    if class_path is None:
-        return None
-    module_path, attr_name = class_path
-    return _import_attr(module_path, attr_name)
-
-
-__all__ = ["MODEL_DATA", "SCORER_CLASS_PATHS", "get_scorer_class"]
+__all__ = ["MODEL_DATA", "SCORER_CLASS_PATHS"]

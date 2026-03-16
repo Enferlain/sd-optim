@@ -24,6 +24,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Moved bundled scorer implementation modules into `sd_optim/extensions/bundled/scorers/models/` so the scorer package root only contains package/registry code
 - Extracted scorer asset/download helpers into `sd_optim/extensions/bundled/scorers/assets.py` and scorer factory/loading helpers into `sd_optim/extensions/bundled/scorers/loading.py` so `sd_optim.scorer` can focus on runtime orchestration
 - Extracted manual scorer prompt/image-opening helpers into `sd_optim/extensions/bundled/scorers/interaction.py` and updated `sd_optim.scorer` to delegate to that focused support module
+- Moved scorer runtime/support code into `sd_optim/scoring/` so `sd_optim/extensions/bundled/scorers/` now only contains bundled implementation modules
 - Updated the manual scoring runtime to save stable preview images into the scorer `imgs/` directory, open them through the normalized platform opener path, and record manual scorer output in `last_scorer_results`
 - Restored the merger's recipe-level fallback wrapper for per-key DEBUG fallback logging under sd-mecha 1.1.x
 - Upgraded the merger fallback wrapper to a class-based method that mirrors `sd_mecha.fallback` key planning and emits a visible INFO log on the first actual fallback hit

@@ -62,8 +62,8 @@ def main(cfg: DictConfig) -> None:
 
         # Define default paths relative to the sd_optim package within the project
         # Assumes structure: project_root/sd_optim/custom_configs, etc.
-        default_configs_dir = project_root / "sd_optim" / "builtin" / "model_configs"
-        default_conversion_dir = project_root / "sd_optim" / "builtin" / "model_configs"
+        default_configs_dir = project_root / "sd_optim" / "extensions" / "bundled" / "model_configs"
+        default_conversion_dir = project_root / "sd_optim" / "extensions" / "bundled" / "model_configs"
 
         # Get paths from config, falling back to defaults if null or missing
         configs_dir_str = cfg.get("configs_dir")  # Returns None if key is missing/null

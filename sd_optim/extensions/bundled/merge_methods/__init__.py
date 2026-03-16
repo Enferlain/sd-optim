@@ -19,3 +19,5 @@ __all__ = [
     "torch_complex_dtype_map",
     "torch_svd_lowrank",
 ]
+
+# example tree https://github.com/ljleb/sd-mecha/tree/main/sd_mecha/extensions/builtin/merge_methods

@@ -32,8 +32,8 @@ url: "${webui_urls[${webui}]}" # This line automatically selects the correct URL
 
 # --- Core File Paths ---
 # These paths tell the optimizer where to find necessary files.
-configs_dir: path/to/sd-optim/sd_optim/model_configs # Path to your custom sd-mecha block definition .yaml files.
-conversion_dir: path/to/sd-optim/sd_optim/model_configs # Path to your custom sd-mecha converter .py scripts.
+configs_dir: path/to/sd-optim/sd_optim/extensions/bundled/model_configs # Path to your custom sd-mecha block definition .yaml files.
+conversion_dir: path/to/sd-optim/sd_optim/extensions/bundled/model_configs # Path to your custom sd-mecha converter .py scripts.
 wildcards_dir: path/to/your/wildcards # Path to your wildcard files for dynamic prompting.
 scorer_model_dir: path/to/your/models/Scorer # Path where scorer models are downloaded to and loaded from.
 

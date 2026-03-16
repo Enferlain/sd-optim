@@ -1,4 +1,4 @@
-"""Registry data and lazy class resolution for builtin scorers."""
+"""Registry data and lazy class resolution for bundled scorers."""
 
 from __future__ import annotations
 
@@ -10,55 +10,55 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 SCORER_CLASS_PATHS: dict[str, tuple[str, str]] = {
-    "laion": ("sd_optim.builtin.scorers.models.Laion", "Laion"),
-    "chad": ("sd_optim.builtin.scorers.models.Laion", "Laion"),
-    "clip": ("sd_optim.builtin.scorers.models.CLIPScore", "CLIPScore"),
-    "pick": ("sd_optim.builtin.scorers.models.PickScore", "PickScore"),
-    "wdaes": ("sd_optim.builtin.scorers.models.WDAes", "WDAes"),
-    "shadowv2": ("sd_optim.builtin.scorers.models.ShadowScore", "ShadowScore"),
-    "cafe": ("sd_optim.builtin.scorers.models.CafeScore", "CafeScore"),
-    "noai": ("sd_optim.builtin.scorers.models.NoAIScore", "NoAIScore"),
+    "laion": ("sd_optim.extensions.bundled.scorers.models.Laion", "Laion"),
+    "chad": ("sd_optim.extensions.bundled.scorers.models.Laion", "Laion"),
+    "clip": ("sd_optim.extensions.bundled.scorers.models.CLIPScore", "CLIPScore"),
+    "pick": ("sd_optim.extensions.bundled.scorers.models.PickScore", "PickScore"),
+    "wdaes": ("sd_optim.extensions.bundled.scorers.models.WDAes", "WDAes"),
+    "shadowv2": ("sd_optim.extensions.bundled.scorers.models.ShadowScore", "ShadowScore"),
+    "cafe": ("sd_optim.extensions.bundled.scorers.models.CafeScore", "CafeScore"),
+    "noai": ("sd_optim.extensions.bundled.scorers.models.NoAIScore", "NoAIScore"),
     "cityaes": (
-        "sd_optim.builtin.scorers.models.CityAesthetics",
+        "sd_optim.extensions.bundled.scorers.models.CityAesthetics",
         "CityAestheticsScorer",
     ),
-    "aestheticv25": ("sd_optim.builtin.scorers.models.AestheticV25", "AestheticV25"),
+    "aestheticv25": ("sd_optim.extensions.bundled.scorers.models.AestheticV25", "AestheticV25"),
     "luminaflex": (
-        "sd_optim.builtin.scorers.models.LumiAnatomyv2",
+        "sd_optim.extensions.bundled.scorers.models.LumiAnatomyv2",
         "Dinov3AnatomyScorer",
     ),
     "lumidinov3": (
-        "sd_optim.builtin.scorers.models.LumiAnatomyv2",
+        "sd_optim.extensions.bundled.scorers.models.LumiAnatomyv2",
         "Dinov3AnatomyScorer",
     ),
     "lumidinov2l": (
-        "sd_optim.builtin.scorers.models.LumiAnatomyv2",
+        "sd_optim.extensions.bundled.scorers.models.LumiAnatomyv2",
         "Dinov3AnatomyScorer",
     ),
     "lumidinov2g": (
-        "sd_optim.builtin.scorers.models.LumiAnatomyv2",
+        "sd_optim.extensions.bundled.scorers.models.LumiAnatomyv2",
         "Dinov3AnatomyScorer",
     ),
     "simplequality": (
-        "sd_optim.builtin.scorers.models.SimpleQuality",
+        "sd_optim.extensions.bundled.scorers.models.SimpleQuality",
         "SimpleQualityScorer",
     ),
     "hybridnoise": (
-        "sd_optim.builtin.scorers.models.HybridNoiseScorer",
+        "sd_optim.extensions.bundled.scorers.models.HybridNoiseScorer",
         "HybridNoiseScorer",
     ),
     "hybridnoise_fullimg": (
-        "sd_optim.builtin.scorers.models.HybridNoiseScorer",
+        "sd_optim.extensions.bundled.scorers.models.HybridNoiseScorer",
         "HybridNoiseFullImageScorer",
     ),
     "backgroundblackness": (
-        "sd_optim.builtin.scorers.models.BackgroundBlacknessScorer",
+        "sd_optim.extensions.bundled.scorers.models.BackgroundBlacknessScorer",
         "BackgroundBlacknessScorer",
     ),
-    "pcascorer": ("sd_optim.builtin.scorers.models.PCAScorer", "PCAScorer"),
-    "textureclean": ("sd_optim.builtin.scorers.models.TextureScorer", "TextureScorer"),
+    "pcascorer": ("sd_optim.extensions.bundled.scorers.models.PCAScorer", "PCAScorer"),
+    "textureclean": ("sd_optim.extensions.bundled.scorers.models.TextureScorer", "TextureScorer"),
     "textureclean_fullimg": (
-        "sd_optim.builtin.scorers.models.TextureScorer",
+        "sd_optim.extensions.bundled.scorers.models.TextureScorer",
         "TextureScorerFullImage",
     ),
 }
@@ -208,7 +208,7 @@ def _import_attr(module_path: str, attr_name: str) -> Any | None:
 
 
 def get_scorer_class(scorer_name: str) -> Any | None:
-    """Resolve a builtin scorer class lazily by configured scorer name."""
+    """Resolve a bundled scorer class lazily by configured scorer name."""
     class_path = SCORER_CLASS_PATHS.get(scorer_name.lower())
     if class_path is None:
         return None

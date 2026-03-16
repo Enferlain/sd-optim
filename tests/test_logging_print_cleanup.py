@@ -15,22 +15,22 @@ CORE_MODULES_WITHOUT_PRINTS = [
     "sd_optim/optuna_optimizer.py",
     "sd_optim/utils.py",
     "sd_optim/merge_methods.py",
-    "sd_optim/models/LumiAnatomy.py",
-    "sd_optim/models/LumiAnatomyv2.py",
-    "sd_optim/models/lumi_model.py",
-    "sd_optim/models/predictlumi_model.py",
-    "sd_optim/models/AestheticV25.py",
-    "sd_optim/models/BLIP/blip.py",
-    "sd_optim/models/BLIP/vit.py",
+    "sd_optim/extensions/bundled/scorers/models/LumiAnatomy.py",
+    "sd_optim/extensions/bundled/scorers/models/LumiAnatomyv2.py",
+    "sd_optim/extensions/bundled/scorers/models/lumi_model.py",
+    "sd_optim/extensions/bundled/scorers/models/predictlumi_model.py",
+    "sd_optim/extensions/bundled/scorers/models/AestheticV25.py",
+    "sd_optim/extensions/bundled/scorers/models/BLIP/blip.py",
+    "sd_optim/extensions/bundled/scorers/models/BLIP/vit.py",
 ]
 
 
 def _has_print_call(source: str) -> bool:
     tree = ast.parse(source)
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == "print":
-            return True
-    return False
+    return any(
+        isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == "print"
+        for node in ast.walk(tree)
+    )
 
 
 def test_hydra_job_logging_profile_includes_source_location() -> None:

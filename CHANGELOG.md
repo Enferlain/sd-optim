@@ -19,11 +19,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - Updated custom block converters to work with sd-mecha 1.1.3
-- Reorganized bundled repository assets so builtin scorers now live under `sd_optim/builtin/scorers/`, builtin model configs under `sd_optim/builtin/model_configs/`, and non-runtime debug artifacts live under `tools/` and `assets/`
-- Split builtin scorer registry data and lazy class resolution into `sd_optim/builtin/scorers/registry.py` so `sd_optim.scorer` no longer eagerly imports every scorer module at import time
-- Moved builtin scorer implementation modules into `sd_optim/builtin/scorers/models/` so the scorer package root only contains package/registry code
-- Extracted scorer asset/download helpers into `sd_optim/builtin/scorers/assets.py` and scorer factory/loading helpers into `sd_optim/builtin/scorers/loading.py` so `sd_optim.scorer` can focus on runtime orchestration
-- Extracted manual scorer prompt/image-opening helpers into `sd_optim/builtin/scorers/interaction.py` and updated `sd_optim.scorer` to delegate to that focused support module
+- Reorganized bundled repository assets so shipped scorers now live under `sd_optim/extensions/bundled/scorers/`, shipped model configs under `sd_optim/extensions/bundled/model_configs/`, and non-runtime debug artifacts live under `tools/` and `assets/`
+- Split bundled scorer registry data and lazy class resolution into `sd_optim/extensions/bundled/scorers/registry.py` so `sd_optim.scorer` no longer eagerly imports every scorer module at import time
+- Moved bundled scorer implementation modules into `sd_optim/extensions/bundled/scorers/models/` so the scorer package root only contains package/registry code
+- Extracted scorer asset/download helpers into `sd_optim/extensions/bundled/scorers/assets.py` and scorer factory/loading helpers into `sd_optim/extensions/bundled/scorers/loading.py` so `sd_optim.scorer` can focus on runtime orchestration
+- Extracted manual scorer prompt/image-opening helpers into `sd_optim/extensions/bundled/scorers/interaction.py` and updated `sd_optim.scorer` to delegate to that focused support module
 - Updated the manual scoring runtime to save stable preview images into the scorer `imgs/` directory, open them through the normalized platform opener path, and record manual scorer output in `last_scorer_results`
 - Restored the merger's recipe-level fallback wrapper for per-key DEBUG fallback logging under sd-mecha 1.1.x
 - Upgraded the merger fallback wrapper to a class-based method that mirrors `sd_mecha.fallback` key planning and emits a visible INFO log on the first actual fallback hit
@@ -35,8 +35,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Updated saved recipe artifacts to serialize the finalized fallback-wrapped execution graph instead of the raw pre-finalized recipe
 - Refined saved recipe artifacts to keep logical merge structure by dropping runtime output-cast wrappers and restoring relative model paths when possible
 - Centralized adapter config detection so LoRA/LyCORIS checks reuse cached sd-mecha config inference instead of repeated substring-based scans
-- Added an `sd_optim.svd` compatibility shim so runtime merge helpers still import after the helper move into `sd_optim/builtin/merge_methods/svd.py`
-- Made `sd_optim.builtin.merge_methods` the explicit package surface for bundled SVD helpers and updated runtime/config defaults to point at the builtin layout
+- Added an `sd_optim.svd` compatibility shim so runtime merge helpers still import after the helper move into `sd_optim/extensions/bundled/merge_methods/svd.py`
+- Made `sd_optim.extensions.bundled.merge_methods` the explicit package surface for bundled SVD helpers and updated runtime/config defaults to point at the packaged layout
 
 ### Fixed
 
@@ -47,14 +47,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Fixed fail-on-error handling so real trial crashes stop the optimization by default again, while explicit `fail_on_error: false` still allows continue-on-error behavior
 - Fixed Optuna postprocess recap to avoid raising a second error when all completed trials have failed and no best trial exists yet
 - Fixed startup and model-inspection crashes against `sd-mecha` 1.1.x caused by removed top-level APIs such as `open_input_dicts` and `infer_model_configs`
-- Fixed stale package-local SVD helper imports after the helper implementation moved to `sd_optim/builtin/merge_methods/svd.py`
+- Fixed stale package-local SVD helper imports after the helper implementation moved to `sd_optim/extensions/bundled/merge_methods/svd.py`
+- Fixed full test collection after the packaged layout move by bootstrapping the repo root in `tests/conftest.py` and restoring the `sd_optim.svd_ties_sum_extended` module surface
 - Fixed builtin-layout import fallout after package moves by updating scorer registry module paths, converter discovery imports, and default builtin config locations
-- Fixed scorer registry eager-import overhead by resolving builtin scorer classes lazily through the extracted registry module
+- Fixed scorer registry eager-import overhead by resolving bundled scorer classes lazily through the extracted registry module
 - Fixed scorer package sprawl by separating registry/package files from concrete scorer implementation modules
-- Fixed scorer runtime sprawl by moving path/download and model-loading concerns into dedicated builtin helper modules
+- Fixed scorer runtime sprawl by moving path/download and model-loading concerns into dedicated bundled helper modules
 - Fixed scorer interaction platform handling by using `os.startfile(...)` on Windows and preferring `wslview` / `xdg-open-wsl` before falling back to `xdg-open` under WSL
 - Fixed manual scoring behavior so it no longer depends on transient `PIL.Image.show()` temp-file behavior and now reports manual scorer results consistently with automatic scorers
 - Fixed fallback visibility during merging by making real fallback hits visible at `INFO` level and per-key fallback usage visible at `DEBUG`
+- Fixed stale regression tests after the packaged layout move by updating moved scorer paths, refreshing Optuna test stubs for `fail_on_error_enabled`, making the optional texture scorer integration opt-in, and removing wavelet shim tests for deleted helpers
 - Fixed merge-mode and recipe-mode cache wiring against `sd-mecha` 1.1.x by passing explicit node-to-cache mappings into `sd_mecha.merge(...)`
 - Fixed delta-output wrapping and recipe traversal against the 1.1.x node API by using `bound_args` and direct merge-method recipe construction
 - Fixed recipe artifact generation and runnable-script export against the 1.1.x literal-node API by traversing `LiteralRecipeNode.value_dict`

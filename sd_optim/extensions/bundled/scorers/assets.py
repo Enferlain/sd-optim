@@ -9,7 +9,7 @@ from typing import Any
 import requests
 from omegaconf import DictConfig, ListConfig, open_dict
 
-from sd_optim.builtin.scorers.registry import MODEL_DATA
+from sd_optim.extensions.bundled.scorers.registry import MODEL_DATA
 
 logger = logging.getLogger(__name__)
 

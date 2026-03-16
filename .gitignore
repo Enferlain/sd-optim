@@ -60,6 +60,10 @@ profile_default/
 ipython_config.py
 .env
 .venv
+.venv-wsl
+.uv-cache
+.ruff_cache
+.u2net
 env/
 venv/
 ENV/

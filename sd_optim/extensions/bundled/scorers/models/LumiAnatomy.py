@@ -15,7 +15,7 @@ from transformers import AutoProcessor, AutoModel
 # --- Make sure HybridHeadModel can be imported ---
 try:
     # Assuming lumi_model.py is in the same directory or accessible via PYTHONPATH
-    from sd_optim.builtin.scorers.models.lumi_model import HybridHeadModel
+    from sd_optim.extensions.bundled.scorers.models.lumi_model import HybridHeadModel
 
     logger = logging.getLogger(__name__)
     logger.debug("Successfully imported HybridHeadModel.")

@@ -10,9 +10,9 @@ from omegaconf import OmegaConf
 def _reload_scorer_module():
     for module_name in [
         "sd_optim.scorer",
-        "sd_optim.builtin.scorers.registry",
-        "sd_optim.builtin.scorers.models.Laion",
-        "sd_optim.builtin.scorers.models.CityAesthetics",
+        "sd_optim.extensions.bundled.scorers.registry",
+        "sd_optim.extensions.bundled.scorers.models.Laion",
+        "sd_optim.extensions.bundled.scorers.models.CityAesthetics",
     ]:
         sys.modules.pop(module_name, None)
 
@@ -50,18 +50,18 @@ def test_rembg_required_scorer_raises_clear_error_without_rembg(monkeypatch):
 def test_scorer_module_import_does_not_eagerly_import_all_builtin_scorers():
     scorer_mod = _reload_scorer_module()
 
-    assert "sd_optim.builtin.scorers.models.Laion" not in sys.modules
+    assert "sd_optim.extensions.bundled.scorers.models.Laion" not in sys.modules
 
     resolved = scorer_mod._get_scorer_class("cityaes")
 
     assert resolved is not None
-    assert "sd_optim.builtin.scorers.models.CityAesthetics" in sys.modules
-    assert "sd_optim.builtin.scorers.models.Laion" not in sys.modules
+    assert "sd_optim.extensions.bundled.scorers.models.CityAesthetics" in sys.modules
+    assert "sd_optim.extensions.bundled.scorers.models.Laion" not in sys.modules
 
 
 def test_scorer_registry_points_at_models_subpackage():
-    registry_mod = importlib.import_module("sd_optim.builtin.scorers.registry")
+    registry_mod = importlib.import_module("sd_optim.extensions.bundled.scorers.registry")
 
     assert registry_mod.SCORER_CLASS_PATHS["cityaes"][0].startswith(
-        "sd_optim.builtin.scorers.models."
+        "sd_optim.extensions.bundled.scorers.models."
     )

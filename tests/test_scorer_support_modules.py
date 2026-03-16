@@ -7,7 +7,7 @@ from omegaconf import OmegaConf
 
 
 def test_assets_helper_sets_paths_and_defaults() -> None:
-    from sd_optim.builtin.scorers import assets as assets_mod
+    from sd_optim.extensions.bundled.scorers import assets as assets_mod
 
     scorer = SimpleNamespace(
         cfg=OmegaConf.create(
@@ -31,7 +31,7 @@ def test_assets_helper_sets_paths_and_defaults() -> None:
 
 
 def test_loading_helper_builds_factory_entries() -> None:
-    from sd_optim.builtin.scorers import loading as loading_mod
+    from sd_optim.extensions.bundled.scorers import loading as loading_mod
 
     factory = loading_mod.build_scorer_factory(
         Path("clip-l.pt"),

@@ -1,6 +1,9 @@
 import asyncio
+import importlib.util
+import os
 from PIL import Image
 import numpy as np
+import pytest
 from omegaconf import OmegaConf
 from sd_optim.scorer import AestheticScorer
 import logging
@@ -10,7 +13,11 @@ import logging
 logging.basicConfig(level=logging.INFO)
 
 
-async def test_texture_scorer():
+@pytest.mark.skipif(
+    importlib.util.find_spec("rembg") is None or os.environ.get("RUN_OPTIONAL_SCORER_INTEGRATION") != "1",
+    reason="optional texture scorer integration requires rembg and explicit opt-in",
+)
+def test_texture_scorer():
     # Mock configuration
     cfg = OmegaConf.create(
         {
@@ -29,21 +36,17 @@ async def test_texture_scorer():
     # Create a dummy image
     dummy_img = Image.fromarray(np.random.randint(0, 255, (512, 512, 3), dtype=np.uint8))
 
-    print("Initializing AestheticScorer...")
     scorer = AestheticScorer(cfg)
 
-    print("Testing TextureScorer...")
     try:
-        score = await scorer.score(dummy_img, prompt="a test image")
-        print(f"Final Score: {score}")
+        score = asyncio.run(scorer.score(dummy_img, prompt="a test image"))
         assert 0 <= score <= 10
-        print("Test passed!")
     except Exception as e:
-        print(f"Test failed with error: {e}")
         import traceback
 
         traceback.print_exc()
+        pytest.fail(f"Texture scorer integration failed: {e}")
 
 
 if __name__ == "__main__":
-    asyncio.run(test_texture_scorer())
+    test_texture_scorer()

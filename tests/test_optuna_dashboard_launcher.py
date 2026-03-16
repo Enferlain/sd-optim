@@ -12,6 +12,7 @@ def _load_optuna_optimizer_module(monkeypatch):
         pass
 
     dummy_optimizer_mod.Optimizer = DummyOptimizer
+    dummy_optimizer_mod.fail_on_error_enabled = lambda cfg: True
     monkeypatch.setitem(sys.modules, "sd_optim.optimizer", dummy_optimizer_mod)
     sys.modules.pop("sd_optim.optuna_optimizer", None)
 

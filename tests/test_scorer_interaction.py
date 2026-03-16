@@ -7,7 +7,7 @@ import pytest
 
 
 def test_open_image_uses_startfile_on_windows(monkeypatch: pytest.MonkeyPatch) -> None:
-    from sd_optim.builtin.scorers import interaction as interaction_mod
+    from sd_optim.extensions.bundled.scorers import interaction as interaction_mod
 
     image_path = interaction_mod.Path("C:/tmp/test.png")
     calls: list[str] = []
@@ -26,7 +26,7 @@ def test_open_image_uses_startfile_on_windows(monkeypatch: pytest.MonkeyPatch) -
 
 
 def test_open_image_prefers_wsl_windows_bridge(monkeypatch: pytest.MonkeyPatch) -> None:
-    from sd_optim.builtin.scorers import interaction as interaction_mod
+    from sd_optim.extensions.bundled.scorers import interaction as interaction_mod
 
     image_path = interaction_mod.Path("/tmp/test.png")
     calls: list[list[str]] = []
@@ -57,7 +57,7 @@ def test_open_image_warns_once_when_wsl_falls_back_to_xdg_open(
     monkeypatch: pytest.MonkeyPatch,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    from sd_optim.builtin.scorers import interaction as interaction_mod
+    from sd_optim.extensions.bundled.scorers import interaction as interaction_mod
 
     image_path = interaction_mod.Path("/tmp/test.png")
     warning_state: set[str] = set()
@@ -93,7 +93,7 @@ def test_open_image_warns_once_when_wsl_falls_back_to_xdg_open(
 def test_get_user_score_retries_until_valid_input(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    from sd_optim.builtin.scorers import interaction as interaction_mod
+    from sd_optim.extensions.bundled.scorers import interaction as interaction_mod
 
     answers = iter(["not-a-number", "11", "7.5"])
 
@@ -106,7 +106,7 @@ def test_get_user_score_retries_until_valid_input(
 def test_handle_override_prompt_retries_until_valid_score(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    from sd_optim.builtin.scorers import interaction as interaction_mod
+    from sd_optim.extensions.bundled.scorers import interaction as interaction_mod
 
     answers = iter(["", "twelve", "12", "8"])
 

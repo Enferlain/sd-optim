@@ -5,6 +5,7 @@ import sys
 import types
 
 import sd_mecha
+from sd_mecha import recipe_nodes
 
 
 def _import_utils_with_pynput_stub(monkeypatch):
@@ -23,8 +24,17 @@ def test_recipe_rewrite_inlines_scalar_kwargs_instead_of_aliasing_refs(monkeypat
 
     new_nodes = {
         "magnitude_ratio": sd_mecha.literal({"model.diffusion_model.out.0.weight": 1.25}, config="sdxl-sgm"),
-        "rank_blend": sd_mecha.literal(0.5),
+        "rank_blend": recipe_nodes.LiteralRecipeNode({"value": 0.5}),
     }
+
+    original_serialize_recipe_text = utils.serialize_recipe_text
+
+    def fake_serialize_recipe_text(node, **kwargs):
+        if isinstance(node, recipe_nodes.LiteralRecipeNode) and node.value_dict == {"value": 0.5}:
+            return "version 0.1.0\n"
+        return original_serialize_recipe_text(node, **kwargs)
+
+    monkeypatch.setattr(utils, "serialize_recipe_text", fake_serialize_recipe_text)
 
     new_node_strings, param_to_replacement = utils.serialize_nodes_for_rewrite(new_nodes)
 

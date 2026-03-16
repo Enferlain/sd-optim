@@ -7,7 +7,7 @@ import logging
 from pathlib import Path
 from typing import Any
 
-from sd_optim.builtin.scorers.registry import MODEL_DATA, get_scorer_class
+from sd_optim.extensions.bundled.scorers.registry import MODEL_DATA, get_scorer_class
 
 logger = logging.getLogger(__name__)
 

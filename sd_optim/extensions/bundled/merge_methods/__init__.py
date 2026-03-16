@@ -1,6 +1,11 @@
-"""Builtin merge-method helper modules and shared SVD utilities."""
+"""Bundled merge-method package surface and shared SVD helpers.
 
-from .svd import (
+Keep this package import light: SVD helpers come from ``sd_optim.svd`` so
+importing the package does not eagerly import the bundled ``svd`` merge-method
+module and its optional dependencies.
+"""
+
+from sd_optim.svd import (
     fractional_matrix_power,
     get_approximate_basis,
     get_floating_dtype,
@@ -19,5 +24,3 @@ __all__ = [
     "torch_complex_dtype_map",
     "torch_svd_lowrank",
 ]
-
-# example tree https://github.com/ljleb/sd-mecha/tree/main/sd_mecha/extensions/builtin/merge_methods

@@ -1,5 +1,5 @@
 # Filename: sdxl-optim_blocks.yaml
-# Place this in sd_optim/builtin/model_configs/ or your folder of choice via config
+# Place this in sd_optim/extensions/bundled/model_configs/ or your folder of choice via config
 # Remember to register it if placed outside sd-mecha!
 
 identifier: sdxl-optim_blocks # Unique identifier for this custom block configuration

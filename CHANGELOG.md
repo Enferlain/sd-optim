@@ -20,6 +20,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Updated custom block converters to work with sd-mecha 1.1.3
 - Reorganized bundled repository assets so shipped scorers now live under `sd_optim/extensions/bundled/scorers/`, shipped model configs under `sd_optim/extensions/bundled/model_configs/`, and non-runtime debug artifacts live under `tools/` and `assets/`
+- Made bundled merge-method resolution lazy so configuring one bundled method only imports the module(s) that advertise that method name, instead of importing the whole moved merge-method surface at startup
+- Split merge runtime helper concerns into `sd_optim/merge/`, moving fallback handling, artifact writing, and recipe-building helpers out of `sd_optim/merger.py` while keeping `Merger` as the stable orchestration entrypoint
+- Split merge model-selection and execution helpers further into `sd_optim/merge/model_selection.py` and `sd_optim/merge/execution.py` so `sd_optim/merger.py` can keep shrinking toward orchestration-only logic
+- Split merge model-node creation into `sd_optim/merge/model_nodes.py` and added focused tests to lock in relative-path handling for recipe model nodes
 - Split bundled scorer registry data and lazy class resolution into `sd_optim/extensions/bundled/scorers/registry.py` so `sd_optim.scorer` no longer eagerly imports every scorer module at import time
 - Moved bundled scorer implementation modules into `sd_optim/extensions/bundled/scorers/models/` so the scorer package root only contains package/registry code
 - Extracted scorer asset/download helpers into `sd_optim/extensions/bundled/scorers/assets.py` and scorer factory/loading helpers into `sd_optim/extensions/bundled/scorers/loading.py` so `sd_optim.scorer` can focus on runtime orchestration
@@ -41,6 +45,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Fixed bundled merge-method startup coupling so unrelated broken moved modules no longer block resolution of the specific bundled method selected in config
+- Fixed the bundled merge-method package surface to re-export SVD helpers from a standalone `sd_optim.svd` helper module, avoiding eager import cycles through the moved bundled `svd.py`
+- Fixed post-flattening merge-method helper functions by removing stray top-level `@staticmethod` decorators that would otherwise turn helpers into descriptor objects instead of normal callables
 - Fixed a startup regression where `sd_optim.optimizer` imported `sd_optim.trial_scorer_summary` but the module was missing from the package, causing `sd_optim.py` to fail before optimizer initialization
 - Fixed scorer-summary aggregation call sites after the helper moved to a keyword-only signature, which had been causing runs to fail immediately after the first scored trial
 - Fixed a universal reuse regression where the image hash ignored merge/generation setup, allowing different merge methods or recipe setups to be treated as cache hits when params and payloads happened to match

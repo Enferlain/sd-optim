@@ -16,6 +16,7 @@ from sd_optim.utils.artifacts import (
     get_info_from_target_node,
     save_merge_artifacts as save_runtime_artifacts,
 )
+from sd_optim.utils.config import normalize_target_node_refs
 from sd_optim.utils.recipes import (
     finalize_recipe_with_model_dirs,
     relativize_model_paths,
@@ -61,8 +62,14 @@ def create_model_output_name(
     elif merger.cfg.optimization_mode == "recipe":
         if recipe_node is not None:
             recipe_cfg = merger.cfg.get("recipe_optimization", {})
-            target_node_ref = recipe_cfg.get("target_nodes")
-            node_info = get_info_from_target_node(recipe_node, target_node_ref)
+            target_nodes_raw = recipe_cfg.get("target_nodes")
+            target_node_ref = None
+            if target_nodes_raw:
+                try:
+                    target_node_ref = normalize_target_node_refs(target_nodes_raw)[0]
+                except (TypeError, ValueError) as error:
+                    logger.warning("Could not normalize recipe target_nodes for output naming: %s", error)
+            node_info = get_info_from_target_node(recipe_node, target_node_ref) if target_node_ref else {}
 
             if node_info:
                 method_name = node_info["method_name"]

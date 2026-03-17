@@ -19,6 +19,38 @@ PRECISION_MAPPING = {
     "fp64": torch.float64,
 }
 
+
+def normalize_target_node_refs(
+    target_nodes_raw: str | list[str] | ListConfig | None,
+) -> list[str]:
+    """Normalize recipe target node refs into a non-empty list of ``&N`` strings."""
+    if not target_nodes_raw:
+        raise ValueError("Recipe optimization requires 'target_nodes'.")
+
+    if isinstance(target_nodes_raw, str):
+        target_nodes_list = [target_nodes_raw]
+    elif isinstance(target_nodes_raw, (list, ListConfig)):
+        target_nodes_list = [str(target_node) for target_node in target_nodes_raw]
+    else:
+        raise TypeError(
+            f"target_nodes must be a string or a list, but got {type(target_nodes_raw)}"
+        )
+
+    normalized_target_nodes: list[str] = []
+    for target_node in target_nodes_list:
+        target_node_ref = str(target_node).strip()
+        if not re.fullmatch(r"&\d+", target_node_ref):
+            raise ValueError(
+                f"target_nodes entry '{target_node}' must use '&N' syntax."
+            )
+        normalized_target_nodes.append(target_node_ref)
+
+    if not normalized_target_nodes:
+        raise ValueError("Recipe optimization requires at least one target node.")
+
+    return normalized_target_nodes
+
+
 def validate_run_config(cfg: DictConfig) -> None:
     """Validate the runtime configuration before optimizer startup."""
     logger.info("Validating run configuration...")
@@ -54,8 +86,6 @@ def validate_run_config(cfg: DictConfig) -> None:
 
         if not recipe_path_str:
             raise ValueError("Recipe optimization requires 'recipe_path'.")
-        if not target_nodes_raw:
-            raise ValueError("Recipe optimization requires 'target_nodes'.")
         if not target_params_list:
             raise ValueError("Recipe optimization requires 'target_params'.")
 
@@ -64,14 +94,7 @@ def validate_run_config(cfg: DictConfig) -> None:
             raise FileNotFoundError(f"Recipe file does not exist: {recipe_path}")
 
         try:
-            if isinstance(target_nodes_raw, str):
-                target_nodes_list = [target_nodes_raw]
-            elif isinstance(target_nodes_raw, (list, ListConfig)):
-                target_nodes_list = list(target_nodes_raw)
-            else:
-                raise TypeError(
-                    f"target_nodes must be a string or a list, but got {type(target_nodes_raw)}"
-                )
+            target_nodes_list = normalize_target_node_refs(target_nodes_raw)
 
             logger.debug(
                 "Performing advanced validation on recipe for targets: %s",

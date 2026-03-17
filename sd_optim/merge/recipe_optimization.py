@@ -15,6 +15,7 @@ from sd_optim.merge.artifacts import save_recipe_artifacts
 from sd_optim.merge.execution import execute_recipe
 from sd_optim.merge.recipe_builder import prepare_param_recipe_args
 from sd_optim.utils.artifacts import rewrite_recipe_text, serialize_nodes_for_rewrite
+from sd_optim.utils.config import normalize_target_node_refs
 from sd_optim.utils.recipes import build_recipe_cache_map
 
 if TYPE_CHECKING:
@@ -32,32 +33,48 @@ def sanitize_recipe_text_for_deserialize(recipe_text: str) -> str:
     return "\n".join(line for line in recipe_text.splitlines() if line.strip())
 
 
-def load_validated_target_node(merger: Merger, original_recipe_text: str) -> MergeRecipeNode:
-    """Deserialize and validate the configured target merge node for recipe optimization."""
+def load_validated_target_nodes(
+    merger: Merger,
+    original_recipe_text: str,
+) -> list[tuple[str, MergeRecipeNode]]:
+    """Deserialize and validate all configured target merge nodes for recipe optimization."""
     recipe_cfg = merger.cfg.recipe_optimization
-    target_node_ref = recipe_cfg.target_nodes
-    target_node_idx = int(target_node_ref.strip("&"))
+    target_node_refs = normalize_target_node_refs(recipe_cfg.target_nodes)
 
     all_nodes_map = {
         index: sd_mecha.deserialize(original_recipe_text.split("\n")[: index + 2])
         for index in range(len(original_recipe_text.strip().split("\n")) - 1)
     }
-    target_node = all_nodes_map.get(target_node_idx)
+    validated_targets: list[tuple[str, MergeRecipeNode]] = []
 
-    if not isinstance(target_node, MergeRecipeNode):
-        raise TypeError(f"Target node {target_node_ref} is not a merge node.")
+    for target_node_ref in target_node_refs:
+        target_node_idx = int(target_node_ref.strip("&"))
+        target_node = all_nodes_map.get(target_node_idx)
 
-    param_names = target_node.merge_method.get_param_names()
-    valid_params = set(param_names.args) | set(param_names.kwargs.keys())
+        if not isinstance(target_node, MergeRecipeNode):
+            raise TypeError(f"Target node {target_node_ref} is not a merge node.")
 
-    for param_name in recipe_cfg.target_params:
-        if param_name not in valid_params:
-            raise ValueError(
-                f"Target parameter '{param_name}' not found in method '{target_node.merge_method.identifier}'."
-            )
+        param_names = target_node.merge_method.get_param_names()
+        valid_params = set(param_names.args) | set(param_names.kwargs.keys())
 
-    logger.info("Pre-validation successful.")
-    return target_node
+        for param_name in recipe_cfg.target_params:
+            if param_name not in valid_params:
+                raise ValueError(
+                    f"Target parameter '{param_name}' not found in method '{target_node.merge_method.identifier}'."
+                )
+
+        validated_targets.append((target_node_ref, target_node))
+
+    logger.info(
+        "Pre-validation successful for %s target node(s).",
+        len(validated_targets),
+    )
+    return validated_targets
+
+
+def load_validated_target_node(merger: Merger, original_recipe_text: str) -> MergeRecipeNode:
+    """Deserialize and validate the first configured target merge node for recipe optimization."""
+    return load_validated_target_nodes(merger, original_recipe_text)[0][1]
 
 
 def recipe_optimization(
@@ -76,9 +93,9 @@ def recipe_optimization(
     recipe_path = Path(recipe_cfg.recipe_path)
     original_recipe_text = recipe_path.read_text(encoding="utf-8")
 
-    target_node = load_validated_target_node(merger, original_recipe_text)
-    target_node_ref = recipe_cfg.target_nodes
-    target_node_idx = int(target_node_ref.strip("&"))
+    validated_targets = load_validated_target_nodes(merger, original_recipe_text)
+    target_node = validated_targets[0][1]
+    target_node_indices = [int(target_node_ref.strip("&")) for target_node_ref, _ in validated_targets]
 
     merger.output_file = merger.create_model_output_name(iteration=iteration, recipe_node=target_node)
     logger.info("Set output path for this iteration to: %s", merger.output_file)
@@ -88,7 +105,7 @@ def recipe_optimization(
 
     final_recipe_text = rewrite_recipe_text(
         original_recipe_text=original_recipe_text,
-        target_node_idx=target_node_idx,
+        target_node_indices=target_node_indices,
         new_node_strings=new_node_strings,
         param_to_replacement=param_to_replacement,
     )

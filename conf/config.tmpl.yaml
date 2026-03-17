@@ -65,8 +65,8 @@ optimization_mode: merge # "merge": Optimizes parameters for a single merge meth
 # Settings for "recipe" optimization mode. Only used if optimization_mode is "recipe".
 recipe_optimization:
   recipe_path: path/to/your/recipe.mecha # Path to the .mecha recipe file to be optimized.
-  target_nodes: '&8' # The reference(s) to the node(s) inside the .mecha file to optimize (e.g., '&8', ['&8', '&12']).
-  target_params: [alpha, beta] # Recipe-mode activation list for merge kwargs to rewrite/optimize on target node(s). Non-targeted kwargs keep source recipe/default values.
+  target_nodes: '&8' # The reference(s) to the node(s) inside the .mecha file to optimize (e.g., '&8', ['&8', '&12']). The same target_params are applied to each targeted merge line.
+  target_params: [alpha, beta] # The setting names to change on the selected recipe line(s). Anything not listed here keeps its existing value.
 
 # --- Optimizer Configuration ---
 optimizer:

@@ -16,6 +16,7 @@ from hydra.core.hydra_config import HydraConfig
 from omegaconf import DictConfig
 from sd_mecha import recipe_nodes
 from .methods import resolve_merge_method
+from .config import normalize_target_node_refs
 from .recipes import serialize_recipe_text
 
 if TYPE_CHECKING:
@@ -88,13 +89,17 @@ def _to_mecha_inline_literal(value: Any) -> str:
 
 def rewrite_recipe_text(
     original_recipe_text: str,
-    target_node_idx: int,
     new_node_strings: list[str],
     param_to_replacement: dict[str, str],
+    target_node_idx: int | None = None,
+    target_node_indices: list[int] | set[int] | tuple[int, ...] | None = None,
 ) -> str:
     """Prepend nodes to a recipe text and patch the targeted merge line."""
     original_lines = original_recipe_text.strip().split("\n")[1:]
     num_new_nodes = len(new_node_strings)
+    normalized_target_indices = set(target_node_indices or [])
+    if target_node_idx is not None:
+        normalized_target_indices.add(target_node_idx)
 
     def shift_old_ref(match):
         original_idx = int(match.group(1))
@@ -108,7 +113,7 @@ def rewrite_recipe_text(
 
         shifted_line = re.sub(r"&(\d+)", shift_old_ref, line_base)
 
-        if index == target_node_idx:
+        if index in normalized_target_indices:
             line_to_append = shifted_line
             for param_name, replacement_token in param_to_replacement.items():
                 pattern = re.compile(f"({re.escape(param_name)}=)([^ ]+)")
@@ -257,12 +262,13 @@ def get_method_names(cfg: DictConfig, original_recipe_text: str) -> str:
     if cfg.optimization_mode == "merge":
         return cfg.merge_method
     if cfg.optimization_mode == "recipe":
-        target_ref = cfg.recipe_optimization.get("target_nodes")
-        if not target_ref:
+        target_nodes_raw = cfg.recipe_optimization.get("target_nodes")
+        if not target_nodes_raw:
             logger.warning("Recipe mode selected but no target_nodes defined.")
             return "unknown_recipe_method_no_target"
 
         try:
+            target_ref = normalize_target_node_refs(target_nodes_raw)[0]
             all_lines = original_recipe_text.strip().split("\n")
             target_node_idx = int(target_ref.strip("&"))
             recipe_slice_to_parse = all_lines[: target_node_idx + 2]

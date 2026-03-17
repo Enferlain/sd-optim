@@ -59,3 +59,24 @@ def test_recipe_rewrite_inlines_scalar_kwargs_instead_of_aliasing_refs(monkeypat
 
     assert "rank_blend=0.5" in rewritten
     assert "rank_blend=&" not in rewritten
+
+
+def test_recipe_rewrite_patches_multiple_target_lines(monkeypatch) -> None:
+    artifacts = _import_artifacts_with_pynput_stub(monkeypatch)
+
+    rewritten = artifacts.rewrite_recipe_text(
+        original_recipe_text="\n".join(
+            [
+                "version 0.1.0",
+                'model "a.safetensors" model_config="sdxl-sgm" merge_space="weight"',
+                'merge "weighted_sum" &0 alpha=0.1 beta=0.2',
+                'merge "weighted_sum" &0 alpha=0.3 beta=0.4',
+            ]
+        ),
+        target_node_indices=[1, 2],
+        new_node_strings=[],
+        param_to_replacement={"alpha": "0.9"},
+    )
+
+    assert 'merge "weighted_sum" &0 alpha=0.9 beta=0.2' in rewritten
+    assert 'merge "weighted_sum" &0 alpha=0.9 beta=0.4' in rewritten

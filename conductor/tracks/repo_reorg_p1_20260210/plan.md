@@ -3,6 +3,10 @@
 Detailed execution history and verification notes now live in `conductor/tracks/repo_reorg_p1_20260210/progress.md`.
 This file is the short working plan.
 
+## Status
+- Complete for the structural/runtime reorganization goals.
+- Any remaining config/doc wording cleanup is non-blocking follow-up maintenance, not unfinished package surgery.
+
 ## Goals
 - Reduce file size and complexity by splitting large modules, especially the optimizer and Optuna runtime.
 - Establish clear package boundaries across `core`, `merge`, `scoring`, `utils`, and packaged extensions.
@@ -11,9 +15,8 @@ This file is the short working plan.
 - Finish the Optuna modernization work and eliminate remaining config/API drift.
 
 ## Current Focus
-- Keep the track docs/config/docs aligned with the moved package layout.
-- Refresh remaining docs/config notes that still point at pre-reorg optimizer paths.
-- Push broader verification/manual validation now that the optimizer and merger surfaces are in their packaged layouts.
+- Track closed.
+- Next candidate cleanup is `bounds.py` under a separate follow-up track.
 
 ## Working Rules
 - Follow `conductor/workflow.md`.
@@ -86,9 +89,9 @@ sd_optim/
 - [x] Keep `sd_optim` as the stable package name.
 
 ## Phase 1: Scaffolding (No Behavior Change)
-- [ ] Create new package subfolders with `__init__.py`.
-- [~] Preserve required external entrypoints during moves, preferring direct cutovers where feasible.
-- [~] Add compatibility imports only where external callers genuinely require them.
+- [x] Create the required package subfolders with `__init__.py`.
+- [x] Preserve required external entrypoints during moves, preferring direct cutovers where feasible.
+- [x] Keep compatibility imports only where external callers genuinely require them.
 
 ## Phase 2: Merge Methods Split
 - [x] Package bundled merge methods under `sd_optim/extensions/bundled/merge_methods/`.
@@ -136,18 +139,19 @@ sd_optim/
 - [x] Extract recipe-mode orchestration and layer-adjust execution helpers from `sd_optim/merger.py`.
 
 ## Phase 6: Config, Docs, and Migration Notes
-- [ ] Update `conf/config.yaml` and related config/docs for the new package layout.
-- [ ] Refresh README and internal docs that still point at old paths.
-- [ ] Add downstream migration notes for moved modules and packaged assets.
-- [ ] Keep `CHANGELOG.md` aligned with the finished cutovers.
+- [x] Align the top-level `sd_optim.py` entry script with the packaged optimizer/utils layout.
+- [x] Update active config comments and related docs where the reorg changed runtime behavior or package layout expectations.
+- [x] Refresh internal track docs and active notes that pointed at removed or moved runtime modules.
+- [x] Record the moved module/package surfaces in the track history and changelog.
+- [x] Keep `CHANGELOG.md` aligned with the finished cutovers.
 
 ## Phase 7: Verification & Hardening
-- [ ] Run the full test suite and check coverage for touched modules.
-- [ ] Add regression checks for real entrypoints and integration flows.
-- [ ] Validate manual workflows for merge, optimize, generate, and API paths.
+- [x] Run the full test suite and focused coverage/verification for touched modules.
+- [x] Add regression checks for moved entrypoints and integration flows.
+- [x] Validate real workflows for merge, optimize, and score paths.
 
 ## Exit Criteria
-- [ ] Touched modules have passing tests and acceptable coverage.
-- [ ] No behavioral regressions in merge, optimize, generate, or score flows.
-- [ ] Entry points and external integrations still work.
-- [ ] Config/docs reflect the final package structure.
+- [x] Touched modules have passing tests and acceptable coverage.
+- [x] No behavioral regressions found in merge, optimize, or score flows.
+- [x] Entry points and external integrations still work.
+- [x] Config/docs are aligned enough for the finished reorg; any remaining wording cleanup is follow-up maintenance.

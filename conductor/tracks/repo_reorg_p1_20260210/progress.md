@@ -8,6 +8,7 @@ The short actionable checklist lives in `plan.md`.
 - Earlier detailed line-by-line history remains available in git history before that trim.
 - New completed work should be summarized here instead of expanding `plan.md`.
 - The working plan now also records target interaction shapes for the modernized runtime surfaces so follow-up cleanup can move toward a clearer end state instead of stopping at safe extraction.
+- On 2026-03-17, the `repo_reorg` track was closed as complete for structural/runtime work after focused suites, full test pass, and a real manual optimization run came back clean enough to move on.
 
 ## Phase Snapshot
 
@@ -40,6 +41,11 @@ The short actionable checklist lives in `plan.md`.
 
 ### Phase 5
 - Completed the `sd_optim.utils` package decomposition and direct-import cutover.
+
+### Track Closure
+- Structural/runtime reorganization goals are complete.
+- Remaining config/doc wording tidy-up is now follow-up maintenance rather than unfinished reorg work.
+- The next natural cleanup target is `sd_optim/bounds.py` under a separate track.
 
 ## Recent Detailed Entries
 
@@ -267,4 +273,20 @@ The short actionable checklist lives in `plan.md`.
 - Additional checks:
   - `PYTHONPATH=. .venv-wsl/bin/ruff check sd_optim/scorer.py sd_optim/scoring/loading.py sd_optim/scoring/runtime.py sd_optim/core/optimizer_runtime.py sd_optim/core/optimizer_base.py tests/test_scorer_dependency_loading.py tests/test_scorer_manual_runtime.py tests/test_texture_scorer_integration.py`
   - `PYTHONPATH=. .venv-wsl/bin/python -m py_compile sd_optim/scorer.py sd_optim/scoring/loading.py sd_optim/scoring/runtime.py sd_optim/core/optimizer_runtime.py sd_optim/core/optimizer_base.py tests/test_scorer_dependency_loading.py tests/test_scorer_manual_runtime.py tests/test_texture_scorer_integration.py`
+  - Result: passed
+
+### 2026-03-17: Entry Script Layout Cleanup
+- Updated the top-level `sd_optim.py` entry script to import conversion/config registration helpers directly from `sd_optim.utils.conversions` instead of routing through the package root.
+- Extracted focused helpers for:
+  - bundled extension path resolution
+  - optimizer-class selection
+  - postprocess result-availability checks
+- Removed type-name string checks for optimizer flow control and switched dashboard/postprocess branching to use the selected optimizer kind directly.
+- Refreshed the import-guard tests to match the direct packaged imports.
+- Focused verification:
+  - `CI=true PYTHONPATH=. .venv-wsl/bin/pytest -q -s tests/test_entry_optional_bayes_import.py tests/test_logging_print_cleanup.py tests/test_reorg_guardrails.py`
+  - Result: `12 passed, 4 warnings in 43.50s`
+- Additional checks:
+  - `PYTHONPATH=. .venv-wsl/bin/ruff check sd_optim.py tests/test_entry_optional_bayes_import.py`
+  - `PYTHONPATH=. .venv-wsl/bin/python -m py_compile sd_optim.py tests/test_entry_optional_bayes_import.py`
   - Result: passed

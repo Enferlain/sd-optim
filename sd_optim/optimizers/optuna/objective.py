@@ -9,6 +9,7 @@ import optuna
 from optuna import Trial
 
 from sd_optim.core.optimizer_cache import fail_on_error_enabled
+from sd_optim.core.optimizer_runtime import log_iteration_start
 
 if TYPE_CHECKING:
     from sd_optim.optimizers.optuna.optimizer import OptunaOptimizer
@@ -81,10 +82,10 @@ def suggest_parameters(optimizer: OptunaOptimizer, trial: Trial) -> dict[str, An
                 is_integer_range = isinstance(low, int) and isinstance(high, int) and (step is None or isinstance(step, int))
                 if is_integer_range:
                     params[name] = trial.suggest_int(name, low, high, step=step or 1, log=log)
-                    logger.debug("Suggesting for '%s': Int range [%s-%s], Step=%s, Log=%s", name, low, high, step or 1, log)
+                    logger.debug("Suggesting for '%s': Int range (%s-%s), Step=%s, Log=%s", name, low, high, step or 1, log)
                 else:
                     params[name] = trial.suggest_float(name, float(low), float(high), step=step, log=log)
-                    logger.debug("Suggesting for '%s': Float range [%s-%s], Step=%s, Log=%s", name, low, high, step, log)
+                    logger.debug("Suggesting for '%s': Float range (%s-%s), Step=%s, Log=%s", name, low, high, step, log)
             elif isinstance(bound_config, list):
                 params[name] = trial.suggest_categorical(name, bound_config)
                 logger.debug("Suggesting for '%s': Categorical %s", name, bound_config)
@@ -94,10 +95,10 @@ def suggest_parameters(optimizer: OptunaOptimizer, trial: Trial) -> dict[str, An
                 low, high = bound_config
                 if isinstance(low, int) and isinstance(high, int):
                     params[name] = trial.suggest_int(name, low, high)
-                    logger.debug("Suggesting for '%s': Simple Int range [%s-%s]", name, low, high)
+                    logger.debug("Suggesting for '%s': Simple Int range (%s-%s)", name, low, high)
                 else:
                     params[name] = trial.suggest_float(name, float(low), float(high))
-                    logger.debug("Suggesting for '%s': Simple Float range [%s-%s]", name, low, high)
+                    logger.debug("Suggesting for '%s': Simple Float range (%s-%s)", name, low, high)
             elif isinstance(bound_config, (int, float)):
                 params[name] = bound_config
                 logger.debug("Using fixed value for '%s': %s", name, bound_config)
@@ -123,6 +124,12 @@ def suggest_parameters(optimizer: OptunaOptimizer, trial: Trial) -> dict[str, An
 
 
 def run_objective(optimizer: OptunaOptimizer, trial: Trial) -> float:
+    cfg = getattr(optimizer, "cfg", None)
+    if cfg is not None and hasattr(cfg, "get"):
+        next_effective_iteration = getattr(optimizer, "iteration", -1) + getattr(optimizer, "completed_trials", 0) + 1
+        log_iteration_start(optimizer, None, effective_iteration=next_effective_iteration)
+        optimizer._iteration_start_logged = True
+
     params = suggest_parameters(optimizer, trial)
     try:
         result = asyncio.run(optimizer.sd_target_function(params))

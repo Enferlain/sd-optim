@@ -119,6 +119,40 @@ def test_run_objective_falls_back_to_last_scorer_results() -> None:
     assert optimizer.trial_scores == [0.7]
 
 
+def test_run_objective_logs_iteration_start_before_parameter_suggestion(monkeypatch) -> None:
+    objective_mod = __import__("sd_optim.optimizers.optuna.objective", fromlist=["run_objective"])
+    banner_calls: list[tuple[object, int]] = []
+
+    monkeypatch.setattr(
+        objective_mod,
+        "log_iteration_start",
+        lambda optimizer, params, *, effective_iteration: banner_calls.append((params, effective_iteration)),
+    )
+
+    optimizer = SimpleNamespace(
+        cfg=OmegaConf.create({"optimizer": {"init_points": 2}}),
+        iteration=0,
+        completed_trials=0,
+        optimizer_pbounds={"alpha": 0.5},
+        child_to_parent={},
+        scorer=SimpleNamespace(last_scorer_results={"manual": 0.7}),
+        last_trial_scorer_summary={},
+        trial_scores=[],
+        early_stopping=False,
+        patience=2,
+        min_improvement=0.0,
+    )
+
+    async def target(params):  # noqa: ARG001
+        return 0.7
+
+    optimizer.sd_target_function = target
+
+    assert run_objective(optimizer, _DummyTrial()) == 0.7
+    assert banner_calls == [(None, 1)]
+    assert optimizer._iteration_start_logged is True
+
+
 def test_run_objective_prunes_when_early_stopping_threshold_is_hit() -> None:
     optimizer = SimpleNamespace(
         cfg=OmegaConf.create({}),

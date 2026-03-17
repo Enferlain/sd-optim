@@ -1,17 +1,17 @@
-# sd_optim.py - Version 1.3 - Modular loading & Configurable extension paths
-import subprocess
-
-import hydra
 import asyncio
+import hydra
 import logging
+import subprocess
 import sys
 from pathlib import Path
+from typing import Literal
 
-# Import main config/utility helpers
-from omegaconf import (
-    DictConfig,
-)  # Using OmegaConf for cleaner config logging
-from sd_optim import utils  # Import utils (needs to exist)
+from omegaconf import DictConfig
+
+from sd_optim.utils.conversions import (
+    load_and_register_custom_configs,
+    load_and_register_custom_conversion,
+)
 
 # Configure logging level and format early. Can be overridden by Hydra later.
 logging.basicConfig(
@@ -34,6 +34,54 @@ logging.getLogger("httpcore.http11").setLevel(logging.WARNING)
 logger = logging.getLogger(__name__)  # Hydra often configures this further
 
 
+def _determine_extension_paths(cfg: DictConfig) -> tuple[Path, Path]:
+    """Resolve model-config and conversion search paths."""
+    project_root = Path(__file__).resolve().parent
+    default_dir = project_root / "sd_optim" / "extensions" / "bundled" / "model_configs"
+
+    configs_dir_str = cfg.get("configs_dir")
+    conversion_dir_str = cfg.get("conversion_dir")
+
+    custom_configs_path = Path(configs_dir_str).resolve() if configs_dir_str else default_dir
+    custom_conversion_path = Path(conversion_dir_str).resolve() if conversion_dir_str else default_dir
+    return custom_configs_path, custom_conversion_path
+
+
+def _select_optimizer_class(cfg: DictConfig) -> tuple[type, str, Literal["bayes", "optuna"]]:
+    """Select the configured optimizer class."""
+    if cfg.optimizer.get("bayes", False):
+        try:
+            from sd_optim.optimizers.bayes.optimizer import BayesOptimizer
+        except ModuleNotFoundError as error:
+            if getattr(error, "name", "") == "bayes_opt":
+                logger.error(
+                    "Bayes optimizer selected, but dependency 'bayesian-optimization' is not installed. "
+                    "Install the Bayes extra before running with optimizer.bayes=true."
+                )
+                raise SystemExit(1) from error
+            raise
+        return BayesOptimizer, "BayesOpt", "bayes"
+
+    if cfg.optimizer.get("optuna", False):
+        from sd_optim.optimizers.optuna.optimizer import OptunaOptimizer
+
+        return OptunaOptimizer, "Optuna", "optuna"
+
+    possible_opts = [key for key, value in cfg.optimizer.items() if isinstance(value, bool)]
+    logger.error("No optimizer selected! Please set one of %s to True in config.yaml under 'optimizer'.", possible_opts)
+    raise SystemExit(1)
+
+
+def _has_optuna_results(optim_instance: object) -> bool:
+    study = getattr(optim_instance, "study", None)
+    return bool(study and getattr(study, "trials", None))
+
+
+def _has_bayes_results(optim_instance: object) -> bool:
+    optimizer = getattr(optim_instance, "optimizer", None)
+    return bool(optimizer and hasattr(optimizer, "res") and optimizer.res)
+
+
 @hydra.main(version_base=None, config_path="conf", config_name="config")
 def main(cfg: DictConfig) -> None:
     """Main entry point for the sd-optim application."""
@@ -47,35 +95,26 @@ def main(cfg: DictConfig) -> None:
         # logger.info(f"Hydra Run Directory: {run_dir}")
         # Log the entire config using OmegaConf for better readability (optional, consider DEBUG level)
         # logger.debug(f"Full configuration:\n{OmegaConf.to_yaml(cfg)}")
-        logger.info(f"Selected WebUI: {cfg.get('webui', 'N/A')}")
-        logger.info(f"Optimization Mode: {cfg.get('optimization_mode', 'N/A')}")
+        logger.info("Selected WebUI: %s", cfg.get("webui", "N/A"))
+        logger.info("Optimization Mode: %s", cfg.get("optimization_mode", "N/A"))
         if cfg.get("optimization_mode") == "merge":
-            logger.info(f"Merge Method: {cfg.get('merge_method', 'N/A')}")
+            logger.info("Merge Method: %s", cfg.get("merge_method", "N/A"))
     except Exception as log_cfg_e:
-        logger.warning(f"Could not log initial config details: {log_cfg_e}")
+        logger.warning("Could not log initial config details: %s", log_cfg_e)
 
     # --- Determine Project Root and Custom Extension Paths ---
     try:
-        # Assuming sd_optim.py is located at the root of the project checkout
-        project_root = Path(__file__).parent.resolve()
-        logger.debug(f"Determined project root: {project_root}")
+        custom_configs_path, custom_conversion_path = _determine_extension_paths(cfg)
 
-        # Define default paths relative to the sd_optim package within the project
-        # Assumes structure: project_root/sd_optim/custom_configs, etc.
-        default_configs_dir = project_root / "sd_optim" / "extensions" / "bundled" / "model_configs"
-        default_conversion_dir = project_root / "sd_optim" / "extensions" / "bundled" / "model_configs"
-
-        # Get paths from config, falling back to defaults if null or missing
-        configs_dir_str = cfg.get("configs_dir")  # Returns None if key is missing/null
-        conversion_dir_str = cfg.get("conversion_dir")
-
-        # Resolve paths: Use config path if specified, otherwise use default. Convert to absolute Path.
-        custom_configs_path = Path(configs_dir_str).resolve() if configs_dir_str else default_configs_dir
-        custom_conversion_path = Path(conversion_dir_str).resolve() if conversion_dir_str else default_conversion_dir
-
-        logger.info(f"Using custom configs directory: {custom_configs_path} {'(Default)' if not configs_dir_str else '(User Specified)'}")
         logger.info(
-            f"Using custom conversion directory: {custom_conversion_path} {'(Default)' if not conversion_dir_str else '(User Specified)'}"
+            "Using custom configs directory: %s %s",
+            custom_configs_path,
+            "(Default)" if not cfg.get("configs_dir") else "(User Specified)",
+        )
+        logger.info(
+            "Using custom conversion directory: %s %s",
+            custom_conversion_path,
+            "(Default)" if not cfg.get("conversion_dir") else "(User Specified)",
         )
 
     except Exception as path_e:
@@ -90,7 +129,7 @@ def main(cfg: DictConfig) -> None:
     # This registers the config IDs (like "sdxl-optim_blocks")
     try:
         logger.info("--- Loading Custom ModelConfigs ---")
-        utils.load_and_register_custom_configs(custom_configs_path)
+        load_and_register_custom_configs(custom_configs_path)
     except Exception as config_load_e:
         logger.error(f"CRITICAL ERROR loading custom configs: {config_load_e}", exc_info=True)
         logger.error("Halting execution due to config loading failure.")
@@ -101,7 +140,7 @@ def main(cfg: DictConfig) -> None:
     # which require the config IDs registered in the previous step to be valid.
     try:
         logger.info("--- Loading Custom Converters/MergeMethods ---")
-        utils.load_and_register_custom_conversion(custom_conversion_path)
+        load_and_register_custom_conversion(custom_conversion_path)
     except Exception as converter_load_e:
         logger.error(
             f"CRITICAL ERROR loading/registering custom converters: {converter_load_e}",
@@ -112,34 +151,7 @@ def main(cfg: DictConfig) -> None:
 
     # --- Select Optimizer Class ---
     logger.info("--- Selecting Optimizer ---")
-    optimizer_class = None
-    optimizer_name = "N/A"
-    # Access optimizer selection flags safely
-    if cfg.optimizer.get("bayes", False):
-        try:
-            from sd_optim.optimizers.bayes.optimizer import BayesOptimizer
-        except ModuleNotFoundError as e:
-            if getattr(e, "name", "") == "bayes_opt":
-                logger.error(
-                    "Bayes optimizer selected, but dependency 'bayesian-optimization' is not installed. "
-                    "Install the Bayes extra before running with optimizer.bayes=true."
-                )
-                sys.exit(1)
-            raise
-        optimizer_class = BayesOptimizer
-        optimizer_name = "BayesOpt"
-    elif cfg.optimizer.get("optuna", False):
-        from sd_optim.optimizers.optuna.optimizer import OptunaOptimizer
-
-        optimizer_class = OptunaOptimizer
-        optimizer_name = "Optuna"
-    # Add elif for other optimizers if re-implemented (e.g., TPE, ATPE)
-
-    if optimizer_class is None:
-        # Try to list available boolean flags under optimizer section
-        possible_opts = [k for k, v in cfg.optimizer.items() if isinstance(v, bool)]
-        logger.error(f"No optimizer selected! Please set one of {possible_opts} to True in config.yaml under 'optimizer'.")
-        sys.exit(1)
+    optimizer_class, optimizer_name, optimizer_kind = _select_optimizer_class(cfg)
     logger.info(f"Using Optimizer: {optimizer_name}")
 
     # --- Initialize and Run Optimizer ---
@@ -156,7 +168,7 @@ def main(cfg: DictConfig) -> None:
         logger.info("Optimizer configuration validated.")
 
         # --- Launch Dashboard BEFORE Optimization ---
-        if type(optim_instance).__name__ == "OptunaOptimizer" and cfg.optimizer.optuna_config.get("launch_dashboard", False):
+        if optimizer_kind == "optuna" and cfg.optimizer.optuna_config.get("launch_dashboard", False):
             dashboard_port = cfg.optimizer.optuna_config.get("dashboard_port", 8080)
             logger.info(f"--- Attempting to launch Optuna Dashboard in background (Port: {dashboard_port}) ---")
             dashboard_process = optim_instance.start_dashboard_background(port=dashboard_port)
@@ -195,29 +207,22 @@ def main(cfg: DictConfig) -> None:
         # --- ADDED: Attempt Postprocessing ---
         logger.info("--- Attempting Postprocessing (Finally Block) ---")
         if optim_instance is not None:
-            optimizer_type = type(optim_instance).__name__
-            # Check if the specific optimizer subclass needs postprocessing visuals
-            if optimizer_type in {"OptunaOptimizer", "BayesOptimizer"}:  # Add other types if needed
+            if optimizer_kind in {"optuna", "bayes"}:
                 try:
-                    # Check for results before calling postprocess
                     should_run_postprocess = False
-                    if optimizer_type == "OptunaOptimizer":
-                        if optim_instance.study and optim_instance.study.trials:
-                            should_run_postprocess = True
-                        else:
+                    if optimizer_kind == "optuna":
+                        should_run_postprocess = _has_optuna_results(optim_instance)
+                        if not should_run_postprocess:
                             logger.warning("Optuna study has no trials, skipping postprocessing.")
-                    elif optimizer_type == "BayesOptimizer":
-                        if optim_instance.optimizer and hasattr(optim_instance.optimizer, "res") and optim_instance.optimizer.res:
-                            should_run_postprocess = True
-                        else:
+                    elif optimizer_kind == "bayes":
+                        should_run_postprocess = _has_bayes_results(optim_instance)
+                        if not should_run_postprocess:
                             logger.warning("Bayes optimizer has no results, skipping postprocessing.")
-                    # Add checks for other optimizer types here if necessary
 
                     if should_run_postprocess:
-                        logger.info(f"Running postprocess for {type(optim_instance).__name__}...")
-                        # Use asyncio.run since postprocess is async
+                        logger.info("Running postprocess for %s...", optimizer_name)
                         asyncio.run(optim_instance.postprocess())
-                        logger.info(f"Postprocessing for {type(optim_instance).__name__} finished.")
+                        logger.info("Postprocessing for %s finished.", optimizer_name)
                     else:
                         logger.info("No results found for postprocessing.")
 

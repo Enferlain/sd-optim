@@ -25,6 +25,25 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+def log_iteration_start(
+    optimizer: Optimizer,
+    params: dict[str, Any] | None,
+    *,
+    effective_iteration: int,
+) -> None:
+    """Log the visible start of an iteration."""
+    optimizer_cfg = optimizer.cfg.get("optimizer", {}) if hasattr(optimizer.cfg, "get") else {}
+    init_points = optimizer_cfg.get("init_points", 0) if hasattr(optimizer_cfg, "get") else 0
+    iteration_type = "warmup" if effective_iteration <= init_points else "optimization"
+
+    if effective_iteration in {1, init_points + 1}:
+        logger.info("\n%s Starting %s Phase %s>", "-" * 10, iteration_type, "-" * 10)
+
+    logger.info("\n--- %s - Iteration: %s ---", iteration_type, effective_iteration)
+    if params is not None:
+        logger.info("Optimizer proposed parameters: %s", params)
+
+
 async def sequential_producer(
     optimizer: Optimizer,
     payloads: list[dict[str, Any]],
@@ -109,12 +128,11 @@ async def run_trial_iteration(optimizer: Optimizer, params: dict[str, Any]) -> f
     effective_iteration = optimizer.iteration + optimizer.completed_trials
     iteration_start_time = time.time()
 
-    iteration_type = "warmup" if effective_iteration <= optimizer.cfg.optimizer.init_points else "optimization"
-    if effective_iteration in {1, optimizer.cfg.optimizer.init_points + 1}:
-        logger.info("\n%s Starting %s Phase %s>", "-" * 10, iteration_type, "-" * 10)
-
-    logger.info("\n--- %s - Iteration: %s ---", iteration_type, effective_iteration)
-    logger.info("Optimizer proposed parameters: %s", params)
+    if getattr(optimizer, "_iteration_start_logged", False):
+        optimizer._iteration_start_logged = False
+        logger.info("Optimizer proposed parameters: %s", params)
+    else:
+        log_iteration_start(optimizer, params, effective_iteration=effective_iteration)
 
     payloads, target_paths = optimizer.prompter.render_payloads(optimizer.cfg.batch_size)
     if not payloads:

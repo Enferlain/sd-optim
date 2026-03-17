@@ -20,7 +20,7 @@ if TYPE_CHECKING:
     from optuna.pruners import BasePruner
     from optuna.study import Study
 
-    from sd_optim.optuna_optimizer import OptunaOptimizer
+    from sd_optim.optimizers.optuna.optimizer import OptunaOptimizer
 
 logger = logging.getLogger(__name__)
 

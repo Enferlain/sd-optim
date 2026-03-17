@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING
 from sd_optim.optimizers.optuna.study_manager import build_storage_uri_for_new_study, initialize_storage_dir
 
 if TYPE_CHECKING:
-    from sd_optim.optuna_optimizer import OptunaOptimizer
+    from sd_optim.optimizers.optuna.optimizer import OptunaOptimizer
 
 logger = logging.getLogger(__name__)
 

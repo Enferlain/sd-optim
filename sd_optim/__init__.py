@@ -5,7 +5,7 @@ __all__ = ["OptunaOptimizer", "BayesOptimizer"]
 
 def __getattr__(name: str) -> Any:
     if name == "OptunaOptimizer":
-        from sd_optim.optuna_optimizer import OptunaOptimizer
+        from sd_optim.optimizers.optuna.optimizer import OptunaOptimizer
 
         return OptunaOptimizer
     if name == "BayesOptimizer":

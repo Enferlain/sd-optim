@@ -18,7 +18,7 @@ pytest.importorskip("sd_mecha")
 from optuna.samplers import CmaEsSampler, TPESampler  # noqa: E402
 
 from sd_optim.bounds import ParameterHandler  # noqa: E402
-from sd_optim.optuna_optimizer import OptunaOptimizer  # noqa: E402
+from sd_optim.optimizers.optuna.optimizer import OptunaOptimizer  # noqa: E402
 
 
 def _make_optuna_cfg(*, sampler_type: str, extra_sampler: dict | None = None):

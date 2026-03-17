@@ -11,7 +11,7 @@ from optuna import Trial
 from sd_optim.core.optimizer_cache import fail_on_error_enabled
 
 if TYPE_CHECKING:
-    from sd_optim.optuna_optimizer import OptunaOptimizer
+    from sd_optim.optimizers.optuna.optimizer import OptunaOptimizer
 
 logger = logging.getLogger(__name__)
 

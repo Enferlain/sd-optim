@@ -13,6 +13,7 @@ This file is the short working plan.
 ## Current Focus
 - Keep the track docs/config/docs aligned with the moved package layout.
 - Re-check whether Bayes-specific support code can move out of the base path as well.
+- Keep moving facade-heavy runtime files toward direct orchestration code instead of one-line forwarding methods.
 
 ## Working Rules
 - Follow `conductor/workflow.md`.
@@ -34,6 +35,28 @@ sd_optim/
   utils/
 ```
 
+## Target Interaction Shapes
+
+### Merger
+- `sd_optim/merger.py` should be a small orchestration layer with a stable public API.
+- Public entrypoints should remain:
+  - `Merger.__init__(...)`
+  - `Merger.merge(...)`
+  - `Merger.recipe_optimization(...)`
+  - `Merger.layer_adjust(...)`
+- Those entrypoints should call focused helpers from `sd_optim/merge/*` directly.
+- Private one-line forwarding methods should be treated as transitional and removed when safe.
+- The intended steady state is:
+  - state/config lives on `Merger`
+  - flow/orchestration is readable in `merge()`
+  - detailed logic lives in helper modules such as `recipe_builder.py`, `fallback.py`, `execution.py`, `artifacts.py`, and `model_selection.py`
+
+### Optimizer / Optuna
+- `sd_optim/core/optimizer_base.py` should remain a shared runtime base, not a grab bag of optimizer-specific helpers.
+- Concrete optimizers should live under their packaged namespaces and keep only their true entrypoint classes near the top.
+- Helper packages like `sd_optim/optimizers/optuna/` should own sampler, objective, reporting, dashboard, and study lifecycle logic directly.
+- Compatibility surfaces should be kept only where external callers genuinely need them; repo-internal code should prefer direct imports.
+
 ## Optuna Modernization
 
 ### Known Issues
@@ -54,7 +77,7 @@ sd_optim/
 - [x] No regressions in start/resume/fork, callback logging, and trial JSONL schema.
 - [x] Optuna init paths remain stable across `tpe`, `cmaes`, and `qmc`.
 - [x] `sd_optim/optuna_optimizer.py` ends under 200 lines.
-- [ ] New Optuna submodules have focused tests with >80% coverage for touched code.
+- [x] New Optuna submodules have focused tests with >80% coverage for touched code.
 
 ## Phase 0: Discovery & Constraints
 - [x] Inventory imports and cross-module dependencies.
@@ -64,8 +87,8 @@ sd_optim/
 
 ## Phase 1: Scaffolding (No Behavior Change)
 - [ ] Create new package subfolders with `__init__.py`.
-- [ ] Preserve required external entrypoints during moves, preferring direct cutovers where feasible.
-- [ ] Add compatibility imports only where external callers genuinely require them.
+- [~] Preserve required external entrypoints during moves, preferring direct cutovers where feasible.
+- [~] Add compatibility imports only where external callers genuinely require them.
 
 ## Phase 2: Merge Methods Split
 - [x] Package bundled merge methods under `sd_optim/extensions/bundled/merge_methods/`.

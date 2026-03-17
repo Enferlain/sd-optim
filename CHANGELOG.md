@@ -39,6 +39,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Extracted optimizer best-model promotion and best-log helpers into `sd_optim/core/optimizer_artifacts.py`, and updated the base optimizer to use those artifact helpers directly
 - Extracted the remaining shared optimizer trial/runtime flow into `sd_optim/core/optimizer_runtime.py`, moving generation/scoring orchestration out of `sd_optim/core/optimizer_base.py`
 - Split the Optuna runtime into focused `sd_optim/optimizers/optuna/` modules for sampler setup, study/storage lifecycle, objective logic, reporting, dashboard launch, and JSONL trial logging, and reduced `sd_optim/optuna_optimizer.py` to a thin entrypoint
+- Backfilled focused Optuna helper coverage with dedicated tests for objective/reporting/study-manager/support modules, bringing the extracted Optuna helper package over the repo-reorg coverage target
+- Switched internal runtime and regression tests over to direct optimizer and bundled merge-helper imports while keeping the package-root and legacy merge-method shims available for external callers
+- Moved the concrete `OptunaOptimizer` class into `sd_optim/optimizers/optuna/optimizer.py`, updated in-repo call sites to that packaged path, and removed the old `sd_optim/optuna_optimizer.py` module
 - Split bundled scorer registry data and lazy class resolution into `sd_optim/extensions/bundled/scorers/registry.py` so `sd_optim.scorer` no longer eagerly imports every scorer module at import time
 - Moved bundled scorer implementation modules into `sd_optim/extensions/bundled/scorers/models/` so the scorer package root only contains package/registry code
 - Extracted scorer asset/download helpers into `sd_optim/extensions/bundled/scorers/assets.py` and scorer factory/loading helpers into `sd_optim/extensions/bundled/scorers/loading.py` so `sd_optim.scorer` can focus on runtime orchestration

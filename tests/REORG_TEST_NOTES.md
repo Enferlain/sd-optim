@@ -14,7 +14,7 @@ These are follow-up tests to add after the module split is complete.
 ## Add After Reorganization Lands
 
 1. Import compatibility tests
-- `sd_optim.optuna_optimizer.OptunaOptimizer` still imports and instantiates through wrapper.
+- `sd_optim.optimizers.optuna.optimizer.OptunaOptimizer` is the real runtime class path.
 - New split modules (`sd_optim/optimizers/optuna/*`) expose expected public API.
 
 2. Resume/fork integration tests (storage-backed)

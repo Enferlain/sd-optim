@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import importlib
+
 import torch
 
-import sd_optim.merge_methods as runtime_merge_methods
 from sd_optim.svd_ties_sum_extended import MergeMethods
+
+runtime_merge_methods = importlib.import_module("sd_optim.extensions.bundled.merge_methods.experimental.svd_ties_sum_extended")
 
 
 def test_approximate_svd_v2_allows_zero_power_iterations() -> None:
@@ -104,3 +107,9 @@ def test_runtime_merge_methods_copy_handles_rank_deficient_inputs() -> None:
 
     assert out.shape == matrices.shape
     assert torch.isfinite(out).all()
+
+
+def test_legacy_merge_methods_shim_points_at_runtime_helper() -> None:
+    legacy_module = importlib.import_module("sd_optim.merge_methods")
+
+    assert legacy_module.MergeMethods.svd_ties_sum_extended_v13 is runtime_merge_methods.svd_ties_sum_extended_v13

@@ -5,6 +5,8 @@ import inspect
 import sys
 import types
 
+import pytest
+
 
 def test_optimizer_base_module_exports_optimizer_class() -> None:
     module = importlib.import_module("sd_optim.core.optimizer_base")
@@ -14,9 +16,14 @@ def test_optimizer_base_module_exports_optimizer_class() -> None:
 
 def test_optuna_optimizer_uses_core_optimizer_base() -> None:
     base_module = importlib.import_module("sd_optim.core.optimizer_base")
-    optuna_module = importlib.import_module("sd_optim.optuna_optimizer")
+    optuna_module = importlib.import_module("sd_optim.optimizers.optuna.optimizer")
 
     assert issubclass(optuna_module.OptunaOptimizer, base_module.Optimizer)
+
+
+def test_top_level_optuna_optimizer_module_is_removed() -> None:
+    with pytest.raises(ModuleNotFoundError):
+        importlib.import_module("sd_optim.optuna_optimizer")
 
 
 def test_bayes_optimizer_uses_core_optimizer_base(monkeypatch) -> None:

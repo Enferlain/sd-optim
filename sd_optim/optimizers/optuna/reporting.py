@@ -12,7 +12,7 @@ from optuna import Study
 from optuna.trial import FrozenTrial, TrialState
 
 if TYPE_CHECKING:
-    from sd_optim.optuna_optimizer import OptunaOptimizer
+    from sd_optim.optimizers.optuna.optimizer import OptunaOptimizer
 
 logger = logging.getLogger(__name__)
 

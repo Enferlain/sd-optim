@@ -7,6 +7,7 @@ The short actionable checklist lives in `plan.md`.
 - On 2026-03-17, the working plan was condensed so `plan.md` stays readable.
 - Earlier detailed line-by-line history remains available in git history before that trim.
 - New completed work should be summarized here instead of expanding `plan.md`.
+- The working plan now also records target interaction shapes for the modernized runtime surfaces so follow-up cleanup can move toward a clearer end state instead of stopping at safe extraction.
 
 ## Phase Snapshot
 
@@ -105,3 +106,49 @@ The short actionable checklist lives in `plan.md`.
 - Coverage spot-check:
   - `CI=true PYTHONPATH=. .venv-wsl/bin/pytest --cov=sd_optim.optimizers.optuna.dashboard --cov=sd_optim.optimizers.optuna.objective --cov=sd_optim.optimizers.optuna.reporting --cov=sd_optim.optimizers.optuna.sampler_factory --cov=sd_optim.optimizers.optuna.study_manager --cov=sd_optim.optimizers.optuna.trial_logger --cov-report=term-missing -q tests/test_fail_on_error_policy.py tests/test_optuna_split_modules.py tests/test_optuna_dashboard_launcher.py tests/test_optuna_cma_warning_hygiene.py tests/test_reorg_guardrails.py`
   - Result: overall `37%` across those touched Optuna modules (`dashboard 80%`, `objective 42%`, `reporting 14%`, `sampler_factory 58%`, `study_manager 24%`, `trial_logger 79%`), so the coverage acceptance item remains open.
+
+### 2026-03-17: Optuna Coverage Backfill + Shim Narrowing
+- Added focused test modules:
+  - `tests/test_optuna_objective_module.py`
+  - `tests/test_optuna_reporting_module.py`
+  - `tests/test_optuna_study_manager_module.py`
+  - `tests/test_optuna_support_modules.py`
+- Backfilled direct coverage for `objective`, `reporting`, `study_manager`, `sampler_factory`, `dashboard`, and `trial_logger`.
+- Narrowed repo-internal shim usage:
+  - `sd_optim.py` now imports optimizer classes directly from `sd_optim.optuna_optimizer` / `sd_optim.bayes_optimizer` instead of relying on the package-root lazy export.
+  - `tests/test_svd_ties_sum_extended_v13.py` now exercises the bundled runtime module directly and keeps a small assertion that the legacy `sd_optim.merge_methods` shim still points at the same helper.
+- Combined Optuna helper coverage:
+  - `CI=true PYTHONPATH=. .venv-wsl/bin/pytest --cov=sd_optim.optimizers.optuna.dashboard --cov=sd_optim.optimizers.optuna.objective --cov=sd_optim.optimizers.optuna.reporting --cov=sd_optim.optimizers.optuna.sampler_factory --cov=sd_optim.optimizers.optuna.study_manager --cov=sd_optim.optimizers.optuna.trial_logger --cov-report=term-missing -q tests/test_optuna_objective_module.py tests/test_optuna_reporting_module.py tests/test_optuna_study_manager_module.py tests/test_optuna_support_modules.py tests/test_optuna_split_modules.py tests/test_optuna_dashboard_launcher.py tests/test_optuna_cma_warning_hygiene.py tests/test_reorg_guardrails.py tests/test_fail_on_error_policy.py`
+  - Result: overall `96%`
+  - Module coverage:
+    - `dashboard.py` `98%`
+    - `objective.py` `95%`
+    - `reporting.py` `94%`
+    - `sampler_factory.py` `97%`
+    - `study_manager.py` `98%`
+    - `trial_logger.py` `95%`
+- Focused verification:
+  - `CI=true PYTHONPATH=. .venv-wsl/bin/pytest -q -s tests/test_optuna_objective_module.py tests/test_optuna_reporting_module.py tests/test_optuna_study_manager_module.py tests/test_optuna_support_modules.py tests/test_optuna_split_modules.py tests/test_optuna_dashboard_launcher.py tests/test_optuna_cma_warning_hygiene.py tests/test_reorg_guardrails.py tests/test_fail_on_error_policy.py tests/test_optimizer_base_module.py tests/test_optimizer_runtime_modules.py tests/test_optimizer_artifacts.py tests/test_optimizer_core_cache.py tests/test_optimizer_cache_io.py tests/test_optimizer_cache_fingerprint.py tests/test_svd_ties_sum_extended_v13.py`
+  - Result: `94 passed, 4 warnings in 54.97s`
+- Additional checks:
+  - `PYTHONPATH=. .venv-wsl/bin/ruff check ...`
+  - `PYTHONPATH=. .venv-wsl/bin/python -m py_compile ...`
+  - Result: passed
+
+### 2026-03-17: Remove Top-Level Optuna Module
+- Moved the concrete `OptunaOptimizer` class from `sd_optim/optuna_optimizer.py` into `sd_optim/optimizers/optuna/optimizer.py`.
+- Removed the top-level `sd_optim/optuna_optimizer.py` module instead of keeping it as a facade.
+- Updated repo imports and tests to the new packaged class path:
+  - `sd_optim.py`
+  - `sd_optim/__init__.py`
+  - Optuna helper `TYPE_CHECKING` imports
+  - `tests/test_optimizer_base_module.py`
+  - `tests/test_reorg_guardrails.py`
+- Added a guardrail asserting the old `sd_optim.optuna_optimizer` module path is no longer importable.
+- Focused verification:
+  - `CI=true PYTHONPATH=. .venv-wsl/bin/pytest -q -s tests/test_optimizer_base_module.py tests/test_reorg_guardrails.py tests/test_optuna_objective_module.py tests/test_optuna_reporting_module.py tests/test_optuna_study_manager_module.py tests/test_optuna_support_modules.py tests/test_optuna_split_modules.py tests/test_optuna_dashboard_launcher.py tests/test_optuna_cma_warning_hygiene.py tests/test_fail_on_error_policy.py tests/test_optimizer_runtime_modules.py tests/test_optimizer_artifacts.py tests/test_optimizer_core_cache.py tests/test_optimizer_cache_io.py tests/test_optimizer_cache_fingerprint.py`
+  - Result: `88 passed, 4 warnings in 48.55s`
+- Additional checks:
+  - `PYTHONPATH=. .venv-wsl/bin/ruff check ...`
+  - `PYTHONPATH=. .venv-wsl/bin/python -m py_compile ...`
+  - Result: passed

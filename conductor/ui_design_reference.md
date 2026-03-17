@@ -229,7 +229,7 @@ Two optimizer backends are supported:
 #### Optuna-Specific Concepts
 
 - **Study:** A named collection of trials, persisted to SQLite. Can be resumed or forked.
-- **Sampler:** The algorithm that picks parameters. CMA-ES (`cmaes`) is the default.
+- **Sampler:** The algorithm that picks parameters. TPE and CMA-ES both support continuous ranges; TPE is usually the safer default for mixed/categorical-heavy spaces, while CMA-ES is strongest on mostly continuous guides.
 - **Pruning:** Early-stop bad trials before they finish generating all images.
 - **Dashboard:** A built-in web dashboard (optuna-dashboard) that can be auto-launched.
 

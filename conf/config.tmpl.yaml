@@ -115,12 +115,12 @@ optimizer:
     min_improvement: 0.001   # Minimum score increase to reset patience
     n_jobs: 1 # Number of parallel jobs for Optuna. >1 can speed up optimization but is EXPERIMENTAL and may cause issues.
     sampler:
-      type: tpe              # Sampler type: tpe, random, cmaes, gp, qmc, grid, nsgaii, botorch
+      type: tpe              # Recommended general default. TPE also supports continuous ranges and is usually safer for mixed/categorical-heavy guides.
       # --- TPE specific ---
       multivariate: True
       group: True
       constant_liar: True
-      warn_independent_sampling: True
+      warn_independent_sampling: True # Keep Optuna warnings visible when non-continuous params are sampled independently.
       n_ei_candidates: 48    # Number of candidate points (increase for better exploration, e.g., 48 for 40-100 params)
       # gamma: null            # Good/bad threshold function (null = auto, or callable function)
       # prior_weight: 1.0      # Weight of prior distributions
@@ -147,7 +147,7 @@ optimizer:
       # --- QMC specific ---
       # qmc_type: sobol       # 'sobol', 'halton', 'lhs'
       # scramble: True        # Whether to scramble the sequence
-      # warn_asyncronous_seeding: True  # Warn about async seeding issues
+      # warn_asynchronous_seeding: True  # Warn about async seeding issues
 
       # --- Grid specific ---
       # search_space:         # Define exact search points for grid sampler

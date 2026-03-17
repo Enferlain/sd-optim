@@ -14,7 +14,7 @@ async def test_manual_score_uses_saved_preview_and_records_result(
     tmp_path,
 ) -> None:
     import sd_optim.scoring.runtime as scorer_runtime_mod
-    from sd_optim.scorer import AestheticScorer
+    from sd_optim.scorer import Scorer
 
     monkeypatch.setattr(
         scorer_runtime_mod.HydraConfig,
@@ -36,12 +36,12 @@ async def test_manual_score_uses_saved_preview_and_records_result(
         }
     )
 
-    scorer = AestheticScorer(cfg)
+    scorer = Scorer(cfg)
     opened_paths = []
 
     monkeypatch.setattr(Image.Image, "show", lambda self: None)
-    monkeypatch.setattr(scorer, "open_image", lambda path: opened_paths.append(path))
-    monkeypatch.setattr(scorer, "get_user_score", lambda: 6.25)
+    monkeypatch.setattr(scorer_runtime_mod, "open_image", lambda path, warning_state=None: opened_paths.append(path))  # noqa: ARG005
+    monkeypatch.setattr(scorer_runtime_mod, "get_user_score", lambda: 6.25)
 
     score = await scorer.score(Image.new("RGB", (8, 8), "red"), prompt="test", name="payload-one")
 

@@ -26,7 +26,7 @@ def load_history_cache(logs_dir: Path, *, scan_legacy_pngs: bool = False) -> His
 
     manifest_paths = sorted(
         logs_dir.rglob("run_manifest.json"),
-        key=lambda path: path.stat().st_mtime,
+        key=lambda path: (path.stat().st_mtime_ns, path.as_posix()),
         reverse=True,
     )
     for manifest_path in manifest_paths:
@@ -39,7 +39,7 @@ def load_history_cache(logs_dir: Path, *, scan_legacy_pngs: bool = False) -> His
                 relative_path = data.get("path")
                 if not relative_path:
                     continue
-                full_path = run_dir / relative_path
+                full_path = (run_dir / relative_path).resolve()
                 if not full_path.exists():
                     continue
                 history_cache[image_hash] = {
@@ -96,7 +96,7 @@ def build_run_manifest_entry(
         stored_path = str(image_path)
     else:
         try:
-            stored_path = str(image_path.relative_to(output_dir))
+            stored_path = image_path.relative_to(output_dir).as_posix()
         except ValueError:
             stored_path = str(image_path)
     return {

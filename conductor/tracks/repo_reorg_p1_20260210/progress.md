@@ -33,6 +33,7 @@ The short actionable checklist lives in `plan.md`.
 
 ### Phase 4
 - Completed scoring package cleanup and support-module extraction.
+- Reduced `sd_optim/scorer.py` to orchestration-only flow and renamed the general scorer manager from `AestheticScorer` to `Scorer`.
 
 ### Phase 4.5
 - Completed the `extensions/bundled` packaged-layout cutover and restored test collection.
@@ -230,7 +231,7 @@ The short actionable checklist lives in `plan.md`.
   - Result: passed
 
 ### 2026-03-17: Move Root SVD + Trial Summary Helpers Into Their Real Packages
-- Moved the shared SVD utility helpers out of `sd_optim/svd.py` into `sd_optim/extensions/bundled/merge_methods/_svd_utils.py`.
+- Moved the shared SVD utility helpers out of `sd_optim/svd.py` into `sd_optim/extensions/bundled/merge_methods/svd.py`.
 - Updated bundled merge-method modules and the bundled package surface to import those helpers from the packaged merge-method namespace directly.
 - Removed the old package-root `sd_optim/svd.py` module instead of keeping another compatibility alias.
 - Moved trial scorer summary support out of `sd_optim/trial_scorer_summary.py` into `sd_optim/core/trial_scorer_summary.py`.
@@ -240,8 +241,30 @@ The short actionable checklist lives in `plan.md`.
   - `CI=true PYTHONPATH=. .venv-wsl/bin/pytest -q -s tests/test_svd_module_compat.py tests/test_svd_ties_sum_extended_v13.py tests/test_trial_scorer_summary.py tests/test_optimizer_runtime_modules.py`
   - Result: `16 passed in 27.55s`
 - Additional checks:
-  - `PYTHONPATH=. .venv-wsl/bin/ruff check sd_optim/extensions/bundled/merge_methods/__init__.py sd_optim/extensions/bundled/merge_methods/_svd_utils.py sd_optim/core/optimizer_runtime.py sd_optim/core/trial_scorer_summary.py tests/test_svd_module_compat.py tests/test_trial_scorer_summary.py`
-  - `PYTHONPATH=. .venv-wsl/bin/python -m py_compile sd_optim/extensions/bundled/merge_methods/__init__.py sd_optim/extensions/bundled/merge_methods/_svd_utils.py sd_optim/core/optimizer_runtime.py sd_optim/core/trial_scorer_summary.py tests/test_svd_module_compat.py tests/test_trial_scorer_summary.py`
+  - `PYTHONPATH=. .venv-wsl/bin/ruff check sd_optim/extensions/bundled/merge_methods/__init__.py sd_optim/extensions/bundled/merge_methods/svd.py sd_optim/core/optimizer_runtime.py sd_optim/core/trial_scorer_summary.py tests/test_svd_module_compat.py tests/test_trial_scorer_summary.py`
+  - `PYTHONPATH=. .venv-wsl/bin/python -m py_compile sd_optim/extensions/bundled/merge_methods/__init__.py sd_optim/extensions/bundled/merge_methods/svd.py sd_optim/core/optimizer_runtime.py sd_optim/core/trial_scorer_summary.py tests/test_svd_module_compat.py tests/test_trial_scorer_summary.py`
   - Result: passed
 - Note:
   - Full-file lint/compile over every touched experimental bundled merge-method module is still noisy because some of those legacy files already contain unrelated lint problems and at least one pre-existing syntax issue; the focused runtime/import tests above passed for the actual paths exercised by the repo.
+
+### 2026-03-17: Scorer Facade Cleanup
+- Renamed the general scoring runtime class from `AestheticScorer` to `Scorer`.
+- Simplified `sd_optim/scorer.py` into a small orchestration layer that wires together focused helpers from `sd_optim/scoring/` directly.
+- Removed no-behavior wrapper methods for:
+  - model/setup loading
+  - rembg session setup
+  - manual preview/image opening
+  - prompt override and average calculation forwarding
+- Updated scorer support modules to call each other directly instead of routing through deleted scorer-instance pass-through methods.
+- Updated optimizer runtime to call shared scoring helpers directly for override prompts and score averaging.
+- Refreshed scorer-focused tests to import `Scorer` directly and patch the helper modules instead of deleted wrapper methods.
+- Aligned optimizer runtime tests with the current config vocabulary by using `img_average_type: arithmetic` instead of the old `weighted` label.
+- Focused verification:
+  - `CI=true PYTHONPATH=. .venv-wsl/bin/pytest -q -s tests/test_scorer_dependency_loading.py tests/test_scorer_manual_runtime.py tests/test_scorer_runtime_modules.py tests/test_scorer_support_modules.py tests/test_texture_scorer_integration.py`
+  - Result: `12 passed, 1 skipped in 112.30s`
+  - `CI=true PYTHONPATH=. .venv-wsl/bin/pytest -q -s tests/test_optimizer_runtime_modules.py`
+  - Result: `4 passed in 20.45s`
+- Additional checks:
+  - `PYTHONPATH=. .venv-wsl/bin/ruff check sd_optim/scorer.py sd_optim/scoring/loading.py sd_optim/scoring/runtime.py sd_optim/core/optimizer_runtime.py sd_optim/core/optimizer_base.py tests/test_scorer_dependency_loading.py tests/test_scorer_manual_runtime.py tests/test_texture_scorer_integration.py`
+  - `PYTHONPATH=. .venv-wsl/bin/python -m py_compile sd_optim/scorer.py sd_optim/scoring/loading.py sd_optim/scoring/runtime.py sd_optim/core/optimizer_runtime.py sd_optim/core/optimizer_base.py tests/test_scorer_dependency_loading.py tests/test_scorer_manual_runtime.py tests/test_texture_scorer_integration.py`
+  - Result: passed

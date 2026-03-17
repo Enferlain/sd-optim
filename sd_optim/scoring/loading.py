@@ -98,7 +98,9 @@ def load_model(scorer: Any, evaluator_lower: str) -> bool:
         return True
 
     if evaluator_lower in scorer._scorers_needing_rembg:
-        scorer._ensure_rembg_session()
+        from .runtime import ensure_rembg_session
+
+        ensure_rembg_session(scorer, session_factory=scorer.rembg_session_factory)
 
     logger.info("Lazy loading scorer model: '%s'", evaluator_lower)
     scorer_model_dir_path = Path(scorer.cfg.scorer_model_dir)

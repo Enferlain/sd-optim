@@ -260,7 +260,7 @@ def test_optimize_study_creates_new_study_and_skips_when_no_trials_remaining(mon
     )
     recorded = {"initial_attrs": 0, "analyzed": 0}
 
-    monkeypatch.setattr(study_manager, "configure_sampler", lambda cfg: "sampler")  # noqa: ARG005
+    monkeypatch.setattr(study_manager, "configure_sampler", lambda cfg, **kwargs: "sampler")  # noqa: ARG005
     monkeypatch.setattr(study_manager, "configure_pruner", lambda cfg: None)  # noqa: ARG005
     monkeypatch.setattr(study_manager, "build_storage_uri_for_new_study", lambda cfg, storage_dir, is_fork=False: ("sqlite:///new.db", "new.db"))  # noqa: ARG005
     monkeypatch.setattr(study_manager.optuna, "create_study", lambda **kwargs: created_study)
@@ -295,7 +295,7 @@ def test_optimize_study_forks_completed_trials(monkeypatch, tmp_path: Path) -> N
         completed_trials=0,
     )
 
-    monkeypatch.setattr(study_manager, "configure_sampler", lambda cfg: "sampler")  # noqa: ARG005
+    monkeypatch.setattr(study_manager, "configure_sampler", lambda cfg, **kwargs: "sampler")  # noqa: ARG005
     monkeypatch.setattr(study_manager, "configure_pruner", lambda cfg: None)  # noqa: ARG005
     monkeypatch.setattr(study_manager, "find_db_for_study", lambda storage_dir, name: ("sqlite:///parent.db", "parent.db"))  # noqa: ARG005
     monkeypatch.setattr(study_manager.optuna, "load_study", lambda study_name, storage: parent_study)  # noqa: ARG005
@@ -331,7 +331,7 @@ def test_optimize_study_rejects_resume_when_scorers_change(monkeypatch, tmp_path
         completed_trials=0,
     )
 
-    monkeypatch.setattr(study_manager, "configure_sampler", lambda cfg: "sampler")  # noqa: ARG005
+    monkeypatch.setattr(study_manager, "configure_sampler", lambda cfg, **kwargs: "sampler")  # noqa: ARG005
     monkeypatch.setattr(study_manager, "configure_pruner", lambda cfg: None)  # noqa: ARG005
     monkeypatch.setattr(study_manager, "find_db_for_study", lambda storage_dir, name: ("sqlite:///parent.db", "parent.db"))  # noqa: ARG005
     monkeypatch.setattr(study_manager.optuna, "load_study", lambda study_name, storage: parent_study)  # noqa: ARG005
@@ -351,7 +351,7 @@ def test_optimize_study_raises_when_parent_study_cannot_be_found(monkeypatch, tm
         completed_trials=0,
     )
 
-    monkeypatch.setattr(study_manager, "configure_sampler", lambda cfg: "sampler")  # noqa: ARG005
+    monkeypatch.setattr(study_manager, "configure_sampler", lambda cfg, **kwargs: "sampler")  # noqa: ARG005
     monkeypatch.setattr(study_manager, "configure_pruner", lambda cfg: None)  # noqa: ARG005
     monkeypatch.setattr(study_manager, "find_db_for_study", lambda storage_dir, name: (None, None))  # noqa: ARG005
 
@@ -382,7 +382,7 @@ def test_optimize_study_resume_path_runs_existing_trials_and_optimize(monkeypatc
         to_thread_calls.append((callable_obj, kwargs))
         callable_obj(*args, **kwargs)
 
-    monkeypatch.setattr(study_manager, "configure_sampler", lambda cfg: "sampler")  # noqa: ARG005
+    monkeypatch.setattr(study_manager, "configure_sampler", lambda cfg, **kwargs: "sampler")  # noqa: ARG005
     monkeypatch.setattr(study_manager, "configure_pruner", lambda cfg: None)  # noqa: ARG005
     monkeypatch.setattr(study_manager, "find_db_for_study", lambda storage_dir, name: ("sqlite:///parent.db", "parent.db"))  # noqa: ARG005
     monkeypatch.setattr(study_manager.optuna, "load_study", lambda study_name, storage: parent_study)  # noqa: ARG005
@@ -413,7 +413,7 @@ def test_optimize_study_re_raises_non_keyboard_interrupt_from_optimize(monkeypat
         completed_trials=0,
     )
 
-    monkeypatch.setattr(study_manager, "configure_sampler", lambda cfg: "sampler")  # noqa: ARG005
+    monkeypatch.setattr(study_manager, "configure_sampler", lambda cfg, **kwargs: "sampler")  # noqa: ARG005
     monkeypatch.setattr(study_manager, "configure_pruner", lambda cfg: None)  # noqa: ARG005
     monkeypatch.setattr(study_manager, "build_storage_uri_for_new_study", lambda cfg, storage_dir, is_fork=False: ("sqlite:///new.db", "new.db"))  # noqa: ARG005
     monkeypatch.setattr(study_manager.optuna, "create_study", lambda **kwargs: _DummyStudy())

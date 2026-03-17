@@ -38,7 +38,7 @@ from sd_optim.bounds import ParameterHandler, BoundsInfo
 from sd_optim.generator import Generator
 from sd_optim.merger import Merger
 from sd_optim.prompter import Prompter
-from sd_optim.scorer import AestheticScorer
+from sd_optim.scorer import Scorer
 from sd_optim.utils.config import validate_run_config
 from sd_optim.utils.recipes import get_model_config_candidates
 
@@ -132,7 +132,7 @@ class Optimizer(ABC):
         # --- STAGE 3: COMPLETE THE REST OF THE SETUP ---
         self.setup_parameter_space()
         self.generator = Generator(self.cfg.url, self.cfg.batch_size, self.cfg.webui)
-        self.scorer = AestheticScorer(self.cfg)
+        self.scorer = Scorer(self.cfg)
         self.scorer_setup_fp = compute_scorer_setup_fingerprint(self.cfg)
         self.generation_setup_fp = compute_generation_setup_fingerprint(self.cfg)
         self.prompter = Prompter(self.cfg)

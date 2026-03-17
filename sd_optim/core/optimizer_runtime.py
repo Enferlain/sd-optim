@@ -16,6 +16,8 @@ from PIL import Image
 from sd_optim.core.optimizer_cache import calculate_image_hash, fail_on_error_enabled
 from sd_optim.core.optimizer_cache_io import build_run_manifest_entry, save_run_manifest
 from sd_optim.core.trial_scorer_summary import build_trial_scorer_summary
+from sd_optim.scoring.interaction import handle_override_prompt
+from sd_optim.scoring.runtime import average_calc
 
 if TYPE_CHECKING:
     from sd_optim.core.optimizer_base import Optimizer
@@ -154,7 +156,7 @@ async def run_trial_iteration(optimizer: Optimizer, params: dict[str, Any]) -> f
     if overall_tier == "full_hit" and cache_results:
         cached_scores = [c[1]["final_score"] for c in cache_results]
         cached_weights = [c[2].get("score_weight", 1.0) for c in cache_results]
-        avg_score = optimizer.scorer.average_calc(cached_scores, cached_weights, optimizer.cfg.img_average_type)
+        avg_score = average_calc(cached_scores, cached_weights, optimizer.cfg.img_average_type)
         payload_entries: list[dict[str, Any]] = []
         for idx, (_, cached, payload, _) in enumerate(cache_results):
             payload_name = target_paths[idx] if idx < len(target_paths) else f"payload_{idx}"
@@ -169,11 +171,7 @@ async def run_trial_iteration(optimizer: Optimizer, params: dict[str, Any]) -> f
         optimizer.last_trial_scorer_summary = build_trial_scorer_summary(
             payload_entries,
             final_score=avg_score,
-            combine_scores=lambda values, weights: optimizer.scorer.average_calc(
-                values,
-                weights,
-                optimizer.cfg.img_average_type,
-            ),
+            combine_scores=lambda values, weights: average_calc(values, weights, optimizer.cfg.img_average_type),
         )
         elapsed = time.time() - iteration_start_time
         logger.info("CACHE HIT: All %s images reused. Score: %.4f (%.2fs)", len(cached_scores), avg_score, elapsed)
@@ -250,15 +248,11 @@ async def run_trial_iteration(optimizer: Optimizer, params: dict[str, Any]) -> f
                 break
 
         if overall_tier == "partial_hit" and rescored_scores:
-            avg_score = optimizer.scorer.average_calc(rescored_scores, rescored_weights, optimizer.cfg.img_average_type)
+            avg_score = average_calc(rescored_scores, rescored_weights, optimizer.cfg.img_average_type)
             optimizer.last_trial_scorer_summary = build_trial_scorer_summary(
                 payload_entries,
                 final_score=avg_score,
-                combine_scores=lambda values, weights: optimizer.scorer.average_calc(
-                    values,
-                    weights,
-                    optimizer.cfg.img_average_type,
-                ),
+                combine_scores=lambda values, weights: average_calc(values, weights, optimizer.cfg.img_average_type),
             )
             elapsed = time.time() - iteration_start_time
             logger.info(
@@ -437,7 +431,7 @@ async def run_trial_iteration(optimizer: Optimizer, params: dict[str, Any]) -> f
                     if individual_score == -1.0:
                         logger.warning("Consumer: OVERRIDE_SCORE detected during scoring of image %s.", i)
                         interrupt_event.set()
-                        fake_score_value = optimizer.scorer.handle_override_prompt()
+                        fake_score_value = handle_override_prompt()
                         interrupt_triggered = True
                         break
 
@@ -518,7 +512,7 @@ async def run_trial_iteration(optimizer: Optimizer, params: dict[str, Any]) -> f
         raise RuntimeError("Generation failed: No images were produced or scored.")
     else:
         try:
-            avg_score = optimizer.scorer.average_calc(scores, norm_weights, optimizer.cfg.img_average_type)
+            avg_score = average_calc(scores, norm_weights, optimizer.cfg.img_average_type)
             logger.info("Calculated average score: %.4f", avg_score)
         except Exception as avg_error:
             logger.error("Error calculating average score: %s", avg_error, exc_info=True)
@@ -527,11 +521,7 @@ async def run_trial_iteration(optimizer: Optimizer, params: dict[str, Any]) -> f
     optimizer.last_trial_scorer_summary = build_trial_scorer_summary(
         payload_entries,
         final_score=avg_score,
-        combine_scores=lambda values, weights: optimizer.scorer.average_calc(
-            values,
-            weights,
-            optimizer.cfg.img_average_type,
-        ),
+        combine_scores=lambda values, weights: average_calc(values, weights, optimizer.cfg.img_average_type),
     )
 
     optimizer.update_best_score(params, avg_score)

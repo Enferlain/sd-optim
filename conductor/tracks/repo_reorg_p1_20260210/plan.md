@@ -119,6 +119,7 @@ sd_optim/
 - [x] Move scratch/test assets out of the runtime package.
 - [x] Extract scorer asset/loading/interaction/runtime helpers into focused modules.
 - [x] Move scorer support code into `sd_optim/scoring/`.
+- [x] Reduce `sd_optim/scorer.py` to direct orchestration and rename the general scorer manager from `AestheticScorer` to `Scorer`.
 
 ## Phase 4.5: Packaged Layout Cutover
 - [x] Move bundled model configs under `sd_optim/extensions/bundled/model_configs/`.

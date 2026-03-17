@@ -58,5 +58,5 @@ def test_utils_methods_package_root_dir_still_points_to_sd_optim_root() -> None:
     methods = importlib.import_module("sd_optim.utils.methods")
     package_root = methods._package_root_dir()
 
-    assert (package_root / "merge_methods.py").is_file()
+    assert (package_root / "utils" / "methods.py").is_file()
     assert (package_root / "extensions" / "bundled" / "merge_methods").is_dir()

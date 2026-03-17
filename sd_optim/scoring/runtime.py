@@ -5,12 +5,14 @@ import inspect
 import logging
 import threading
 
+from functools import partial
 from pathlib import Path
 from typing import Any
 
 from hydra.core.hydra_config import HydraConfig
 from omegaconf import open_dict
 from PIL import Image
+from sd_optim.scoring.interaction import get_user_score, open_image
 
 logger = logging.getLogger(__name__)
 
@@ -106,7 +108,11 @@ def show_manual_preview(scorer: Any, image: Image.Image, name: str | None = None
         return
 
     logger.debug("Saved manual scoring preview to %s", preview_path)
-    threading.Thread(target=scorer.open_image, args=(preview_path,), daemon=True).start()
+    threading.Thread(
+        target=partial(open_image, warning_state=scorer._runtime_warnings),
+        args=(preview_path,),
+        daemon=True,
+    ).start()
 
 
 async def score_image(scorer: Any, image: Image.Image, prompt: str, name: str | None = None) -> float:
@@ -118,7 +124,7 @@ async def score_image(scorer: Any, image: Image.Image, prompt: str, name: str | 
     for evaluator in scorer.cfg.scorer_method:
         if evaluator == "manual":
             show_manual_preview(scorer, image, name)
-            individual_eval_score = await asyncio.to_thread(scorer.get_user_score)
+            individual_eval_score = await asyncio.to_thread(get_user_score)
             if individual_eval_score == -1.0:
                 return -1.0
 
@@ -203,12 +209,14 @@ def _should_run_scorer(scorer: Any, evaluator_lower: str, name: str | None) -> b
 
 
 def _get_scorer_instance(scorer: Any, evaluator: str, evaluator_lower: str) -> Any | None:
+    from .loading import load_model
+
     lazy_load_list = [str(name).lower() for name in scorer.cfg.get("scorer_lazy_load_list", [])]
     scorer_instance = scorer.model.get(evaluator_lower)
 
     if scorer_instance is None and evaluator_lower in lazy_load_list:
         logger.info("'%s' is in lazy load list and not loaded. Attempting to load now.", evaluator)
-        if scorer._load_model(evaluator_lower):
+        if load_model(scorer, evaluator_lower):
             scorer_instance = scorer.model.get(evaluator_lower)
         else:
             logger.error("Failed to lazy-load model for '%s'. Skipping scoring.", evaluator)

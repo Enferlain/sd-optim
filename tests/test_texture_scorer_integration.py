@@ -5,10 +5,10 @@ from PIL import Image
 import numpy as np
 import pytest
 from omegaconf import OmegaConf
-from sd_optim.scorer import AestheticScorer
+from sd_optim.scorer import Scorer
 import logging
 
-# Simple integration test for TextureScorer via AestheticScorer
+# Simple integration test for TextureScorer via Scorer
 
 logging.basicConfig(level=logging.INFO)
 
@@ -36,7 +36,7 @@ def test_texture_scorer():
     # Create a dummy image
     dummy_img = Image.fromarray(np.random.randint(0, 255, (512, 512, 3), dtype=np.uint8))
 
-    scorer = AestheticScorer(cfg)
+    scorer = Scorer(cfg)
 
     try:
         score = asyncio.run(scorer.score(dummy_img, prompt="a test image"))

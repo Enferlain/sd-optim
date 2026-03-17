@@ -46,12 +46,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Moved the concrete `BayesOptimizer` class into `sd_optim/optimizers/bayes/optimizer.py`, split Bayes-specific resume/sampling/reporting helpers into a packaged `sd_optim/optimizers/bayes/` namespace, fixed the stale `reset_log_file` config lookup, and removed the old `sd_optim/bayes_optimizer.py` module
 - Made Optuna sampler setup bounds-aware so CMA-ES now warns more clearly on categorical-heavy guides, explains `warn_independent_sampling` in practice, and no longer relies on docs that implied TPE could not optimize continuous ranges
 - Removed the leftover `sd_optim.merge_methods` and `sd_optim.svd_ties_sum_extended` shim modules now that bundled merge helpers are used directly from their packaged runtime paths
-- Moved shared SVD utilities into `sd_optim/extensions/bundled/merge_methods/_svd_utils.py`, moved trial scorer summary support into `sd_optim/core/trial_scorer_summary.py`, and removed the old package-root helper modules
+- Moved shared SVD utilities into `sd_optim/extensions/bundled/merge_methods/svd.py`, moved trial scorer summary support into `sd_optim/core/trial_scorer_summary.py`, and removed the old package-root helper modules
 - Split bundled scorer registry data and lazy class resolution into `sd_optim/extensions/bundled/scorers/registry.py` so `sd_optim.scorer` no longer eagerly imports every scorer module at import time
 - Moved bundled scorer implementation modules into `sd_optim/extensions/bundled/scorers/models/` so the scorer package root only contains package/registry code
 - Extracted scorer asset/download helpers into `sd_optim/extensions/bundled/scorers/assets.py` and scorer factory/loading helpers into `sd_optim/extensions/bundled/scorers/loading.py` so `sd_optim.scorer` can focus on runtime orchestration
 - Extracted manual scorer prompt/image-opening helpers into `sd_optim/extensions/bundled/scorers/interaction.py` and updated `sd_optim.scorer` to delegate to that focused support module
 - Moved scorer runtime/support code into `sd_optim/scoring/` so `sd_optim/extensions/bundled/scorers/` now only contains bundled implementation modules
+- Reduced `sd_optim/scorer.py` to orchestration-only flow, renamed the general scoring manager from `AestheticScorer` to `Scorer`, and updated optimizer runtime/tests to call shared scoring helpers directly instead of routing through scorer wrapper methods
 - Updated the manual scoring runtime to save stable preview images into the scorer `imgs/` directory, open them through the normalized platform opener path, and record manual scorer output in `last_scorer_results`
 - Restored the merger's recipe-level fallback wrapper for per-key DEBUG fallback logging under sd-mecha 1.1.x
 - Upgraded the merger fallback wrapper to a class-based method that mirrors `sd_mecha.fallback` key planning and emits a visible INFO log on the first actual fallback hit

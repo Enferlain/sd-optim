@@ -69,7 +69,7 @@ def test_run_trial_iteration_returns_cached_score_on_full_hit() -> None:
         cfg=OmegaConf.create(
             {
                 "batch_size": 1,
-                "img_average_type": "weighted",
+                "img_average_type": "arithmetic",
                 "scorer_method": ["manual"],
                 "optimizer": {"init_points": 1},
             }
@@ -150,7 +150,7 @@ def test_run_trial_iteration_executes_generation_path_with_stubs(tmp_path: Path)
         cfg=OmegaConf.create(
             {
                 "batch_size": 1,
-                "img_average_type": "weighted",
+                "img_average_type": "arithmetic",
                 "scorer_method": ["manual"],
                 "optimization_mode": "merge",
                 "generator_concurrency_limit": 1,

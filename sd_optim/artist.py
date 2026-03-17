@@ -14,7 +14,7 @@ from hydra.core.hydra_config import HydraConfig
 
 # Prevent circular imports for type checking
 if TYPE_CHECKING:
-    from sd_optim.optimizer import Optimizer
+    from sd_optim.core.optimizer_base import Optimizer
 
 logger = logging.getLogger(__name__)
 
@@ -74,8 +74,8 @@ class Artist:
                     y=self.scores,
                     mode="lines+markers",
                     name="Current Iteration Score",
-                    marker=dict(size=4),
-                    line=dict(width=1),
+                    marker={"size": 4},
+                    line={"width": 1},
                     opacity=0.7,
                 )
             )
@@ -88,7 +88,7 @@ class Artist:
                         y=self.best_scores,
                         mode="lines",
                         name="Best Score Found",
-                        line=dict(color="red", width=2),
+                        line={"color": "red", "width": 2},
                     )
                 )
 

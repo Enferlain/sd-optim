@@ -10,9 +10,16 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 
 CORE_MODULES_WITHOUT_PRINTS = [
-    "sd_optim/optimizer.py",
+    "sd_optim/core/optimizer_base.py",
+    "sd_optim/core/optimizer_runtime.py",
     "sd_optim/scorer.py",
     "sd_optim/optuna_optimizer.py",
+    "sd_optim/optimizers/optuna/dashboard.py",
+    "sd_optim/optimizers/optuna/objective.py",
+    "sd_optim/optimizers/optuna/reporting.py",
+    "sd_optim/optimizers/optuna/sampler_factory.py",
+    "sd_optim/optimizers/optuna/study_manager.py",
+    "sd_optim/optimizers/optuna/trial_logger.py",
     "sd_optim/utils/__init__.py",
     "sd_optim/merge_methods.py",
     "sd_optim/extensions/bundled/scorers/models/LumiAnatomy.py",

@@ -2,25 +2,18 @@ from __future__ import annotations
 
 import importlib
 import sys
-import types
+from pathlib import Path
+from types import SimpleNamespace
+
+from omegaconf import OmegaConf
 
 
-def _load_optuna_optimizer_module(monkeypatch):
-    dummy_optimizer_mod = types.ModuleType("sd_optim.optimizer")
-
-    class DummyOptimizer:
-        pass
-
-    dummy_optimizer_mod.Optimizer = DummyOptimizer
-    dummy_optimizer_mod.fail_on_error_enabled = lambda cfg: True
-    monkeypatch.setitem(sys.modules, "sd_optim.optimizer", dummy_optimizer_mod)
-    sys.modules.pop("sd_optim.optuna_optimizer", None)
-
-    return importlib.import_module("sd_optim.optuna_optimizer")
+def _load_dashboard_module():
+    return importlib.import_module("sd_optim.optimizers.optuna.dashboard")
 
 
 def test_dashboard_launcher_uses_current_python_interpreter(monkeypatch):
-    module = _load_optuna_optimizer_module(monkeypatch)
+    module = _load_dashboard_module()
     monkeypatch.setattr(module.time, "sleep", lambda _seconds: None)
 
     captured = {}
@@ -48,7 +41,7 @@ def test_dashboard_launcher_uses_current_python_interpreter(monkeypatch):
 
 
 def test_dashboard_launcher_returns_none_when_process_exits_early(monkeypatch):
-    module = _load_optuna_optimizer_module(monkeypatch)
+    module = _load_dashboard_module()
     monkeypatch.setattr(module.time, "sleep", lambda _seconds: None)
 
     class ExitingProcess:
@@ -65,3 +58,32 @@ def test_dashboard_launcher_returns_none_when_process_exits_early(monkeypatch):
     process = module.run_dashboard_in_background("sqlite:///tmp/test.db", 8080)
 
     assert process is None
+
+
+def test_start_dashboard_for_optimizer_uses_study_storage_path(monkeypatch, tmp_path: Path):
+    module = _load_dashboard_module()
+    optimizer = SimpleNamespace(
+        cfg=OmegaConf.create(
+            {
+                "optimization_mode": "merge",
+                "merge_method": "weighted_sum",
+                "scorer_method": ["manual"],
+                "optimizer": {"optuna_config": {"storage_dir": str(tmp_path)}},
+            }
+        ),
+        optuna_storage_dir=tmp_path,
+    )
+    captured = {}
+
+    def fake_runner(storage_uri: str, port: int):
+        captured["storage_uri"] = storage_uri
+        captured["port"] = port
+        return "process"
+
+    monkeypatch.setattr(module, "run_dashboard_in_background", fake_runner)
+
+    process = module.start_dashboard_for_optimizer(optimizer, port=9090)
+
+    assert process == "process"
+    assert captured["port"] == 9090
+    assert captured["storage_uri"] == f"sqlite:///{(tmp_path / 'optuna_merge_weighted_sum_manual.db').resolve()}"

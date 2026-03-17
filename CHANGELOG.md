@@ -35,6 +35,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Extracted recipe-mode orchestration and layer-adjust execution helpers out of `sd_optim/merger.py` into `sd_optim/merge/recipe_optimization.py` and `sd_optim/merge/layer_adjust.py`
 - Started the `sd_optim/core/` package by extracting optimizer cache and reuse fingerprint helpers into `sd_optim/core/optimizer_cache.py` while keeping the legacy `sd_optim.optimizer` helper surface compatible
 - Extracted universal-reuse manifest/cache I/O and image-path helpers into `sd_optim/core/optimizer_cache_io.py`, and updated optimizer/Optuna/test call sites to use the new core modules directly instead of repo-local compatibility aliases
+- Moved the shared optimizer orchestration into `sd_optim/core/optimizer_base.py`, made `Optimizer` a real `ABC`, removed the old `sd_optim/optimizer.py` module, and updated in-repo Optuna/Bayes/artist/test imports to the new core path directly
+- Extracted optimizer best-model promotion and best-log helpers into `sd_optim/core/optimizer_artifacts.py`, and updated the base optimizer to use those artifact helpers directly
+- Extracted the remaining shared optimizer trial/runtime flow into `sd_optim/core/optimizer_runtime.py`, moving generation/scoring orchestration out of `sd_optim/core/optimizer_base.py`
+- Split the Optuna runtime into focused `sd_optim/optimizers/optuna/` modules for sampler setup, study/storage lifecycle, objective logic, reporting, dashboard launch, and JSONL trial logging, and reduced `sd_optim/optuna_optimizer.py` to a thin entrypoint
 - Split bundled scorer registry data and lazy class resolution into `sd_optim/extensions/bundled/scorers/registry.py` so `sd_optim.scorer` no longer eagerly imports every scorer module at import time
 - Moved bundled scorer implementation modules into `sd_optim/extensions/bundled/scorers/models/` so the scorer package root only contains package/registry code
 - Extracted scorer asset/download helpers into `sd_optim/extensions/bundled/scorers/assets.py` and scorer factory/loading helpers into `sd_optim/extensions/bundled/scorers/loading.py` so `sd_optim.scorer` can focus on runtime orchestration
@@ -66,6 +70,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Fixed merge-method invocation for positional-parameter methods like `weighted_sum` by ensuring tensor-valued parameters such as `alpha` are not counted as extra model inputs
 - Fixed fail-on-error handling so real trial crashes stop the optimization by default again, while explicit `fail_on_error: false` still allows continue-on-error behavior
 - Fixed Optuna postprocess recap to avoid raising a second error when all completed trials have failed and no best trial exists yet
+- Fixed Optuna sampler/config drift by correcting the QMC `warn_asynchronous_seeding` key and validating pruning from `optimizer.optuna_config.use_pruning`
 - Fixed startup and model-inspection crashes against `sd-mecha` 1.1.x caused by removed top-level APIs such as `open_input_dicts` and `infer_model_configs`
 - Fixed stale package-local SVD helper imports after the helper implementation moved to `sd_optim/extensions/bundled/merge_methods/svd.py`
 - Fixed full test collection after the packaged layout move by bootstrapping the repo root in `tests/conftest.py` and restoring the `sd_optim.svd_ties_sum_extended` module surface

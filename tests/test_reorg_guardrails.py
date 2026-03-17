@@ -106,10 +106,6 @@ def test_validate_optimizer_config_rejects_grid_without_search_space():
     assert opt.validate_optimizer_config() is False
 
 
-@pytest.mark.xfail(
-    reason=("Known issue: _configure_sampler uses misspelled 'warn_asyncronous_seeding' for QMCSampler."),
-    strict=False,
-)
 def test_configure_sampler_qmc_initializes():
     cfg = _make_optuna_cfg(
         sampler_type="qmc",
@@ -121,10 +117,6 @@ def test_configure_sampler_qmc_initializes():
     assert sampler.__class__.__name__ == "QMCSampler"
 
 
-@pytest.mark.xfail(
-    reason=("Known issue: validate_optimizer_config checks optimizer.use_pruning instead of optimizer.optuna_config.use_pruning."),
-    strict=False,
-)
 def test_validate_optimizer_config_warns_on_unknown_pruner_from_optuna_config(caplog):
     cfg = _make_optuna_cfg(sampler_type="tpe")
     cfg.optimizer.optuna_config.use_pruning = True

@@ -6,7 +6,7 @@ import pytest
 from omegaconf import OmegaConf
 
 from sd_optim.core.optimizer_cache import fail_on_error_enabled
-from sd_optim.optuna_optimizer import OptunaOptimizer
+from sd_optim.optimizers.optuna.objective import run_objective
 
 
 class _DummyTrial:
@@ -31,7 +31,7 @@ def test_fail_on_error_enabled_respects_explicit_false() -> None:
 
 
 def test_optuna_objective_raises_by_default_on_runtime_error() -> None:
-    optimizer = OptunaOptimizer.__new__(OptunaOptimizer)
+    optimizer = SimpleNamespace()
     optimizer.cfg = OmegaConf.create({})
     optimizer.optimizer_pbounds = {"alpha": (0.0, 1.0)}
     optimizer.child_to_parent = {}
@@ -48,11 +48,11 @@ def test_optuna_objective_raises_by_default_on_runtime_error() -> None:
     optimizer.sd_target_function = boom
 
     with pytest.raises(RuntimeError, match="boom"):
-        optimizer._objective(_DummyTrial())
+        run_objective(optimizer, _DummyTrial())
 
 
 def test_optuna_objective_can_continue_when_fail_on_error_disabled() -> None:
-    optimizer = OptunaOptimizer.__new__(OptunaOptimizer)
+    optimizer = SimpleNamespace()
     optimizer.cfg = OmegaConf.create({"fail_on_error": False})
     optimizer.optimizer_pbounds = {"alpha": (0.0, 1.0)}
     optimizer.child_to_parent = {}
@@ -68,4 +68,4 @@ def test_optuna_objective_can_continue_when_fail_on_error_disabled() -> None:
 
     optimizer.sd_target_function = boom
 
-    assert optimizer._objective(_DummyTrial()) == float("-inf")
+    assert run_objective(optimizer, _DummyTrial()) == float("-inf")

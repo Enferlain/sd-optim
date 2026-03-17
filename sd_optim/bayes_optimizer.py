@@ -16,7 +16,7 @@ from hydra.core.hydra_config import HydraConfig
 from scipy.stats import qmc
 
 from sd_optim.artist import Artist
-from sd_optim.optimizer import Optimizer
+from sd_optim.core.optimizer_base import Optimizer
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.DEBUG)

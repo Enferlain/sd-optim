@@ -1,6 +1,10 @@
 from __future__ import annotations
 
-from sd_optim.trial_scorer_summary import build_trial_scorer_summary
+import importlib
+
+import pytest
+
+from sd_optim.core.trial_scorer_summary import build_trial_scorer_summary
 
 
 def _weighted_mean(values: list[float], weights: list[float]) -> float:
@@ -42,3 +46,8 @@ def test_build_trial_scorer_summary_preserves_duplicate_payload_names() -> None:
     assert summary["payloads"][0]["name"] == "same_name"
     assert summary["payloads"][1]["name"] == "same_name"
     assert summary["aggregate"]["cityaes"] == 2.0
+
+
+def test_top_level_trial_scorer_summary_module_is_removed() -> None:
+    with pytest.raises(ModuleNotFoundError):
+        importlib.import_module("sd_optim.trial_scorer_summary")

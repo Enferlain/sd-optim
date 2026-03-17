@@ -12,12 +12,7 @@ def build_trial_scorer_summary(
     final_score: float,
     combine_scores: Any,
 ) -> dict[str, Any]:
-    """Build an aggregate scorer summary for a trial.
-
-    The payload list is preserved verbatim so callers can store per-payload
-    metadata, while the aggregate section combines each scorer across payloads
-    using the caller's weighting strategy.
-    """
+    """Build an aggregate scorer summary for a trial."""
     payloads = [dict(entry) for entry in payload_entries]
     aggregate: dict[str, float] = {}
 
@@ -42,11 +37,7 @@ def build_trial_scorer_summary(
                 value = float(scores[scorer_name])
                 weight = float(entry.get("weight", 1.0))
             except (TypeError, ValueError) as error:
-                logger.warning(
-                    "Skipping invalid scorer summary entry for '%s': %s",
-                    scorer_name,
-                    error,
-                )
+                logger.warning("Skipping invalid scorer summary entry for '%s': %s", scorer_name, error)
                 continue
 
             values.append(value)

@@ -15,7 +15,7 @@ from PIL import Image
 
 from sd_optim.core.optimizer_cache import calculate_image_hash, fail_on_error_enabled
 from sd_optim.core.optimizer_cache_io import build_run_manifest_entry, save_run_manifest
-from sd_optim.trial_scorer_summary import build_trial_scorer_summary
+from sd_optim.core.trial_scorer_summary import build_trial_scorer_summary
 
 if TYPE_CHECKING:
     from sd_optim.core.optimizer_base import Optimizer
@@ -547,4 +547,3 @@ async def run_trial_iteration(optimizer: Optimizer, params: dict[str, Any]) -> f
 
     _save_run_manifest_if_needed(optimizer)
     return avg_score
-

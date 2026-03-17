@@ -11,7 +11,7 @@ import ptwt
 from torch import Tensor
 from sd_mecha import Parameter, Return, merge_method  # Import Parameter and Return
 
-from sd_optim.svd import torch_svd_lowrank  # you need to make your own or use the one from mecha
+from sd_optim.extensions.bundled.merge_methods import torch_svd_lowrank
 from sd_mecha.extensions.builtin.merge_methods.svd import svd_lowrank, stiefel_interpolate
 
 try:

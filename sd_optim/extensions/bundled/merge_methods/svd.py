@@ -1,29 +1,8 @@
-import functools
-import enum
-import operator
-import logging
+from __future__ import annotations
+
 import torch
-import math
-import torch.nn.functional as F
-import fnmatch
-import ptwt
 
 from torch import Tensor
-from sd_mecha import Parameter, Return, merge_method  # Import Parameter and Return
-
-from sd_optim.svd import torch_svd_lowrank  # you need to make your own or use the one from mecha
-from sd_mecha.extensions.builtin.merge_methods.svd import svd_lowrank, stiefel_interpolate
-
-try:
-    import cupy as cp
-    from cupy.cuda import cusolver
-
-    CUPY_AVAILABLE = True
-except ImportError:
-    CUPY_AVAILABLE = False
-
-EPSILON = 1e-10
-logger = logging.getLogger(__name__)
 
 
 # @merge_method
@@ -102,7 +81,7 @@ logger = logging.getLogger(__name__)
 #
 #     return (a * (1 - alpha) + b * alpha) * ab_rescale
 
-def orthogonal_procrustes(a, b, cancel_reflection: bool = False):
+def orthogonal_procrustes(a: Tensor, b: Tensor, cancel_reflection: bool = False) -> Tensor:
     if a.shape != b.shape:
         raise ValueError(f"a {tuple(a.shape)} and b {tuple(b.shape)} must have the same shape")
 
@@ -115,11 +94,10 @@ def orthogonal_procrustes(a, b, cancel_reflection: bool = False):
         if cancel_reflection:
             u[:, -1] /= torch.slogdet(u)[0] * torch.slogdet(v_t)[0]
 
-    transform = u @ v_t
-    return transform
+    return u @ v_t
 
 
-def fractional_matrix_power(matrix: Tensor, power: float, cache: dict[str, Tensor] | None = None):
+def fractional_matrix_power(matrix: Tensor, power: float, cache: dict[str, Tensor] | None = None) -> Tensor:
     if cache is not None and "eigenvalues" in cache:
         complex_dtype = torch_complex_dtype_map[matrix.dtype]
         eigenvalues = cache["eigenvalues"].to(matrix.device, complex_dtype)
@@ -145,8 +123,6 @@ torch_complex_dtype_map = {
     torch.float64: torch.complex128,
 }
 
-
-# need to redefine torch.svd_lowrank to specify the svd driver and for full_matrices support
 def torch_svd_lowrank(
     A: Tensor,
     q: int | None = 6,
@@ -158,15 +134,9 @@ def torch_svd_lowrank(
     m, n = A.shape[-2:]
     A_t = A.T
 
-    # Algorithm 5.1 in Halko et al 2009, slightly modified to reduce
-    # the number conjugate and transpose operations
     assert q <= min(m, n), f"Rank approximation q={q} should be <= min(m={m}, n={n})"
-    # computing the SVD approximation of a transpose in
-    # order to keep B shape minimal (the m < n case) or the V
-    # shape small (the n > q case)
     Q = get_approximate_basis(A_t, q, niter=niter)
-    Q_c = Q.conj()
-    B_t = A @ Q_c
+    B_t = A @ Q.conj()
     assert B_t.shape[-2] == m, (B_t.shape, m)
     assert B_t.shape[-1] == q, (B_t.shape, q)
     assert B_t.shape[-1] <= B_t.shape[-2], B_t.shape
@@ -180,21 +150,21 @@ def torch_svd_lowrank(
 
 def get_approximate_basis(A: Tensor, q: int, niter: int | None = 2) -> Tensor:
     niter = 2 if niter is None else niter
-    m, n = A.shape[-2:]
+    _, n = A.shape[-2:]
     dtype = get_floating_dtype(A)
 
     R = torch.randn(n, q, dtype=dtype, device=A.device)
 
     A_H = A.mH
     Q = torch.linalg.qr(A @ R).Q
-    for i in range(niter):
+    for _ in range(niter):
         Q = torch.linalg.qr(A_H @ Q).Q
         Q = torch.linalg.qr(A @ Q).Q
 
     return Q
 
 
-def orthogonal_extend(A: torch.Tensor) -> torch.Tensor:
+def orthogonal_extend(A: Tensor) -> Tensor:
     m, n = A.shape
     if m <= n:
         return A
@@ -205,8 +175,19 @@ def orthogonal_extend(A: torch.Tensor) -> torch.Tensor:
     return torch.cat((A, A_extension), dim=1)
 
 
-def get_floating_dtype(A):
+def get_floating_dtype(A: Tensor) -> torch.dtype:
     dtype = A.dtype
     if dtype.is_floating_point:
         return dtype
     return torch.float32
+
+
+__all__ = [
+    "fractional_matrix_power",
+    "get_approximate_basis",
+    "get_floating_dtype",
+    "orthogonal_extend",
+    "orthogonal_procrustes",
+    "torch_complex_dtype_map",
+    "torch_svd_lowrank",
+]

@@ -228,3 +228,20 @@ The short actionable checklist lives in `plan.md`.
   - `PYTHONPATH=. .venv-wsl/bin/ruff check ...`
   - `PYTHONPATH=. .venv-wsl/bin/python -m py_compile ...`
   - Result: passed
+
+### 2026-03-17: Move Root SVD + Trial Summary Helpers Into Their Real Packages
+- Moved the shared SVD utility helpers out of `sd_optim/svd.py` into `sd_optim/extensions/bundled/merge_methods/_svd_utils.py`.
+- Updated bundled merge-method modules and the bundled package surface to import those helpers from the packaged merge-method namespace directly.
+- Removed the old package-root `sd_optim/svd.py` module instead of keeping another compatibility alias.
+- Moved trial scorer summary support out of `sd_optim/trial_scorer_summary.py` into `sd_optim/core/trial_scorer_summary.py`.
+- Updated optimizer runtime and focused tests to the new core path directly.
+- Added guardrail coverage that the old top-level `sd_optim.svd` and `sd_optim.trial_scorer_summary` modules are no longer importable.
+- Focused verification:
+  - `CI=true PYTHONPATH=. .venv-wsl/bin/pytest -q -s tests/test_svd_module_compat.py tests/test_svd_ties_sum_extended_v13.py tests/test_trial_scorer_summary.py tests/test_optimizer_runtime_modules.py`
+  - Result: `16 passed in 27.55s`
+- Additional checks:
+  - `PYTHONPATH=. .venv-wsl/bin/ruff check sd_optim/extensions/bundled/merge_methods/__init__.py sd_optim/extensions/bundled/merge_methods/_svd_utils.py sd_optim/core/optimizer_runtime.py sd_optim/core/trial_scorer_summary.py tests/test_svd_module_compat.py tests/test_trial_scorer_summary.py`
+  - `PYTHONPATH=. .venv-wsl/bin/python -m py_compile sd_optim/extensions/bundled/merge_methods/__init__.py sd_optim/extensions/bundled/merge_methods/_svd_utils.py sd_optim/core/optimizer_runtime.py sd_optim/core/trial_scorer_summary.py tests/test_svd_module_compat.py tests/test_trial_scorer_summary.py`
+  - Result: passed
+- Note:
+  - Full-file lint/compile over every touched experimental bundled merge-method module is still noisy because some of those legacy files already contain unrelated lint problems and at least one pre-existing syntax issue; the focused runtime/import tests above passed for the actual paths exercised by the repo.

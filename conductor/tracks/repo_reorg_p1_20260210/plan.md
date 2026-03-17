@@ -95,6 +95,7 @@ sd_optim/
 - [x] Move merge runtime helper concerns into `sd_optim/merge/`.
 - [x] Extract model selection, execution, model-node, recipe, and layer-adjust helpers.
 - [x] Reduce `sd_optim/merger.py` to direct orchestration over extracted merge helpers.
+- [x] Move shared SVD helper utilities into the bundled merge-method package and remove the old package-root module.
 - [x] Make bundled merge-method loading lazy.
 - [x] Refresh merge-method and merge-runtime regression coverage.
 
@@ -106,6 +107,7 @@ sd_optim/
 - [x] Extract manifest/cache I/O into `sd_optim/core/optimizer_cache_io.py`.
 - [x] Extract artifact helpers into `sd_optim/core/optimizer_artifacts.py`.
 - [x] Restore the missing trial scorer summary helper and fix its call sites.
+- [x] Move trial scorer summary support into `sd_optim/core/`.
 - [x] Strengthen the universal reuse fingerprint.
 - [x] Restore fail-fast behavior unless `fail_on_error: false` is explicitly set.
 - [x] Split remaining optimizer trial/runtime helpers out of `sd_optim/core/optimizer_base.py`.

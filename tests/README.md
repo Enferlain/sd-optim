@@ -11,7 +11,7 @@ This repository currently has limited automated tests. The list below captures t
 - [ ] Score aggregation: arithmetic/geometric/quadratic + weights + edge cases (`sd_optim/scorer.py`)
 - [ ] Scorer orchestration: filters, lazy-load behavior, partial rescoring (subset scoring) (`sd_optim/scorer.py`)
 - [ ] Scorer unit tests on fixtures: HybridNoiseScorer boundary/mask-size cases; TextureScorer/PCAScorer stability (`sd_optim/models/*.py`)
-- [ ] Config validation: `validate_run_config` and recipe validation paths (`sd_optim/utils.py`)
+- [ ] Config validation: `validate_run_config` and recipe validation paths (`sd_optim/utils/config.py`)
 - [ ] Optuna study rules: objective-definition consistency on resume vs fork (`sd_optim/optuna_optimizer.py`)
 
 ## Suggested Test Types

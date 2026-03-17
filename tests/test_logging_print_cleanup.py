@@ -13,7 +13,7 @@ CORE_MODULES_WITHOUT_PRINTS = [
     "sd_optim/optimizer.py",
     "sd_optim/scorer.py",
     "sd_optim/optuna_optimizer.py",
-    "sd_optim/utils.py",
+    "sd_optim/utils/__init__.py",
     "sd_optim/merge_methods.py",
     "sd_optim/extensions/bundled/scorers/models/LumiAnatomy.py",
     "sd_optim/extensions/bundled/scorers/models/LumiAnatomyv2.py",

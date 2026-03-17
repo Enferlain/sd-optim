@@ -133,7 +133,6 @@ logs/*
 optuna_db/
 
 # Other root folders
-.github/
 optimization-analysis/
 
 # Ignore non-template yaml files in conf

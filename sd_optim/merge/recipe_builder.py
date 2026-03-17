@@ -10,13 +10,27 @@ from sd_mecha import extensions, recipe_nodes
 from sd_mecha.extensions.merge_methods import MergeMethod, RecipeNodeOrValue
 from sd_mecha.recipe_nodes import ModelRecipeNode
 
-from sd_optim import utils
 from sd_optim.bounds import BoundsInfo, ParameterHandler
+from sd_optim.utils.recipes import convert_with_model_dirs
 
 if TYPE_CHECKING:
     from sd_optim.merger import Merger
 
 logger = logging.getLogger(__name__)
+
+
+def get_expected_model_arg_count(merge_method: MergeMethod) -> int | None:
+    """Return the number of model/state-dict inputs a merge method consumes, or None for varargs."""
+    param_info = merge_method.get_param_names()
+    if param_info.has_varargs():
+        return None
+
+    expected_num_models = 0
+    for arg_type in merge_method.get_input_types().args:
+        origin_type = getattr(arg_type, "__origin__", arg_type)
+        if isinstance(origin_type, type) and issubclass(origin_type, sd_mecha.extensions.merge_methods.StateDict):
+            expected_num_models += 1
+    return expected_num_models
 
 
 def slice_models(
@@ -25,16 +39,9 @@ def slice_models(
     merge_method: MergeMethod,
 ) -> list[RecipeNodeOrValue]:
     """Slice the model list to match the expected number of model-type arguments."""
-    param_info = merge_method.get_param_names()
-    if param_info.has_varargs():
+    expected_num_models = get_expected_model_arg_count(merge_method)
+    if expected_num_models is None:
         return prepared_model_nodes
-
-    input_types = merge_method.get_input_types().args
-    expected_num_models = 0
-    for arg_type in input_types:
-        origin_type = getattr(arg_type, "__origin__", arg_type)
-        if isinstance(origin_type, type) and issubclass(origin_type, sd_mecha.extensions.merge_methods.StateDict):
-            expected_num_models += 1
 
     num_provided = len(prepared_model_nodes)
 
@@ -116,10 +123,19 @@ def prepare_model_recipe_args(
     param_info = merge_method.get_param_names()
     input_spaces = merge_method.get_input_merge_spaces()
     delta_space = extensions.merge_spaces.resolve("delta")
+    expected_num_models = get_expected_model_arg_count(merge_method)
 
     conversion_target_node = base_model_node if base_model_node else (initial_model_nodes[0] if initial_model_nodes else None)
 
     for index, model_node in enumerate(initial_model_nodes):
+        if expected_num_models is not None and len(prepared_nodes) >= expected_num_models:
+            logger.info(
+                "Merge method '%s' already has %s prepared model arguments; skipping remaining configured models.",
+                merge_method.identifier,
+                expected_num_models,
+            )
+            break
+
         current_node: recipe_nodes.RecipeNode = model_node
         should_add_node = True
         is_lora = False
@@ -146,7 +162,7 @@ def prepare_model_recipe_args(
 
             logger.info("Converting LoRA '%s' to a delta...", original_path_for_logging)
             try:
-                current_node = utils.convert_with_model_dirs(
+                current_node = convert_with_model_dirs(
                     current_node,
                     conversion_target_node,
                     model_dirs_to_add=[merger.models_dir],
@@ -274,7 +290,7 @@ def prepare_param_recipe_args(
                 continue
             try:
                 literal_node = sd_mecha.literal(block_dict, config=merger.custom_block_config.identifier)
-                converted_node = utils.convert_with_model_dirs(
+                converted_node = convert_with_model_dirs(
                     literal_node,
                     target_model_node,
                     model_dirs_to_add=[merger.models_dir],
@@ -309,7 +325,7 @@ def prepare_param_recipe_args(
             )
             try:
                 block_literal = sd_mecha.literal(block_dict, config=merger.custom_block_config.identifier)
-                block_converted = utils.convert_with_model_dirs(
+                block_converted = convert_with_model_dirs(
                     block_literal,
                     target_model_node,
                     model_dirs_to_add=[merger.models_dir],

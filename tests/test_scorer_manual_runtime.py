@@ -13,11 +13,11 @@ async def test_manual_score_uses_saved_preview_and_records_result(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path,
 ) -> None:
-    import sd_optim.scorer as scorer_mod
+    import sd_optim.scoring.runtime as scorer_runtime_mod
     from sd_optim.scorer import AestheticScorer
 
     monkeypatch.setattr(
-        scorer_mod.HydraConfig,
+        scorer_runtime_mod.HydraConfig,
         "get",
         lambda: SimpleNamespace(runtime=SimpleNamespace(output_dir=str(tmp_path))),
     )

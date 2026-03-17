@@ -6,7 +6,7 @@ from sd_mecha.keys_map import KeyMapBuilder
 from sd_mecha.recipe_nodes import ModelRecipeNode
 from sd_mecha.streaming import StateDictKeyError
 
-from sd_optim import utils
+from sd_optim.utils.artifacts import ModelVisitor
 
 if TYPE_CHECKING:
     from sd_optim.merger import Merger
@@ -59,7 +59,7 @@ def get_models_for_fallback_lookup(merger: "Merger", final_recipe_node: recipe_n
     if merger.cfg.optimization_mode == "merge":
         return merger.models
     if merger.cfg.optimization_mode == "recipe":
-        visitor = utils.ModelVisitor()
+        visitor = ModelVisitor()
         final_recipe_node.accept(visitor)
         return visitor.models
     return []

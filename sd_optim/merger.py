@@ -16,7 +16,6 @@ from sd_mecha.extensions.merge_methods import MergeMethod, RecipeNodeOrValue
 from sd_mecha.recipe_nodes import ModelRecipeNode, RecipeNode, MergeRecipeNode
 from sd_mecha.extensions import merge_methods  # Import model_configs
 
-from sd_optim import utils
 from sd_optim.bounds import BoundsInfo
 from sd_optim.merge.artifacts import create_model_output_name as build_model_output_name
 from sd_optim.merge.artifacts import save_recipe_artifacts as save_merge_artifacts
@@ -45,6 +44,10 @@ from sd_optim.merge.recipe_builder import (
     prepare_param_recipe_args,
     slice_models,
 )
+from sd_optim.utils.artifacts import rewrite_recipe_text, serialize_nodes_for_rewrite
+from sd_optim.utils.images import modify_state_dict
+from sd_optim.utils.methods import resolve_merge_method
+from sd_optim.utils.recipes import build_recipe_cache_map
 
 logger = logging.getLogger(__name__)
 __all__ = ["Merger", "fallback_debug_logged"]
@@ -216,7 +219,7 @@ class Merger:
         logger.debug(f"Building merge recipe for method: {cfg.merge_method}")
 
         # 2. Resolve merge method
-        merge_func = utils.resolve_merge_method(cfg.merge_method)  # Assumes utils exists
+        merge_func = resolve_merge_method(cfg.merge_method)
 
         # 3. Select base model (for delta subtraction, conversion context)
         base_model_node = self._select_base_model()
@@ -242,7 +245,7 @@ class Merger:
 
         # 8. Handle potential delta output (wrap with add_difference)
         final_recipe_node = self._handle_delta_output(core_recipe_node, base_model_node, merge_func)
-        cache_map = utils.build_recipe_cache_map(final_recipe_node, cache)
+        cache_map = build_recipe_cache_map(final_recipe_node, cache)
         # --- End Recipe Building ---
 
         # 9. Optional steps (save recipe, code, add keys)
@@ -308,10 +311,10 @@ class Merger:
         new_param_nodes = self._prepare_param_recipe_args(params, param_info, target_node.merge_method)
 
         # --- Step 3: SERIALIZATION (Call a simple utility) ---
-        new_node_strings, param_to_replacement = utils.serialize_nodes_for_rewrite(new_param_nodes)
+        new_node_strings, param_to_replacement = serialize_nodes_for_rewrite(new_param_nodes)
 
         # --- Step 4: REWRITING (Call the main "doer" utility) ---
-        final_recipe_text = utils.rewrite_recipe_text(
+        final_recipe_text = rewrite_recipe_text(
             original_recipe_text=original_recipe_text,
             target_node_idx=target_node_idx,
             new_node_strings=new_node_strings,
@@ -326,7 +329,7 @@ class Merger:
             debug_path.write_text(final_recipe_text, encoding="utf-8")
             raise ValueError(f"Final recipe deserialization failed. Saved debug recipe to {debug_path}: {e}") from e
 
-        cache_map = utils.build_recipe_cache_map(final_recipe_node, cache)
+        cache_map = build_recipe_cache_map(final_recipe_node, cache)
 
         model_path = self.output_file
         self._save_recipe_etc(final_recipe_node, model_path, iteration)
@@ -389,7 +392,7 @@ class Merger:
         logger.info("Applying layer adjustments...")
         try:
             # Pass the raw params dict directly
-            modified_state_dict = utils.modify_state_dict(state_dict, params, is_xl_model)
+            modified_state_dict = modify_state_dict(state_dict, params, is_xl_model)
         except Exception as e:
             logger.error(f"Error applying layer adjustments: {e}", exc_info=True)
             raise

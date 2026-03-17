@@ -23,13 +23,14 @@ from hydra import utils as hydra_utils
 import sd_mecha
 
 from sd_mecha.recipe_nodes import ModelRecipeNode
-from sd_optim import utils
 from sd_optim.bounds import ParameterHandler, BoundsInfo
 from sd_optim.generator import Generator
 from sd_optim.merger import Merger
 from sd_optim.prompter import Prompter
 from sd_optim.scorer import AestheticScorer
 from sd_optim.trial_scorer_summary import build_trial_scorer_summary
+from sd_optim.utils.config import validate_run_config
+from sd_optim.utils.recipes import get_model_config_candidates
 
 logger = logging.getLogger(__name__)
 
@@ -152,7 +153,7 @@ class Optimizer:
     def __post_init__(self) -> None:
         # --- STAGE 1: VALIDATE THE ENTIRE CONFIG FIRST ---
         # This is now a clean, clear gatekeeper step.
-        utils.validate_run_config(self.cfg)
+        validate_run_config(self.cfg)
 
         # --- STAGE 2: CENTRALIZED CONFIG LOADING ---
         logger.info("Optimizer starting up: Performing centralized config loading...")
@@ -183,7 +184,7 @@ class Optimizer:
         # We assert that the node is the specific type we need. This makes the linter happy and the code safer!
         assert isinstance(rep_model_node, ModelRecipeNode), "The representative model must be a file path, not a literal dict."
 
-        inferred_candidates = utils.get_model_config_candidates(rep_model_node, [models_dir])
+        inferred_candidates = get_model_config_candidates(rep_model_node, [models_dir])
         if not inferred_candidates:
             raise ValueError(f"Could not infer a ModelConfig for {representative_model_path}.")
         base_model_config = inferred_candidates[0]

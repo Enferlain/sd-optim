@@ -24,6 +24,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Split merge runtime helper concerns into `sd_optim/merge/`, moving fallback handling, artifact writing, and recipe-building helpers out of `sd_optim/merger.py` while keeping `Merger` as the stable orchestration entrypoint
 - Split merge model-selection and execution helpers further into `sd_optim/merge/model_selection.py` and `sd_optim/merge/execution.py` so `sd_optim/merger.py` can keep shrinking toward orchestration-only logic
 - Split merge model-node creation into `sd_optim/merge/model_nodes.py` and added focused tests to lock in relative-path handling for recipe model nodes
+- Turned `sd_optim.utils` into a package, extracted recipe/model-dir helpers into `sd_optim/utils/recipes.py`, and kept the legacy `sd_optim.utils` helper surface re-exported for compatibility
+- Extracted custom config/conversion registration helpers into `sd_optim/utils/conversions.py` and kept the legacy `sd_optim.utils` loader entrypoints re-exported for compatibility
+- Extracted recipe rewrite and reproducible merge-artifact helpers into `sd_optim/utils/artifacts.py` and kept the legacy `sd_optim.utils` helper surface re-exported for compatibility
+- Extracted config validation, layer-adjust/image-summary helpers, and hotkey support into `sd_optim/utils/config.py`, `sd_optim/utils/images.py`, and `sd_optim/utils/hotkeys.py` while keeping the legacy `sd_optim.utils` helper surface re-exported for compatibility
+- Extracted merge-method index/discovery helpers into `sd_optim/utils/methods.py` while keeping the legacy `sd_optim.utils` resolver surface and monkeypatch hooks compatible
+- Reworked `sd_optim.utils` into a lazy compatibility shim so importing the package root no longer eagerly imports every extracted helper module
+- Switched internal runtime and tests over to direct `sd_optim.utils.*` imports and shrank `sd_optim/utils/__init__.py` to a minimal package marker instead of keeping a broad package-root helper surface
+- Extracted scorer runtime setup/manual-preview/score-loop helpers into `sd_optim/scoring/runtime.py` and updated `sd_optim/scorer.py` to import concrete scorer support modules directly
 - Split bundled scorer registry data and lazy class resolution into `sd_optim/extensions/bundled/scorers/registry.py` so `sd_optim.scorer` no longer eagerly imports every scorer module at import time
 - Moved bundled scorer implementation modules into `sd_optim/extensions/bundled/scorers/models/` so the scorer package root only contains package/registry code
 - Extracted scorer asset/download helpers into `sd_optim/extensions/bundled/scorers/assets.py` and scorer factory/loading helpers into `sd_optim/extensions/bundled/scorers/loading.py` so `sd_optim.scorer` can focus on runtime orchestration
@@ -45,6 +53,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Fixed the legacy `sd_optim.merge_methods` compatibility module so `MergeMethods` now forwards to the packaged bundled SVD ties-sum helpers instead of failing at import time
 - Fixed bundled merge-method startup coupling so unrelated broken moved modules no longer block resolution of the specific bundled method selected in config
 - Fixed the bundled merge-method package surface to re-export SVD helpers from a standalone `sd_optim.svd` helper module, avoiding eager import cycles through the moved bundled `svd.py`
 - Fixed post-flattening merge-method helper functions by removing stray top-level `@staticmethod` decorators that would otherwise turn helpers into descriptor objects instead of normal callables
@@ -72,6 +81,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Fixed saved recipe artifacts showing unresolved `null` metadata by finalizing the same model-dir-aware execution graph that `sd_mecha.merge(...)` uses
 - Fixed saved recipe artifacts leaking finalized absolute model paths and runtime `cast` wrapper nodes into the human-facing `.mecha` output
 - Fixed repeated adapter validation work by caching inferred model-config candidates for LoRA/LyCORIS checks across the merger flow
+- Fixed fixed-arity merge-method preprocessing so unused extra configured models no longer trigger adapter detection/conversion work before being sliced away
 
 ## [Unreleased] - 2026-02-22
 

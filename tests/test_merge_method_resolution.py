@@ -5,7 +5,7 @@ import pytest
 import sd_mecha
 from torch import Tensor
 
-from sd_optim import utils
+from sd_optim.utils import methods
 
 
 def _make_merge_method(identifier: str):
@@ -20,8 +20,8 @@ def _make_merge_method(identifier: str):
 
 
 def test_resolve_merge_method_only_imports_requested_bundled_module(monkeypatch) -> None:
-    monkeypatch.setattr(utils, "_get_bundled_merge_method_index", lambda: {"wanted": ["pkg.good"], "broken": ["pkg.bad"]})
-    monkeypatch.setattr(utils, "_get_legacy_merge_method_names", lambda: set())
+    monkeypatch.setattr(methods, "_get_bundled_merge_method_index", lambda: {"wanted": ["pkg.good"], "broken": ["pkg.bad"]})
+    monkeypatch.setattr(methods, "_get_legacy_merge_method_names", lambda: set())
     monkeypatch.setattr(sd_mecha.extensions.merge_methods, "resolve", lambda name: (_ for _ in ()).throw(ValueError(name)))
 
     imported: list[str] = []
@@ -38,15 +38,15 @@ def test_resolve_merge_method_only_imports_requested_bundled_module(monkeypatch)
 
     monkeypatch.setattr(importlib, "import_module", fake_import_module)
 
-    resolved = utils.resolve_merge_method("wanted")
+    resolved = methods.resolve_merge_method("wanted")
 
     assert resolved.identifier == "wanted"
     assert imported == ["pkg.good"]
 
 
 def test_resolve_merge_method_supports_class_based_bundled_module(monkeypatch) -> None:
-    monkeypatch.setattr(utils, "_get_bundled_merge_method_index", lambda: {"classy": ["pkg.classy"]})
-    monkeypatch.setattr(utils, "_get_legacy_merge_method_names", lambda: set())
+    monkeypatch.setattr(methods, "_get_bundled_merge_method_index", lambda: {"classy": ["pkg.classy"]})
+    monkeypatch.setattr(methods, "_get_legacy_merge_method_names", lambda: set())
     monkeypatch.setattr(sd_mecha.extensions.merge_methods, "resolve", lambda name: (_ for _ in ()).throw(ValueError(name)))
 
     def fake_import_module(name: str):
@@ -61,16 +61,16 @@ def test_resolve_merge_method_supports_class_based_bundled_module(monkeypatch) -
 
     monkeypatch.setattr(importlib, "import_module", fake_import_module)
 
-    resolved = utils.resolve_merge_method("classy")
+    resolved = methods.resolve_merge_method("classy")
 
     assert resolved.identifier == "classy"
 
 
 def test_resolve_merge_method_only_fails_for_requested_broken_module(monkeypatch) -> None:
-    monkeypatch.setattr(utils, "_get_bundled_merge_method_index", lambda: {"broken": ["pkg.broken"]})
-    monkeypatch.setattr(utils, "_get_legacy_merge_method_names", lambda: set())
+    monkeypatch.setattr(methods, "_get_bundled_merge_method_index", lambda: {"broken": ["pkg.broken"]})
+    monkeypatch.setattr(methods, "_get_legacy_merge_method_names", lambda: set())
     monkeypatch.setattr(sd_mecha.extensions.merge_methods, "resolve", lambda name: (_ for _ in ()).throw(ValueError(name)))
     monkeypatch.setattr(importlib, "import_module", lambda name: (_ for _ in ()).throw(ImportError("boom")))
 
     with pytest.raises(ValueError, match="broken"):
-        utils.resolve_merge_method("broken")
+        methods.resolve_merge_method("broken")

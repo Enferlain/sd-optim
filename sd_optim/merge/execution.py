@@ -8,7 +8,7 @@ import torch
 
 from sd_mecha import recipe_nodes
 
-from sd_optim import utils
+from sd_optim.utils.recipes import merge_with_model_dirs
 
 if TYPE_CHECKING:
     from sd_optim.merger import Merger
@@ -39,7 +39,7 @@ def execute_recipe(
             raise FileNotFoundError("Merger.models_dir is not set or is not a valid directory.")
 
         logger.info("Calling sd_mecha.merge with recipe-level fallback: %s", fallback_node)
-        utils.merge_with_model_dirs(
+        merge_with_model_dirs(
             model_dirs_to_add=[merger.models_dir],
             recipe=recipe_to_merge,
             output=model_path,

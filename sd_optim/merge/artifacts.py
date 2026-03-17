@@ -11,8 +11,16 @@ from hydra.core.hydra_config import HydraConfig
 from sd_mecha import recipe_nodes
 from sd_mecha.recipe_nodes import RecipeNode
 
-from sd_optim import utils
 from sd_optim.merge.fallback import build_recipe_for_artifacts
+from sd_optim.utils.artifacts import (
+    get_info_from_target_node,
+    save_merge_artifacts as save_runtime_artifacts,
+)
+from sd_optim.utils.recipes import (
+    finalize_recipe_with_model_dirs,
+    relativize_model_paths,
+    serialize_recipe_text,
+)
 
 if TYPE_CHECKING:
     from sd_optim.merger import Merger
@@ -54,7 +62,7 @@ def create_model_output_name(
         if recipe_node is not None:
             recipe_cfg = merger.cfg.get("recipe_optimization", {})
             target_node_ref = recipe_cfg.get("target_nodes")
-            node_info = utils.get_info_from_target_node(recipe_node, target_node_ref)
+            node_info = get_info_from_target_node(recipe_node, target_node_ref)
 
             if node_info:
                 method_name = node_info["method_name"]
@@ -102,15 +110,15 @@ def serialize_and_save_recipe(merger: Merger, final_recipe_node: recipe_nodes.Re
 
     try:
         recipe_for_artifact = build_recipe_for_artifacts(merger, final_recipe_node)
-        finalized_recipe = utils.finalize_recipe_with_model_dirs(
+        finalized_recipe = finalize_recipe_with_model_dirs(
             recipe_for_artifact,
             model_dirs_to_add=[merger.models_dir],
             model_config_preference=("singleton-mecha",),
             merge_space_preference=sd_mecha.extensions.merge_spaces.get_all(),
             check_mandatory_keys=False,
         )
-        artifact_recipe = utils.relativize_model_paths(finalized_recipe, base_dir=merger.models_dir)
-        serialized_recipe = utils.serialize_recipe_text(
+        artifact_recipe = relativize_model_paths(finalized_recipe, base_dir=merger.models_dir)
+        serialized_recipe = serialize_recipe_text(
             artifact_recipe,
             model_dirs_to_add=[merger.models_dir],
             finalize=False,
@@ -134,7 +142,6 @@ def save_recipe_artifacts(
 
         if merger.cfg.get("save_merge_artifacts", False):
             artifact_recipe_node = build_recipe_for_artifacts(merger, final_recipe_node)
-            utils.save_merge_artifacts(merger.cfg, merger, artifact_recipe_node, model_path, iteration)
+            save_runtime_artifacts(merger.cfg, merger, artifact_recipe_node, model_path, iteration)
     except Exception as error:
         logger.error("Error during post-merge saving operations: %s", error, exc_info=True)
-

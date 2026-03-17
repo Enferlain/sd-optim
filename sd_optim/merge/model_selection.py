@@ -8,7 +8,8 @@ import sd_mecha
 
 from sd_mecha import recipe_nodes
 
-from sd_optim import utils
+from sd_optim.utils.artifacts import ModelVisitor
+from sd_optim.utils.recipes import get_model_config_candidates
 
 if TYPE_CHECKING:
     from sd_optim.merger import Merger
@@ -36,7 +37,7 @@ def get_model_config_candidates_cached(
     if cached is not None:
         return cached
 
-    inferred_candidates = utils.get_model_config_candidates(node, [merger.models_dir])
+    inferred_candidates = get_model_config_candidates(node, [merger.models_dir])
     candidates = tuple(inferred_candidates)
     merger._model_config_candidates_cache[cache_key] = candidates
     return candidates
@@ -147,7 +148,7 @@ def get_conversion_context_node(merger: Merger) -> recipe_nodes.ModelRecipeNode:
         sanitized_recipe_text = _sanitize_recipe_text_for_deserialize(original_recipe_text)
 
         recipe_graph = sd_mecha.deserialize(sanitized_recipe_text)
-        visitor = utils.ModelVisitor()
+        visitor = ModelVisitor()
         recipe_graph.accept(visitor)
 
         for model_node in visitor.models:
@@ -169,4 +170,3 @@ def get_conversion_context_node(merger: Merger) -> recipe_nodes.ModelRecipeNode:
         return first_model
 
     raise RuntimeError("Could not determine any suitable model to use for conversion context.")
-

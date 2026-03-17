@@ -96,6 +96,55 @@ def test_configure_sampler_grid_requires_search_space() -> None:
         sampler_factory.configure_sampler(_make_cfg(sampler_type="grid"))
 
 
+def test_configure_sampler_cmaes_warns_for_categorical_heavy_space(
+    monkeypatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    captured_cmaes = {}
+
+    class DummyCma:
+        def __init__(self, **kwargs):
+            captured_cmaes.update(kwargs)
+
+    monkeypatch.setattr(sampler_factory, "CmaEsSampler", DummyCma)
+    caplog.set_level("INFO")
+
+    sampler_factory.configure_sampler(
+        _make_cfg(sampler_type="cmaes", extra_sampler={"warn_independent_sampling": True}),
+        optimizer_pbounds={
+            "continuous_a": (0.0, 1.0),
+            "categorical_a": [0.0, 1.0],
+            "categorical_b": ["x", "y"],
+        },
+    )
+
+    assert captured_cmaes["warn_independent_sampling"] is True
+    assert "categorical-heavy" in caplog.text
+    assert "independent sampling" in caplog.text
+
+
+def test_configure_sampler_cmaes_skips_categorical_warning_for_continuous_space(
+    monkeypatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    class DummyCma:
+        def __init__(self, **kwargs):
+            pass
+
+    monkeypatch.setattr(sampler_factory, "CmaEsSampler", DummyCma)
+    caplog.set_level("INFO")
+
+    sampler_factory.configure_sampler(
+        _make_cfg(sampler_type="cmaes"),
+        optimizer_pbounds={
+            "continuous_a": (0.0, 1.0),
+            "continuous_b": {"range": (0.1, 0.9), "step": 0.1},
+        },
+    )
+
+    assert "categorical-heavy" not in caplog.text
+
+
 def test_configure_sampler_nsgaii_handles_crossover_variants(monkeypatch) -> None:
     captured_kwargs: list[dict] = []
 

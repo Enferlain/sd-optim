@@ -27,7 +27,7 @@ class OptunaOptimizer(Optimizer):
         return validate_optimizer_config(self.cfg)
 
     def _configure_sampler(self) -> Any:
-        return configure_sampler(self.cfg)
+        return configure_sampler(self.cfg, optimizer_pbounds=getattr(self, "optimizer_pbounds", None))
 
     async def optimize(self) -> None:
         await optimize_study(self)

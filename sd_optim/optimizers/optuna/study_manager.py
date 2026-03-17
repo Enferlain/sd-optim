@@ -203,7 +203,7 @@ async def optimize_study(optimizer: OptunaOptimizer) -> None:
     optimizer.optimization_start_time = time.time()
     logger.debug("Initial Parameter Bounds: %s", optimizer.optimizer_pbounds)
 
-    sampler = configure_sampler(optimizer.cfg)
+    sampler = configure_sampler(optimizer.cfg, optimizer_pbounds=optimizer.optimizer_pbounds)
     pruner = configure_pruner(optimizer.cfg)
     optuna_cfg = optimizer.cfg.optimizer.optuna_config
     parent_study_name_to_load = optuna_cfg.get("resume_from_study")

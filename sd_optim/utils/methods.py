@@ -11,7 +11,6 @@ from sd_mecha.extensions import merge_methods
 logger = logging.getLogger(__name__)
 
 _BUNDLED_MERGE_METHOD_INDEX: dict[str, list[str]] | None = None
-_LEGACY_MERGE_METHOD_NAMES: set[str] | None = None
 
 
 def _package_root_dir() -> Path:
@@ -67,24 +66,6 @@ def _get_bundled_merge_method_index() -> dict[str, list[str]]:
 
     _BUNDLED_MERGE_METHOD_INDEX = index
     return index
-
-
-def _get_legacy_merge_method_names() -> set[str]:
-    global _LEGACY_MERGE_METHOD_NAMES
-    if _LEGACY_MERGE_METHOD_NAMES is not None:
-        return _LEGACY_MERGE_METHOD_NAMES
-
-    legacy_path = _package_root_dir() / "merge_methods.py"
-    try:
-        source = legacy_path.read_text(encoding="utf-8")
-    except OSError as error:
-        logger.warning("Could not read legacy merge_methods.py while building index: %s", error)
-        _LEGACY_MERGE_METHOD_NAMES = set()
-        return _LEGACY_MERGE_METHOD_NAMES
-
-    _LEGACY_MERGE_METHOD_NAMES = _scan_merge_method_names(source)
-    return _LEGACY_MERGE_METHOD_NAMES
-
 
 def _wrap_merge_method_callable(candidate: Any, merge_method_name: str) -> merge_methods.MergeMethod | None:
     if isinstance(candidate, staticmethod | classmethod):
@@ -148,38 +129,12 @@ def _resolve_bundled_merge_method(merge_method_name: str) -> merge_methods.Merge
 
     return None
 
-
-def _resolve_legacy_merge_method(merge_method_name: str) -> merge_methods.MergeMethod | None:
-    if merge_method_name not in _get_legacy_merge_method_names():
-        return None
-
-    try:
-        legacy_module = importlib.import_module("sd_optim.merge_methods")
-    except Exception as import_error:
-        raise ImportError(
-            f"Failed to import legacy merge method surface for '{merge_method_name}': {import_error}"
-        ) from import_error
-
-    merge_methods_class = getattr(legacy_module, "MergeMethods", None)
-    if merge_methods_class is None:
-        return _extract_merge_method_from_namespace(legacy_module, merge_method_name)
-
-    merge_func = _extract_merge_method_from_namespace(merge_methods_class, merge_method_name)
-    if merge_func is not None:
-        logger.debug("Resolved merge method '%s' from legacy merge_methods.py.", merge_method_name)
-    return merge_func
-
-
 def resolve_merge_method(merge_method_name: str) -> merge_methods.MergeMethod:
     """
     Resolve a merge method without importing unrelated custom modules.
     """
     try:
         merge_func = _resolve_bundled_merge_method(merge_method_name)
-        if merge_func is not None:
-            return merge_func
-
-        merge_func = _resolve_legacy_merge_method(merge_method_name)
         if merge_func is not None:
             return merge_func
 

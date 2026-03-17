@@ -62,8 +62,8 @@ sd_optim/
 ### Known Issues
 - [x] Fix QMC typo: `warn_asyncronous_seeding` -> `warn_asynchronous_seeding`.
 - [x] Fix pruning validation path to read `optimizer.optuna_config.use_pruning`.
-- [ ] Stop defaulting categorical-heavy guides toward CMA-ES where it is a poor fit.
-- [ ] Document/instrument CMA-ES independent-sampling fallback behavior clearly.
+- [x] Clarify sampler policy so docs no longer imply that TPE cannot handle continuous ranges, and warn when CMA-ES is used on categorical-heavy guides.
+- [x] Document/log what `warn_independent_sampling` means in practice for mixed CMA-ES spaces.
 
 ### Planned Optuna Split
 - [x] Create `sd_optim/optimizers/optuna/` package.

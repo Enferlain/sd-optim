@@ -196,3 +196,35 @@ The short actionable checklist lives in `plan.md`.
   - `PYTHONPATH=. .venv-wsl/bin/ruff check ...`
   - `PYTHONPATH=. .venv-wsl/bin/python -m py_compile ...`
   - Result: passed
+
+### 2026-03-17: Optuna Sampler Policy + CMA-ES Guidance Polish
+- Made `configure_sampler(...)` bounds-aware so Optuna sampler setup can see whether the current guide is continuous-only or mixed/categorical-heavy.
+- Added soft runtime guidance for CMA-ES on mixed spaces:
+  - warns when the guide is categorical-heavy
+  - explains that `warn_independent_sampling=True` keeps Optuna's independent-sampling fallback warnings visible for non-continuous params
+- Updated repo wording so docs/config no longer imply that TPE cannot handle continuous ranges:
+  - `conf/config.yaml`
+  - `conf/config.tmpl.yaml`
+  - `conductor/ui_design_reference.md`
+- Focused verification:
+  - `CI=true PYTHONPATH=. .venv-wsl/bin/pytest -q -s tests/test_optuna_support_modules.py tests/test_optuna_cma_warning_hygiene.py tests/test_reorg_guardrails.py`
+  - Result: `19 passed, 4 warnings in 52.91s`
+- Additional checks:
+  - `PYTHONPATH=. .venv-wsl/bin/ruff check ...`
+  - `PYTHONPATH=. .venv-wsl/bin/python -m py_compile ...`
+  - Result: passed
+
+### 2026-03-17: Remove Legacy Merge-Method Shim Modules
+- Removed the leftover compatibility modules:
+  - `sd_optim/merge_methods.py`
+  - `sd_optim/svd_ties_sum_extended.py`
+- Simplified merge-method resolution in `sd_optim/utils/methods.py` so it now resolves bundled modules first and then defers directly to sd-mecha built-ins, without a repo-local legacy shim fallback layer.
+- Updated SVD helper regression coverage to exercise the packaged bundled module directly and assert that the old shim module paths are no longer importable.
+- Refreshed merge-method resolution tests to match the simplified bundled-only resolver flow.
+- Focused verification:
+  - `CI=true PYTHONPATH=. .venv-wsl/bin/pytest -q -s tests/test_svd_ties_sum_extended_v13.py tests/test_merge_method_resolution.py tests/test_reorg_guardrails.py`
+  - Result: `17 passed, 4 warnings in 45.24s`
+- Additional checks:
+  - `PYTHONPATH=. .venv-wsl/bin/ruff check ...`
+  - `PYTHONPATH=. .venv-wsl/bin/python -m py_compile ...`
+  - Result: passed

@@ -19,6 +19,65 @@ from optuna.samplers import (
 logger = logging.getLogger(__name__)
 
 
+def _summarize_search_space(
+    optimizer_pbounds: dict[str, tuple[float, float] | float | int | list | dict[str, Any]] | None,
+) -> tuple[int, int, int]:
+    """Return counts for categorical, continuous, and fixed parameters."""
+    if not optimizer_pbounds:
+        return 0, 0, 0
+
+    categorical_count = 0
+    continuous_count = 0
+    fixed_count = 0
+
+    for bound_config in optimizer_pbounds.values():
+        if isinstance(bound_config, list):
+            categorical_count += 1
+        elif (
+            isinstance(bound_config, tuple) and len(bound_config) == 2
+        ) or (
+            isinstance(bound_config, dict) and "range" in bound_config
+        ):
+            continuous_count += 1
+        elif isinstance(bound_config, (bool, int, float)):
+            fixed_count += 1
+
+    return categorical_count, continuous_count, fixed_count
+
+
+def _log_cmaes_space_guidance(
+    optimizer_pbounds: dict[str, tuple[float, float] | float | int | list | dict[str, Any]] | None,
+    *,
+    warn_independent_sampling: bool,
+) -> None:
+    """Log guidance when CMA-ES is used on mixed or categorical-heavy search spaces."""
+    categorical_count, continuous_count, fixed_count = _summarize_search_space(optimizer_pbounds)
+    if categorical_count == 0:
+        return
+
+    if categorical_count > continuous_count:
+        logger.warning(
+            "CMA-ES selected for a categorical-heavy search space (%s categorical, %s continuous, %s fixed params). "
+            "TPE also supports continuous ranges and is usually a better fit for mixed or categorical-heavy guides.",
+            categorical_count,
+            continuous_count,
+            fixed_count,
+        )
+    else:
+        logger.info(
+            "CMA-ES selected for a mixed search space (%s categorical, %s continuous, %s fixed params).",
+            categorical_count,
+            continuous_count,
+            fixed_count,
+        )
+
+    if warn_independent_sampling:
+        logger.info(
+            "Optuna may use independent sampling for categorical or other non-continuous parameters under CMA-ES; "
+            "warn_independent_sampling=True keeps those backend warnings visible."
+        )
+
+
 def validate_optimizer_config(cfg: DictConfig) -> bool:
     """Validate optimizer-specific configuration."""
     required_fields = ["n_iters", "init_points", "random_state"]
@@ -43,7 +102,10 @@ def validate_optimizer_config(cfg: DictConfig) -> bool:
     return valid
 
 
-def configure_sampler(cfg: DictConfig) -> Any:
+def configure_sampler(
+    cfg: DictConfig,
+    optimizer_pbounds: dict[str, tuple[float, float] | float | int | list | dict[str, Any]] | None = None,
+) -> Any:
     """Configure and return the Optuna sampler based on the current config."""
     sampler_config = cfg.optimizer.optuna_config.get("sampler", {})
     sampler_type = sampler_config.get("type", "tpe").lower()
@@ -110,6 +172,10 @@ def configure_sampler(cfg: DictConfig) -> Any:
             "with_margin": sampler_config.get("with_margin", False),
             **sampler_kwargs,
         }
+        _log_cmaes_space_guidance(
+            optimizer_pbounds,
+            warn_independent_sampling=bool(cmaes_kwargs["warn_independent_sampling"]),
+        )
 
         with warnings.catch_warnings():
             warnings.filterwarnings("ignore", message=r".*use_separable_cma.*", category=Warning)

@@ -8,6 +8,7 @@ import torch
 
 from sd_mecha import recipe_nodes
 
+from sd_optim.merge.fallback import build_recipe_to_merge
 from sd_optim.utils.recipes import merge_with_model_dirs
 
 if TYPE_CHECKING:
@@ -32,7 +33,7 @@ def execute_recipe(
 ) -> None:
     """Execute the final recipe, correctly handling the fallback model for all modes."""
     logger.info("Executing merge recipe and saving to: %s", model_path)
-    recipe_to_merge, fallback_node = merger._build_recipe_to_merge(final_recipe_node)
+    recipe_to_merge, fallback_node = build_recipe_to_merge(merger, final_recipe_node)
 
     try:
         if not merger.models_dir or not merger.models_dir.is_dir():

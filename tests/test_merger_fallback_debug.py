@@ -23,6 +23,10 @@ def _import_merger_with_pynput_stub():
 
 
 merger_mod = _import_merger_with_pynput_stub()
+artifacts_mod = importlib.import_module("sd_optim.merge.artifacts")
+execution_mod = importlib.import_module("sd_optim.merge.execution")
+model_selection_mod = importlib.import_module("sd_optim.merge.model_selection")
+recipe_builder_mod = importlib.import_module("sd_optim.merge.recipe_builder")
 
 
 def _fallback_relation(*params: str) -> RealizedKeyRelation:
@@ -106,9 +110,10 @@ def test_execute_recipe_wraps_fallback_in_recipe_instead_of_sd_mecha_kwarg(monke
     def _fake_merge(**kwargs) -> None:
         captured.update(kwargs)
 
-    monkeypatch.setattr(sd_mecha, "merge", _fake_merge)
+    monkeypatch.setattr(execution_mod, "merge_with_model_dirs", _fake_merge)
 
-    merger._execute_recipe(
+    execution_mod.execute_recipe(
+        merger,
         final_recipe_node=sd_mecha.model("main.safetensors"),
         model_path=tmp_path / "out.safetensors",
     )
@@ -123,7 +128,7 @@ def test_handle_delta_output_uses_bound_args_shape() -> None:
     base_model = sd_mecha.model("base.safetensors")
     delta_node = sd_mecha.subtract(sd_mecha.model("other.safetensors"), base_model)
 
-    wrapped = merger._handle_delta_output(delta_node, base_model, delta_node.merge_method)
+    wrapped = recipe_builder_mod.handle_delta_output(merger, delta_node, base_model, delta_node.merge_method)
 
     assert isinstance(wrapped, MergeRecipeNode)
     assert wrapped.merge_method.identifier == "add_difference"
@@ -159,11 +164,11 @@ def test_serialize_and_save_recipe_uses_finalized_execution_recipe(monkeypatch, 
         captured["serialize_finalize"] = finalize
         return "version 0.1.0\n"
 
-    monkeypatch.setattr(merger_mod.utils, "finalize_recipe_with_model_dirs", fake_finalize_recipe_with_model_dirs)
-    monkeypatch.setattr(merger_mod.utils, "serialize_recipe_text", fake_serialize_recipe_text)
+    monkeypatch.setattr(artifacts_mod, "finalize_recipe_with_model_dirs", fake_finalize_recipe_with_model_dirs)
+    monkeypatch.setattr(artifacts_mod, "serialize_recipe_text", fake_serialize_recipe_text)
 
     recipe_node = sd_mecha.model("relative-merged.safetensors")
-    merger._serialize_and_save_recipe(recipe_node, tmp_path / "merged.safetensors")
+    artifacts_mod.serialize_and_save_recipe(merger, recipe_node, tmp_path / "merged.safetensors")
 
     assert isinstance(captured["finalize_node"], MergeRecipeNode)
     assert captured["finalize_node"].merge_method.identifier == "fallback_debug_logged"
@@ -187,12 +192,12 @@ def test_get_adapter_candidate_ids_caches_model_config_inference(monkeypatch, tm
         calls["count"] += 1
         return (adapter_cfg, base_cfg)
 
-    monkeypatch.setattr(merger_mod.utils, "get_model_config_candidates", fake_get_model_config_candidates)
+    monkeypatch.setattr(model_selection_mod, "get_model_config_candidates", fake_get_model_config_candidates)
 
     node = sd_mecha.model("adapter.safetensors")
 
-    first = merger._get_adapter_candidate_ids(node)
-    second = merger._get_adapter_candidate_ids(node)
+    first = model_selection_mod.get_adapter_candidate_ids(merger, node)
+    second = model_selection_mod.get_adapter_candidate_ids(merger, node)
 
     assert first == ("sdxl-kohya_kohya_lora",)
     assert second == ("sdxl-kohya_kohya_lora",)
@@ -202,5 +207,5 @@ def test_get_adapter_candidate_ids_caches_model_config_inference(monkeypatch, tm
 def test_is_adapter_model_config_uses_identifier_suffix() -> None:
     merger = object.__new__(merger_mod.Merger)
 
-    assert merger._is_adapter_model_config(types.SimpleNamespace(identifier="sdxl-kohya_kohya_lora")) is True
-    assert merger._is_adapter_model_config(types.SimpleNamespace(identifier="sdxl-sgm")) is False
+    assert model_selection_mod.is_adapter_model_config(merger, types.SimpleNamespace(identifier="sdxl-kohya_kohya_lora")) is True
+    assert model_selection_mod.is_adapter_model_config(merger, types.SimpleNamespace(identifier="sdxl-sgm")) is False

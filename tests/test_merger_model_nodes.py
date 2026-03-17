@@ -7,6 +7,7 @@ import sd_mecha
 from omegaconf import OmegaConf
 
 from sd_optim.merger import Merger
+from sd_optim.merge.model_nodes import create_model_nodes
 
 
 def test_create_model_nodes_keeps_paths_relative_to_models_dir(tmp_path) -> None:
@@ -18,7 +19,7 @@ def test_create_model_nodes_keeps_paths_relative_to_models_dir(tmp_path) -> None
     model_file.parent.mkdir(parents=True)
     model_file.write_text("fake")
 
-    nodes = merger._create_model_nodes()
+    nodes = create_model_nodes(merger)
 
     assert len(nodes) == 1
     assert nodes[0].path == Path("subdir/model-a.safetensors")
@@ -33,7 +34,7 @@ def test_create_model_nodes_relativizes_absolute_paths_within_models_dir(tmp_pat
     merger.cfg = OmegaConf.create({"model_paths": [str(model_file)]})
     merger.models_dir = tmp_path
 
-    nodes = merger._create_model_nodes()
+    nodes = create_model_nodes(merger)
 
     assert len(nodes) == 1
     assert nodes[0].path == Path("nested/model-b.safetensors")

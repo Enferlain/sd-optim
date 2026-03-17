@@ -9,7 +9,7 @@ def __getattr__(name: str) -> Any:
 
         return OptunaOptimizer
     if name == "BayesOptimizer":
-        from sd_optim.bayes_optimizer import BayesOptimizer
+        from sd_optim.optimizers.bayes.optimizer import BayesOptimizer
 
         return BayesOptimizer
     raise AttributeError(f"module 'sd_optim' has no attribute '{name}'")

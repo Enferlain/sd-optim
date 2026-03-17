@@ -11,6 +11,7 @@ from sd_mecha.extensions.merge_methods import MergeMethod, RecipeNodeOrValue
 from sd_mecha.recipe_nodes import ModelRecipeNode
 
 from sd_optim.bounds import BoundsInfo, ParameterHandler
+from sd_optim.merge.model_selection import get_adapter_candidate_ids, get_conversion_context_node
 from sd_optim.utils.recipes import convert_with_model_dirs
 
 if TYPE_CHECKING:
@@ -142,7 +143,7 @@ def prepare_model_recipe_args(
         original_path_for_logging = model_node.path
 
         try:
-            inferred_lora_configs = list(merger._get_adapter_candidate_ids(model_node))
+            inferred_lora_configs = list(get_adapter_candidate_ids(merger, model_node))
             if inferred_lora_configs:
                 is_lora = True
                 logger.info(
@@ -272,7 +273,7 @@ def prepare_param_recipe_args(
                 else:
                     key_based_values_per_param[base_param][item] = value
 
-    target_model_node = merger._get_conversion_context_node()
+    target_model_node = get_conversion_context_node(merger)
 
     if not target_model_node:
         logger.error("Cannot prepare parameter nodes: A conversion context model is missing.")

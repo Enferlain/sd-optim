@@ -11,6 +11,9 @@ from hydra.core.hydra_config import HydraConfig
 from sd_mecha.recipe_nodes import MergeRecipeNode
 
 from sd_optim.bounds import BoundsInfo
+from sd_optim.merge.artifacts import save_recipe_artifacts
+from sd_optim.merge.execution import execute_recipe
+from sd_optim.merge.recipe_builder import prepare_param_recipe_args
 from sd_optim.utils.artifacts import rewrite_recipe_text, serialize_nodes_for_rewrite
 from sd_optim.utils.recipes import build_recipe_cache_map
 
@@ -80,7 +83,7 @@ def recipe_optimization(
     merger.output_file = merger.create_model_output_name(iteration=iteration, recipe_node=target_node)
     logger.info("Set output path for this iteration to: %s", merger.output_file)
 
-    new_param_nodes = merger._prepare_param_recipe_args(params, param_info, target_node.merge_method)
+    new_param_nodes = prepare_param_recipe_args(merger, params, param_info, target_node.merge_method)
     new_node_strings, param_to_replacement = serialize_nodes_for_rewrite(new_param_nodes)
 
     final_recipe_text = rewrite_recipe_text(
@@ -99,8 +102,8 @@ def recipe_optimization(
 
     cache_map = build_recipe_cache_map(final_recipe_node, cache)
     model_path = merger.output_file
-    merger._save_recipe_etc(final_recipe_node, model_path, iteration)
-    merger._execute_recipe(final_recipe_node, model_path, cache_map=cache_map)
+    save_recipe_artifacts(merger, final_recipe_node, model_path, iteration)
+    execute_recipe(merger, final_recipe_node, model_path, cache_map=cache_map)
 
     logger.info("Recipe optimization coordination complete. Output: %s", model_path)
     return model_path

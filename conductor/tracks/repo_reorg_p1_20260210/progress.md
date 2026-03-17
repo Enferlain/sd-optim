@@ -152,3 +152,47 @@ The short actionable checklist lives in `plan.md`.
   - `PYTHONPATH=. .venv-wsl/bin/ruff check ...`
   - `PYTHONPATH=. .venv-wsl/bin/python -m py_compile ...`
   - Result: passed
+
+### 2026-03-17: Merger Facade Cleanup
+- Simplified `sd_optim/merger.py` so `Merger.merge(...)` now reads as direct orchestration over extracted helper modules instead of routing through a large set of private one-line forwarding methods.
+- Removed the no-behavior forwarding methods for:
+  - model-node creation
+  - model selection / adapter helper lookups
+  - recipe-builder helpers
+  - fallback / execution / artifact helper delegation
+- Updated extracted merge helpers to call each other directly:
+  - `sd_optim/merge/recipe_builder.py`
+  - `sd_optim/merge/execution.py`
+  - `sd_optim/merge/recipe_optimization.py`
+- Updated merger-focused tests to exercise the extracted helper modules directly instead of preserving the deleted `Merger._...` wrappers.
+- Focused verification:
+  - `CI=true PYTHONPATH=. .venv-wsl/bin/pytest -q -s tests/test_merger_model_nodes.py tests/test_merger_model_arity.py tests/test_merger_fallback_debug.py tests/test_merge_method_resolution.py tests/test_optimizer_runtime_modules.py tests/test_reorg_guardrails.py`
+  - Result: `26 passed, 4 warnings in 45.62s`
+- Additional checks:
+  - `PYTHONPATH=. .venv-wsl/bin/ruff check ...`
+  - `PYTHONPATH=. .venv-wsl/bin/python -m py_compile ...`
+  - Result: passed
+
+### 2026-03-17: Bayes Package Cutover
+- Moved the concrete `BayesOptimizer` class from `sd_optim/bayes_optimizer.py` into `sd_optim/optimizers/bayes/optimizer.py`.
+- Removed the top-level `sd_optim/bayes_optimizer.py` module instead of keeping it as a facade.
+- Split Bayes-specific support into focused helper modules under `sd_optim/optimizers/bayes/`:
+  - `history.py`
+  - `sampling.py`
+  - `reporting.py`
+- Fixed stale Bayes resume logging so `reset_log_file` now reads from `optimizer.bayes_config.reset_log_file` instead of the wrong parent config path.
+- Updated repo imports and tests to the new packaged class path:
+  - `sd_optim.py`
+  - `sd_optim/__init__.py`
+  - `tests/test_optimizer_base_module.py`
+  - `tests/test_bayes_support_modules.py`
+- Focused verification:
+  - `CI=true PYTHONPATH=. .venv-wsl/bin/pytest -q -s tests/test_optimizer_base_module.py tests/test_bayes_support_modules.py tests/test_entry_optional_bayes_import.py`
+  - Result: `9 passed in 42.59s`
+- Broader touched-suite verification:
+  - `CI=true PYTHONPATH=. .venv-wsl/bin/pytest -q -s tests/test_reorg_guardrails.py tests/test_optimizer_base_module.py tests/test_bayes_support_modules.py tests/test_entry_optional_bayes_import.py`
+  - Result: `16 passed, 4 warnings in 43.16s`
+- Additional checks:
+  - `PYTHONPATH=. .venv-wsl/bin/ruff check ...`
+  - `PYTHONPATH=. .venv-wsl/bin/python -m py_compile ...`
+  - Result: passed

@@ -12,8 +12,8 @@ This file is the short working plan.
 
 ## Current Focus
 - Keep the track docs/config/docs aligned with the moved package layout.
-- Re-check whether Bayes-specific support code can move out of the base path as well.
-- Keep moving facade-heavy runtime files toward direct orchestration code instead of one-line forwarding methods.
+- Refresh remaining docs/config notes that still point at pre-reorg optimizer paths.
+- Push broader verification/manual validation now that the optimizer and merger surfaces are in their packaged layouts.
 
 ## Working Rules
 - Follow `conductor/workflow.md`.
@@ -94,6 +94,7 @@ sd_optim/
 - [x] Package bundled merge methods under `sd_optim/extensions/bundled/merge_methods/`.
 - [x] Move merge runtime helper concerns into `sd_optim/merge/`.
 - [x] Extract model selection, execution, model-node, recipe, and layer-adjust helpers.
+- [x] Reduce `sd_optim/merger.py` to direct orchestration over extracted merge helpers.
 - [x] Make bundled merge-method loading lazy.
 - [x] Refresh merge-method and merge-runtime regression coverage.
 
@@ -108,7 +109,7 @@ sd_optim/
 - [x] Strengthen the universal reuse fingerprint.
 - [x] Restore fail-fast behavior unless `fail_on_error: false` is explicitly set.
 - [x] Split remaining optimizer trial/runtime helpers out of `sd_optim/core/optimizer_base.py`.
-- [ ] Re-check whether Bayes-specific support code can move out of the base path as well.
+- [x] Re-check whether Bayes-specific support code can move out of the base path as well.
 
 ## Phase 4: Scoring Package Cleanup
 - [x] Move bundled scoring implementations under the packaged scorer namespace.

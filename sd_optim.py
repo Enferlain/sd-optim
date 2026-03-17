@@ -117,7 +117,7 @@ def main(cfg: DictConfig) -> None:
     # Access optimizer selection flags safely
     if cfg.optimizer.get("bayes", False):
         try:
-            from sd_optim.bayes_optimizer import BayesOptimizer
+            from sd_optim.optimizers.bayes.optimizer import BayesOptimizer
         except ModuleNotFoundError as e:
             if getattr(e, "name", "") == "bayes_opt":
                 logger.error(

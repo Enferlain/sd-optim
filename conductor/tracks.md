@@ -1,0 +1,26 @@
+# Project Tracks
+
+This file tracks all major tracks for the project. Each track has its own detailed plan in its respective folder.
+
+---
+
+- [ ] **Track: Code Modernization Phase 1: Legacy Refactoring and Type Hinting Implementation**
+  *Link: [./tracks/modernization_p1_20260204/](./tracks/modernization_p1_20260204/)*
+
+- [x] **Track: Pyproject UV Torch Extras Fix (2026-02-13)**
+  *Link: [./tracks/pyproject_uv_fix_20260213/](./tracks/pyproject_uv_fix_20260213/)*
+
+- [x] **Track: UV Torch Version Matrix Setup (2026-02-13)**
+  *Link: [./tracks/uv_torch_matrix_20260213/](./tracks/uv_torch_matrix_20260213/)*
+
+- [x] **Track: Ruff/Ty Repo Fit Cleanup (2026-02-13)**
+  *Link: [./tracks/ruff_ty_repo_fit_20260213/](./tracks/ruff_ty_repo_fit_20260213/)*
+
+- [x] **Track: Optuna Extra Buildability Fix (2026-02-13)**
+  *Link: [./tracks/optuna_extra_buildability_20260213/](./tracks/optuna_extra_buildability_20260213/)*
+
+- [x] **Track: Rembg Dependency Modernization (2026-02-13)**
+  *Link: [./tracks/rembg_dependency_modernization_20260213/](./tracks/rembg_dependency_modernization_20260213/)*
+
+- [x] **Track: Scorer FG Logic Hardening + Full-Image Variants (2026-03-06)**
+  *Link: [./tracks/scorer_fg_fullimg_variants_20260306/](./tracks/scorer_fg_fullimg_variants_20260306/)*

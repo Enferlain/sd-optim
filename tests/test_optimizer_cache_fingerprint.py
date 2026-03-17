@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from omegaconf import OmegaConf
 
-from sd_optim.optimizer import Optimizer, _compute_generation_setup_fingerprint
+from sd_optim.core.optimizer_cache import calculate_image_hash, compute_generation_setup_fingerprint
 
 
 def test_generation_setup_fingerprint_changes_with_merge_method() -> None:
@@ -29,7 +29,7 @@ def test_generation_setup_fingerprint_changes_with_merge_method() -> None:
     variant_cfg = OmegaConf.create(OmegaConf.to_container(base_cfg, resolve=True))
     variant_cfg.merge_method = "ties_sum"
 
-    assert _compute_generation_setup_fingerprint(base_cfg) != _compute_generation_setup_fingerprint(variant_cfg)
+    assert compute_generation_setup_fingerprint(base_cfg) != compute_generation_setup_fingerprint(variant_cfg)
 
 
 def test_image_hash_changes_when_generation_setup_changes() -> None:
@@ -43,12 +43,12 @@ def test_image_hash_changes_when_generation_setup_changes() -> None:
         "height": 1024,
     }
 
-    weighted_sum_hash = Optimizer.calculate_image_hash(
+    weighted_sum_hash = calculate_image_hash(
         params,
         payload,
         generation_setup_fp="weighted-sum-fingerprint",
     )
-    ties_sum_hash = Optimizer.calculate_image_hash(
+    ties_sum_hash = calculate_image_hash(
         params,
         payload,
         generation_setup_fp="ties-sum-fingerprint",

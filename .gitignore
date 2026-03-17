@@ -171,5 +171,4 @@ sd_optim/models/*.png
 *.png
 analysis_*/
 analysis_output/
-conductor/
 .hf-cache

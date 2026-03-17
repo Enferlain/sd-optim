@@ -32,6 +32,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Reworked `sd_optim.utils` into a lazy compatibility shim so importing the package root no longer eagerly imports every extracted helper module
 - Switched internal runtime and tests over to direct `sd_optim.utils.*` imports and shrank `sd_optim/utils/__init__.py` to a minimal package marker instead of keeping a broad package-root helper surface
 - Extracted scorer runtime setup/manual-preview/score-loop helpers into `sd_optim/scoring/runtime.py` and updated `sd_optim/scorer.py` to import concrete scorer support modules directly
+- Extracted recipe-mode orchestration and layer-adjust execution helpers out of `sd_optim/merger.py` into `sd_optim/merge/recipe_optimization.py` and `sd_optim/merge/layer_adjust.py`
+- Started the `sd_optim/core/` package by extracting optimizer cache and reuse fingerprint helpers into `sd_optim/core/optimizer_cache.py` while keeping the legacy `sd_optim.optimizer` helper surface compatible
+- Extracted universal-reuse manifest/cache I/O and image-path helpers into `sd_optim/core/optimizer_cache_io.py`, and updated optimizer/Optuna/test call sites to use the new core modules directly instead of repo-local compatibility aliases
 - Split bundled scorer registry data and lazy class resolution into `sd_optim/extensions/bundled/scorers/registry.py` so `sd_optim.scorer` no longer eagerly imports every scorer module at import time
 - Moved bundled scorer implementation modules into `sd_optim/extensions/bundled/scorers/models/` so the scorer package root only contains package/registry code
 - Extracted scorer asset/download helpers into `sd_optim/extensions/bundled/scorers/assets.py` and scorer factory/loading helpers into `sd_optim/extensions/bundled/scorers/loading.py` so `sd_optim.scorer` can focus on runtime orchestration

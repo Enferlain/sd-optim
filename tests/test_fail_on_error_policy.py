@@ -5,7 +5,7 @@ from types import SimpleNamespace
 import pytest
 from omegaconf import OmegaConf
 
-from sd_optim.optimizer import fail_on_error_enabled
+from sd_optim.core.optimizer_cache import fail_on_error_enabled
 from sd_optim.optuna_optimizer import OptunaOptimizer
 
 

@@ -28,7 +28,8 @@ from optuna.samplers import (
     NSGAIISampler,
     GPSampler,
 )
-from sd_optim.optimizer import Optimizer, fail_on_error_enabled
+from sd_optim.core.optimizer_cache import fail_on_error_enabled
+from sd_optim.optimizer import Optimizer
 
 logger = logging.getLogger(__name__)
 

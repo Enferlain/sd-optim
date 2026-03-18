@@ -8,6 +8,8 @@ These tests are intentionally focused on stable contracts:
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
 from omegaconf import OmegaConf
 
@@ -126,3 +128,169 @@ def test_validate_optimizer_config_warns_on_unknown_pruner_from_optuna_config(ca
     caplog.set_level("WARNING")
     opt.validate_optimizer_config()
     assert "Unknown pruner_type" in caplog.text
+
+
+def test_get_bounds_logs_compact_summary_at_info(caplog: pytest.LogCaptureFixture) -> None:
+    handler = ParameterHandler.__new__(ParameterHandler)
+    handler.cfg = OmegaConf.create(
+        {
+            "optimization_mode": "merge",
+            "merge_method": "weighted_sum",
+            "optimization_guide": {"custom_block_config_id": "sdxl-optim_blocks_sub"},
+        }
+    )
+    handler.base_model_config = SimpleNamespace(identifier="sdxl-sgm")
+    handler.custom_block_config = SimpleNamespace(identifier="sdxl-optim_blocks_sub")
+    handler._guide_processing_summary = {
+        "components_read": 2,
+        "components_used": 1,
+        "skipped_components": ["component[1]: missing 'name'"],
+    }
+    handler.create_parameter_bounds_metadata = lambda: {
+        "UNET_IN00_alpha": {
+            "strategy": "all",
+            "target_type": "block",
+            "component_name": "unet",
+            "item_name": "UNET_IN00",
+            "base_param": "alpha",
+            "bounds": (0.0, 1.0),
+        },
+        "UNET_IN01_alpha": {
+            "strategy": "all",
+            "target_type": "block",
+            "component_name": "unet",
+            "item_name": "UNET_IN01",
+            "base_param": "alpha",
+            "bounds": (0.0, 1.0),
+        },
+        "UNET_MID_beta": {
+            "strategy": "single",
+            "target_type": "key",
+            "component_name": "diffuser",
+            "group_name": "diffuser_single",
+            "base_param": "beta",
+            "bounds": 1.0,
+        },
+    }
+
+    caplog.set_level("INFO")
+    handler.get_bounds(
+        {
+            "UNET_IN00_alpha": (0.2, 0.8),
+            "beta": [0, 1],
+            "unused": 5.0,
+        }
+    )
+
+    assert "Guide / Parameter Space Summary" in caplog.text
+    assert "components read: 2" in caplog.text
+    assert "components used: 1" in caplog.text
+    assert "component[1]: missing 'name'" in caplog.text
+    assert "total generated parameters: 3" in caplog.text
+    assert "parameters updated by exact custom bounds: 1" in caplog.text
+    assert "parameters updated by base-name custom bounds: 1" in caplog.text
+    assert "unused custom_bounds:" in caplog.text
+    assert "unused" in caplog.text
+    assert "full parameter list: available at DEBUG" in caplog.text
+    assert "UNET_IN00_alpha: {" not in caplog.text
+
+
+def test_create_parameter_bounds_metadata_moves_count_log_to_debug(caplog: pytest.LogCaptureFixture) -> None:
+    handler = ParameterHandler.__new__(ParameterHandler)
+    handler.cfg = OmegaConf.create(
+        {
+            "optimization_guide": {
+                "components": [
+                    {"name": "unet"},
+                    {"name": "te"},
+                ]
+            }
+        }
+    )
+
+    def _fake_process_component(component_index: int, component_config_raw: dict, assigned_items: dict) -> dict:
+        if component_index == 0:
+            return {"UNET_alpha": {"bounds": (0.0, 1.0)}}
+        return {}
+
+    handler._process_component = _fake_process_component
+
+    caplog.set_level("INFO")
+    handler.create_parameter_bounds_metadata()
+    assert "Generated metadata for 1 optimization parameters based on guide." not in caplog.text
+
+    caplog.clear()
+    caplog.set_level("DEBUG")
+    handler.create_parameter_bounds_metadata()
+    assert "Generated metadata for 1 optimization parameters based on guide." in caplog.text
+
+
+def test_get_bounds_summarizes_unused_custom_bounds_without_per_key_debug_lines(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    handler = ParameterHandler.__new__(ParameterHandler)
+    handler.cfg = OmegaConf.create(
+        {
+            "optimization_mode": "merge",
+            "merge_method": "weighted_sum",
+            "optimization_guide": {},
+        }
+    )
+    handler.base_model_config = SimpleNamespace(identifier="sdxl-sgm")
+    handler.custom_block_config = None
+    handler._guide_processing_summary = {
+        "components_read": 1,
+        "components_used": 1,
+        "skipped_components": [],
+    }
+    handler.create_parameter_bounds_metadata = lambda: {
+        "UNET_IN00_alpha": {
+            "strategy": "all",
+            "target_type": "block",
+            "component_name": "unet",
+            "item_name": "UNET_IN00",
+            "base_param": "alpha",
+            "bounds": (0.0, 1.0),
+        }
+    }
+
+    caplog.set_level("DEBUG")
+    handler.get_bounds({"unused": 5.0})
+
+    assert "unused custom_bounds:" in caplog.text
+    assert "  - unused" in caplog.text
+    assert "Custom bound key 'unused' did not match any generated optimizer parameter or base_param." not in caplog.text
+
+
+def test_get_bounds_logs_full_parameter_list_at_debug(caplog: pytest.LogCaptureFixture) -> None:
+    handler = ParameterHandler.__new__(ParameterHandler)
+    handler.cfg = OmegaConf.create(
+        {
+            "optimization_mode": "merge",
+            "merge_method": "weighted_sum",
+            "optimization_guide": {},
+        }
+    )
+    handler.base_model_config = SimpleNamespace(identifier="sdxl-sgm")
+    handler.custom_block_config = None
+    handler._guide_processing_summary = {
+        "components_read": 1,
+        "components_used": 1,
+        "skipped_components": [],
+    }
+    handler.create_parameter_bounds_metadata = lambda: {
+        "UNET_IN00_alpha": {
+            "strategy": "all",
+            "target_type": "block",
+            "component_name": "unet",
+            "item_name": "UNET_IN00",
+            "base_param": "alpha",
+            "bounds": (0.0, 1.0),
+        }
+    }
+
+    caplog.set_level("DEBUG")
+    handler.get_bounds({})
+
+    assert "--- Final 1 Optimization Parameter Details" in caplog.text
+    assert "UNET_IN00_alpha: {" in caplog.text

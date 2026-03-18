@@ -24,6 +24,7 @@ class ParameterHandler:
         self.cfg = cfg
         self.base_model_config = base_model_config
         self.custom_block_config = custom_block_config
+        self._guide_processing_summary = self._new_guide_processing_summary()
         logger.info("ParameterHandler initialized with pre-loaded model configs.")
 
         # --- REMOVED self.param_names = self._get_optimizable_parameter_names() ---
@@ -39,18 +40,22 @@ class ParameterHandler:
         """
         params_info: BoundsInfo = {}
         assigned_items: dict[tuple[str, str], str] = {}
+        self._guide_processing_summary = self._new_guide_processing_summary()
 
         guide_components = self.cfg.optimization_guide.get("components", [])
         if not guide_components or not isinstance(guide_components, (list, ListConfig)):
             logger.warning("No 'components' list found or invalid format in optimization_guide. No bounds generated.")
             return {}
+        self._guide_processing_summary["components_read"] = len(guide_components)
 
         # Process each component
         for component_index, component_config_raw in enumerate(guide_components):
             component_params = self._process_component(component_index, component_config_raw, assigned_items)
+            if component_params:
+                self._guide_processing_summary["components_used"] += 1
             params_info.update(component_params)
 
-        logger.info(f"Generated metadata for {len(params_info)} optimization parameters based on guide.")
+        logger.debug("Generated metadata for %s optimization parameters based on guide.", len(params_info))
         return params_info
 
     def _process_component(
@@ -63,6 +68,7 @@ class ParameterHandler:
         # Validate component structure
         if not isinstance(component_config_raw, (dict, DictConfig)):
             logger.warning(f"Skipping component entry at index {component_index}: Not a dictionary.")
+            self._record_skipped_component(component_index, "not a dictionary")
             return {}
 
         # Convert to plain dict for easier access
@@ -75,6 +81,7 @@ class ParameterHandler:
         guide_component_name = component_config.get("name")
         if not guide_component_name:
             logger.warning(f"Skipping component entry at index {component_index} due to missing 'name'.")
+            self._record_skipped_component(component_index, "missing 'name'")
             return {}
 
         # Get component-level optimize_params
@@ -87,6 +94,7 @@ class ParameterHandler:
         strategies_list_raw = component_config.get("strategies")
         if not strategies_list_raw or not isinstance(strategies_list_raw, list):
             logger.warning(f"Component '{guide_component_name}' is missing a valid 'strategies' list. Skipping this component.")
+            self._record_skipped_component(component_index, f"{guide_component_name}: missing valid 'strategies' list")
             return {}
 
         # Process all strategies for this component
@@ -510,6 +518,9 @@ class ParameterHandler:
         # Step 2: Apply custom bounds overrides
         validated_custom_bounds = self.validate_custom_bounds(custom_bounds_config or {})
         updated_params_count = 0
+        exact_override_count = 0
+        base_override_count = 0
+        unmatched_custom_bounds: list[str] = []
 
         # Create lookup by base_param for efficiency
         base_param_map = {}
@@ -528,6 +539,7 @@ class ParameterHandler:
                     f"  Overrode bounds for specific param '{custom_key}' from {original_bounds} to {custom_value} via custom_bounds."
                 )
                 updated_params_count += 1
+                exact_override_count += 1
                 found_match = True
             # --- PRIORITY 2: Check for BASE parameter name match ---
             elif custom_key in base_param_map:
@@ -541,32 +553,145 @@ class ParameterHandler:
                             f"  Updated bounds for '{param_name}' (base: {custom_key}) from {original_bounds} to {custom_value} via custom_bounds base match."
                         )
                         updated_params_count += 1  # Count updates even if value is same
+                        base_override_count += 1
                 found_match = True  # Mark base param as handled
 
             if not found_match:
-                logger.debug(
-                    f"Custom bound key '{custom_key}' did not match any generated optimizer parameter or base_param. It will not be optimized."
-                )
+                unmatched_custom_bounds.append(custom_key)
 
         # Step 3: Extract bounds for the optimizer (remains the same)
         optimizer_pbounds = {param_name: info["bounds"] for param_name, info in params_info.items() if "bounds" in info}
+        summary = self._build_parameter_space_summary(
+            params_info=params_info,
+            optimizer_pbounds=optimizer_pbounds,
+            exact_override_count=exact_override_count,
+            base_override_count=base_override_count,
+            unmatched_custom_bounds=unmatched_custom_bounds,
+        )
+        self._log_parameter_space_summary(summary)
 
-        logger.info(f"--- Final {len(params_info)} Optimization Parameter Details (Bounds Updated: {updated_params_count}) ---")
-        items_to_log = list(params_info.items())
-        log_limit = 100
-        if len(items_to_log) > log_limit * 2:
-            for name, info in items_to_log[:log_limit]:
-                logger.info(f"{name}: {info}")
-            logger.info("...")
-            for name, info in items_to_log[-log_limit:]:
-                logger.info(f"{name}: {info}")
-        else:
-            for name, info in items_to_log:
-                logger.info(f"{name}: {info}")
-        logger.info("----------------------------------------------------")
+        logger.debug(f"--- Final {len(params_info)} Optimization Parameter Details (Bounds Updated: {updated_params_count}) ---")
+        for name, info in params_info.items():
+            logger.debug(f"{name}: {info}")
+        logger.debug("----------------------------------------------------")
 
         # Return the full metadata (with updated bounds) AND the specific bounds for the optimizer
         return params_info, optimizer_pbounds
+
+    @staticmethod
+    def _new_guide_processing_summary() -> dict[str, Any]:
+        return {
+            "components_read": 0,
+            "components_used": 0,
+            "skipped_components": [],
+        }
+
+    def _record_skipped_component(self, component_index: int, reason: str) -> None:
+        self._guide_processing_summary.setdefault("skipped_components", []).append(
+            f"component[{component_index}]: {reason}"
+        )
+
+    def _build_parameter_space_summary(
+        self,
+        params_info: BoundsInfo,
+        optimizer_pbounds: dict[str, tuple[float, float] | float | int | list],
+        *,
+        exact_override_count: int,
+        base_override_count: int,
+        unmatched_custom_bounds: list[str],
+    ) -> dict[str, Any]:
+        strategy_counts: dict[str, int] = {}
+        target_type_counts: dict[str, int] = {}
+        bound_shape_counts = {
+            "fixed": 0,
+            "categorical": 0,
+            "continuous": 0,
+            "default_bounds_used": 0,
+        }
+
+        for info in params_info.values():
+            strategy = str(info.get("strategy", "unknown"))
+            strategy_counts[strategy] = strategy_counts.get(strategy, 0) + 1
+
+            target_type = str(info.get("target_type", "unknown"))
+            target_type_counts[target_type] = target_type_counts.get(target_type, 0) + 1
+
+            bounds = info.get("bounds")
+            if bounds == (0.0, 1.0):
+                bound_shape_counts["default_bounds_used"] += 1
+            if isinstance(bounds, list):
+                bound_shape_counts["categorical"] += 1
+            elif isinstance(bounds, tuple) or (isinstance(bounds, dict) and "range" in bounds):
+                bound_shape_counts["continuous"] += 1
+            elif isinstance(bounds, (bool, int, float)):
+                bound_shape_counts["fixed"] += 1
+
+        components_read = int(self._guide_processing_summary.get("components_read", 0))
+        skipped_components = list(self._guide_processing_summary.get("skipped_components", []))
+        return {
+            "mode": self.cfg.get("optimization_mode", "unknown"),
+            "merge_method": self.cfg.get("merge_method", "unknown"),
+            "base_config": getattr(self.base_model_config, "identifier", "unknown"),
+            "custom_block_config": getattr(self.custom_block_config, "identifier", None),
+            "components_read": components_read,
+            "components_used": int(self._guide_processing_summary.get("components_used", 0)),
+            "components_skipped": len(skipped_components),
+            "skipped_components": skipped_components,
+            "total_generated_parameters": len(params_info),
+            "strategy_counts": strategy_counts,
+            "target_type_counts": target_type_counts,
+            "default_bounds_used": bound_shape_counts["default_bounds_used"],
+            "exact_override_count": exact_override_count,
+            "base_override_count": base_override_count,
+            "fixed_count": bound_shape_counts["fixed"],
+            "categorical_count": bound_shape_counts["categorical"],
+            "continuous_count": bound_shape_counts["continuous"],
+            "unused_custom_bounds": unmatched_custom_bounds,
+            "prepared_for_optimizer": len(optimizer_pbounds),
+        }
+
+    def _log_parameter_space_summary(self, summary: dict[str, Any]) -> None:
+        logger.info("==================================================")
+        logger.info("Guide / Parameter Space Summary")
+        logger.info("==================================================")
+        logger.info("mode: %s", summary["mode"])
+        logger.info("merge method: %s", summary["merge_method"])
+        logger.info("base config: %s", summary["base_config"])
+        logger.info(
+            "custom block config: %s",
+            summary["custom_block_config"] or "none",
+        )
+        logger.info("components read: %s", summary["components_read"])
+        logger.info("components used: %s", summary["components_used"])
+        logger.info("components skipped: %s", summary["components_skipped"])
+        for skipped_component in summary["skipped_components"]:
+            logger.info("  - %s", skipped_component)
+        logger.info("total generated parameters: %s", summary["total_generated_parameters"])
+        for target_type, count in sorted(summary["target_type_counts"].items()):
+            logger.info("target type %s: %s", target_type, count)
+        for strategy, count in sorted(summary["strategy_counts"].items()):
+            logger.info("strategy %s: %s", strategy, count)
+        logger.info("default bounds used: %s", summary["default_bounds_used"])
+        logger.info(
+            "parameters updated by exact custom bounds: %s",
+            summary["exact_override_count"],
+        )
+        logger.info(
+            "parameters updated by base-name custom bounds: %s",
+            summary["base_override_count"],
+        )
+        logger.info("fixed parameters: %s", summary["fixed_count"])
+        logger.info("categorical parameters: %s", summary["categorical_count"])
+        logger.info("continuous parameters: %s", summary["continuous_count"])
+        if summary["unused_custom_bounds"]:
+            logger.info("unused custom_bounds:")
+            for custom_bound_name in summary["unused_custom_bounds"]:
+                logger.info("  - %s", custom_bound_name)
+        else:
+            logger.info("unused custom_bounds: none")
+        logger.info("parameters prepared for optimizer: %s", summary["prepared_for_optimizer"])
+        logger.info("full parameter list: available at DEBUG")
+        logger.info("==================================================")
 
     def validate_dependencies(
         self,
@@ -611,7 +736,7 @@ class ParameterHandler:
 
             # Map the base dependency to all item-specific parameters
             mapped_count = 0
-            for item, params_dict in item_param_map.items():
+            for _item, params_dict in item_param_map.items():
                 if parent_base in params_dict and child_base in params_dict:
                     parent_full = params_dict[parent_base]
                     child_full = params_dict[child_base]
@@ -706,9 +831,7 @@ class ParameterHandler:
                     validated_bounds[param_name] = bound_config
 
                 # Case 4: Fixed value
-                elif isinstance(bound_config, bool):
-                    validated_bounds[param_name] = bound_config
-                elif isinstance(bound_config, (int, float)):
+                elif isinstance(bound_config, (bool, int, float)):
                     validated_bounds[param_name] = bound_config
 
                 else:

@@ -201,7 +201,7 @@ def restore_trials_from_log(study: Study, trial_logger: TrialLogger) -> None:
 
 async def optimize_study(optimizer: OptunaOptimizer) -> None:
     optimizer.optimization_start_time = time.time()
-    logger.debug("Initial Parameter Bounds: %s", optimizer.optimizer_pbounds)
+    logger.debug("Optimizer bounds already prepared for %s parameters.", len(optimizer.optimizer_pbounds))
 
     sampler = configure_sampler(optimizer.cfg, optimizer_pbounds=optimizer.optimizer_pbounds)
     pruner = configure_pruner(optimizer.cfg)

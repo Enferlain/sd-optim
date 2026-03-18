@@ -51,12 +51,20 @@ def load_and_register_custom_configs(config_dir: Path) -> None:
                 exc_info=True,
             )
         except ValueError as error:
-            logger.error(
-                "  Error registering ModelConfig from %s (likely duplicate ID): %s",
-                filepath.name,
-                error,
-                exc_info=True,
-            )
+            error_message = str(error)
+            if "already exists" in error_message.lower():
+                logger.warning(
+                    "  Skipping custom ModelConfig from %s: duplicate identifier already registered (%s).",
+                    filepath.name,
+                    config_id,
+                )
+            else:
+                logger.error(
+                    "  Error registering ModelConfig from %s: %s",
+                    filepath.name,
+                    error,
+                    exc_info=True,
+                )
         except Exception as error:  # noqa: BLE001 - keep broad logging for dynamic plugin loading.
             logger.error("  Unexpected error processing %s: %s", filepath.name, error, exc_info=True)
 

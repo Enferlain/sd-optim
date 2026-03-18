@@ -4,8 +4,10 @@ import importlib
 import inspect
 import sys
 import types
+from types import SimpleNamespace
 
 import pytest
+from omegaconf import OmegaConf
 
 
 def test_optimizer_base_module_exports_optimizer_class() -> None:
@@ -57,3 +59,41 @@ def test_bayes_optimizer_uses_core_optimizer_base(monkeypatch) -> None:
 def test_top_level_bayes_optimizer_module_is_removed() -> None:
     with pytest.raises(ModuleNotFoundError):
         importlib.import_module("sd_optim.bayes_optimizer")
+
+
+def test_setup_parameter_space_keeps_parameter_count_log_at_debug(caplog: pytest.LogCaptureFixture) -> None:
+    module = importlib.import_module("sd_optim.core.optimizer_base")
+
+    class _TestOptimizer(module.Optimizer):
+        def optimize(self) -> None:
+            return None
+
+        def validate_optimizer_config(self) -> bool:
+            return True
+
+        def get_optimization_history(self) -> list:
+            return []
+
+        def get_best_parameters(self) -> dict:
+            return {}
+
+        def postprocess(self) -> None:
+            return None
+
+    optimizer = object.__new__(_TestOptimizer)
+    optimizer.cfg = OmegaConf.create({"optimization_guide": {"custom_bounds": {}}})
+    optimizer.bounds_initializer = SimpleNamespace(
+        get_bounds=lambda custom_bounds: (  # noqa: ARG005
+            {"alpha": {"bounds": (0.0, 1.0)}},
+            {"alpha": (0.0, 1.0)},
+        )
+    )
+
+    caplog.set_level("INFO")
+    optimizer.setup_parameter_space()
+    assert "Prepared 1 parameters for the optimizer with specific bounds." not in caplog.text
+
+    caplog.clear()
+    caplog.set_level("DEBUG")
+    optimizer.setup_parameter_space()
+    assert "Prepared 1 parameters for the optimizer with specific bounds." in caplog.text

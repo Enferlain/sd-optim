@@ -276,6 +276,40 @@ def test_optimize_study_creates_new_study_and_skips_when_no_trials_remaining(mon
     assert created_study.optimize_calls == []
 
 
+def test_optimize_study_logs_bounds_handoff_without_dumping_full_dict(
+    monkeypatch,
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    cfg = _make_cfg(optuna_overrides={"storage_dir": str(tmp_path)}, scorer_method=["manual"])
+    cfg.optimizer.init_points = 0
+    cfg.optimizer.n_iters = 0
+    created_study = _DummyStudy()
+    optimizer = SimpleNamespace(
+        cfg=cfg,
+        optimizer_pbounds={"alpha": (0.0, 1.0), "beta": [0, 1]},
+        optuna_storage_dir=tmp_path,
+        logger=_DummyTrialLogger(),
+        best_rolling_score=0.0,
+        completed_trials=0,
+    )
+
+    monkeypatch.setattr(study_manager, "configure_sampler", lambda cfg, **kwargs: "sampler")  # noqa: ARG005
+    monkeypatch.setattr(study_manager, "configure_pruner", lambda cfg: None)  # noqa: ARG005
+    monkeypatch.setattr(study_manager, "build_storage_uri_for_new_study", lambda cfg, storage_dir, is_fork=False: ("sqlite:///new.db", "new.db"))  # noqa: ARG005
+    monkeypatch.setattr(study_manager.optuna, "create_study", lambda **kwargs: created_study)
+    monkeypatch.setattr(study_manager, "set_initial_study_attributes", lambda *args, **kwargs: None)
+    monkeypatch.setattr(study_manager, "analyze_parameter_importance", lambda optimizer: None)  # noqa: ARG005
+    monkeypatch.setattr(study_manager.time, "strftime", lambda fmt: "20260317_120000")  # noqa: ARG005
+
+    caplog.set_level("DEBUG")
+    asyncio.run(study_manager.optimize_study(optimizer))
+
+    assert "Optimizer bounds already prepared for 2 parameters." in caplog.text
+    assert "Initial Parameter Bounds:" not in caplog.text
+    assert "{'alpha': (0.0, 1.0), 'beta': [0, 1]}" not in caplog.text
+
+
 def test_optimize_study_forks_completed_trials(monkeypatch, tmp_path: Path) -> None:
     cfg = _make_cfg(optuna_overrides={"storage_dir": str(tmp_path), "resume_from_study": "parent", "fork_study": True})
     cfg.optimizer.init_points = 0

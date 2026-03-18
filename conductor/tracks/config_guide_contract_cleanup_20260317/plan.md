@@ -11,7 +11,30 @@
 - [x] Task: Refresh config/guide template wording for strategy semantics and recipe-mode `custom_bounds`.
 - [x] Task: Simplify user-facing template wording to avoid internal/runtime terminology where plain language works better.
   - Note: docs-only wording pass; no test rerun needed.
-- [~] Task: Draft a present-vs-ideal logging comparison using the latest run so guide/bounds logging improvements can be reviewed before implementation.
+- [x] Task: Draft a present-vs-ideal logging comparison using the latest run so guide/bounds logging improvements can be reviewed before implementation.
+- [x] Task: Implement a compact startup guide/parameter-space summary at `INFO` and move the full itemized parameter list to `DEBUG`.
+  - Command: `timeout 90s env PYTHONPATH=. CI=true .venv-wsl/bin/pytest -q tests/test_reorg_guardrails.py`
+  - Result: `9 passed, 4 warnings in 45.88s`
+  - Command: `timeout 60s env PYTHONPATH=. .venv-wsl/bin/ruff check sd_optim/bounds.py tests/test_reorg_guardrails.py`
+  - Result: `All checks passed!`
+  - Command: `timeout 60s env PYTHONPATH=. .venv-wsl/bin/python -m py_compile sd_optim/bounds.py`
+  - Result: `Passed`
+- [x] Task: Trim duplicate startup logging around guide setup, custom config registration, and optimizer bounds handoff.
+  - Command: `timeout 120s env PYTHONPATH=. CI=true .venv-wsl/bin/pytest -q tests/test_reorg_guardrails.py tests/test_conversions_module.py tests/test_optuna_study_manager_module.py`
+  - Result: `28 passed, 4 warnings in 45.23s`
+  - Command: `timeout 60s env PYTHONPATH=. .venv-wsl/bin/ruff check sd_optim/bounds.py sd_optim/utils/conversions.py sd_optim/optimizers/optuna/study_manager.py tests/test_reorg_guardrails.py tests/test_conversions_module.py tests/test_optuna_study_manager_module.py`
+  - Result: `All checks passed!`
+  - Command: `timeout 60s env PYTHONPATH=. .venv-wsl/bin/python -m py_compile sd_optim/bounds.py sd_optim/utils/conversions.py sd_optim/optimizers/optuna/study_manager.py`
+  - Result: `Passed`
+- [x] Task: Remove the last duplicate parameter-count startup line so the guide summary remains the single `INFO` count source.
+  - Command: `timeout 90s env PYTHONPATH=. CI=true .venv-wsl/bin/pytest -q tests/test_optimizer_base_module.py tests/test_reorg_guardrails.py tests/test_optuna_study_manager_module.py`
+  - Result: `33 passed, 4 warnings in 43.75s`
+  - Command: `timeout 60s env PYTHONPATH=. .venv-wsl/bin/ruff check sd_optim/core/optimizer_base.py tests/test_optimizer_base_module.py`
+  - Result: `All checks passed!`
+  - Command: `timeout 60s env PYTHONPATH=. .venv-wsl/bin/python -m py_compile sd_optim/core/optimizer_base.py`
+  - Result: `Passed`
+- [x] Task: Update `CHANGELOG.md` with the config/guide contract cleanup and startup logging improvements.
+  - Note: docs-only update; no test rerun needed.
 - [x] Task: Run focused regression tests and record outcomes.
   - Command: `timeout 90s env PYTHONPATH=. CI=true .venv-wsl/bin/pytest -q tests/test_recipe_target_nodes.py tests/test_recipe_rewrite_scalar_kwargs.py`
   - Result: `3 passed in 24.91s`

@@ -189,7 +189,7 @@ class Optimizer(ABC):
             logger.error("No optimization bounds were generated for the optimizer. Check optimization_guide.yaml and merge method.")
             # Decide if this should be fatal or just a warning depending on the optimizer
             raise ValueError("Optimization parameter space for the optimizer is empty.")
-        logger.info(f"Prepared {len(self.optimizer_pbounds)} parameters for the optimizer with specific bounds.")
+        logger.debug("Prepared %s parameters for the optimizer with specific bounds.", len(self.optimizer_pbounds))
 
     async def _sequential_producer(
         self,

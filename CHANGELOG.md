@@ -5,6 +5,23 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased] - 2026-03-18
+
+### Added
+
+- Added focused regression coverage for:
+  - recipe-mode multi-target node rewriting
+  - guide/parameter-space startup summary logging
+  - duplicate custom config registration logging
+  - Optuna optimizer bounds handoff logging
+
+### Changed
+
+- Updated recipe optimization so `recipe_optimization.target_nodes` works consistently as either a single recipe ref or a list of refs across validation, runtime rewriting, and artifact helpers
+- Refreshed config and optimization guide templates to better match current runtime behavior and use simpler user-facing wording
+- Reworked startup logging around guide/bounds setup so runs now show a compact parameter-space summary at `INFO`, keep the full generated parameter list at `DEBUG`, and reduce duplicate parameter-count logging
+- Softened duplicate bundled custom ModelConfig registration into a handled warning instead of a traceback-heavy startup error when an identifier is already registered
+
 ## [Unreleased] - 2026-03-15
 
 ### Added

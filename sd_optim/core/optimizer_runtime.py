@@ -13,7 +13,7 @@ import torch
 from hydra.core.hydra_config import HydraConfig
 from PIL import Image
 
-from sd_optim.core.optimizer_cache import calculate_image_hash, fail_on_error_enabled
+from sd_optim.core.optimizer_cache import calculate_image_hash, fail_on_error_enabled, reuse_cached_results_enabled
 from sd_optim.core.optimizer_cache_io import build_run_manifest_entry, save_run_manifest
 from sd_optim.core.trial_scorer_summary import build_trial_scorer_summary
 from sd_optim.scoring.interaction import handle_override_prompt
@@ -139,37 +139,42 @@ async def run_trial_iteration(optimizer: Optimizer, params: dict[str, Any]) -> f
         logger.error("Prompter generated no payloads.")
         raise RuntimeError("Prompter failed to generate any payloads.")
 
+    reuse_cached_results = reuse_cached_results_enabled(optimizer.cfg)
     current_scorers = {s.lower() for s in optimizer.cfg.scorer_method}
     scorer_setup_fp = optimizer.scorer_setup_fp
     cache_results = []
     overall_tier = "full_hit"
 
-    for payload in payloads:
-        image_hash = calculate_image_hash(params, payload, optimizer.generation_setup_fp)
-        cached = optimizer.history_cache.get(image_hash)
+    if reuse_cached_results:
+        for payload in payloads:
+            image_hash = calculate_image_hash(params, payload, optimizer.generation_setup_fp)
+            cached = optimizer.history_cache.get(image_hash)
 
-        if cached and cached.get("final_score") is not None:
-            cached_scorers = set(cached.get("scores", {}).keys()) - {"combined"}
-            cached_fp = cached.get("scorer_setup_fp")
-            if (
-                cached_scorers
-                and cached_scorers == current_scorers
-                and isinstance(cached_fp, str)
-                and cached_fp == scorer_setup_fp
-            ):
-                cache_results.append((image_hash, cached, payload, "full_hit"))
-            elif cached.get("full_path") and Path(cached["full_path"]).exists():
+            if cached and cached.get("final_score") is not None:
+                cached_scorers = set(cached.get("scores", {}).keys()) - {"combined"}
+                cached_fp = cached.get("scorer_setup_fp")
+                if (
+                    cached_scorers
+                    and cached_scorers == current_scorers
+                    and isinstance(cached_fp, str)
+                    and cached_fp == scorer_setup_fp
+                ):
+                    cache_results.append((image_hash, cached, payload, "full_hit"))
+                elif cached.get("full_path") and Path(cached["full_path"]).exists():
+                    cache_results.append((image_hash, cached, payload, "partial_hit"))
+                    overall_tier = "partial_hit"
+                else:
+                    overall_tier = "full_miss"
+                    break
+            elif cached and cached.get("full_path") and Path(cached["full_path"]).exists():
                 cache_results.append((image_hash, cached, payload, "partial_hit"))
                 overall_tier = "partial_hit"
             else:
                 overall_tier = "full_miss"
                 break
-        elif cached and cached.get("full_path") and Path(cached["full_path"]).exists():
-            cache_results.append((image_hash, cached, payload, "partial_hit"))
-            overall_tier = "partial_hit"
-        else:
-            overall_tier = "full_miss"
-            break
+    else:
+        overall_tier = "full_miss"
+        logger.info("Universal Reuse: Disabled for this run; generating fresh outputs.")
 
     if overall_tier == "full_hit" and cache_results:
         cached_scores = [c[1]["final_score"] for c in cache_results]

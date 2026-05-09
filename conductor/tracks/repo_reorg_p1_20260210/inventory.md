@@ -72,7 +72,8 @@
 
 ## Future Cleanup Notes
 
-- `sd_optim/utils.py` is still a major dependency knot. It mixes recipe rewriting, model-config helpers, merge-method lookup, serialization helpers, and assorted runtime utilities, so it remains one of the biggest long-term split candidates.
+- Archived on 2026-05-03 as historical discovery context. Active follow-up work now lives in `conductor/tracks/post_reorg_cleanup_20260503/plan.md`.
+- `sd_optim/utils/` still contains a major dependency knot across `artifacts.py`, `recipes.py`, and adjacent helpers, so it remains one of the biggest long-term split candidates.
 - `sd_optim/merger.py` is cleaner now, but it still contains orchestration plus some legacy helper delegation. A future pass can likely reduce it to a thin runtime shell once `_create_model_nodes`, recipe-mode orchestration, and `layer_adjust()` find better homes.
 - The moved bundled merge-method modules still contain a lot of legacy shape:
   - large commented-out blocks

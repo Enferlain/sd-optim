@@ -16,6 +16,7 @@ def test_optimizer_core_cache_module_exports_cache_helpers() -> None:
     assert callable(module.compute_generation_setup_fingerprint)
     assert callable(module.compute_scorer_setup_fingerprint)
     assert callable(module.fail_on_error_enabled)
+    assert callable(module.reuse_cached_results_enabled)
 
 
 def test_core_generation_fingerprint_is_stable_for_equivalent_config() -> None:
@@ -71,6 +72,11 @@ def test_core_image_hash_is_deterministic() -> None:
 def test_core_fail_on_error_enabled_supports_none_and_attribute_objects() -> None:
     assert core_cache.fail_on_error_enabled(None) is True
     assert core_cache.fail_on_error_enabled(SimpleNamespace(fail_on_error=False)) is False
+
+
+def test_core_reuse_cached_results_enabled_defaults_true() -> None:
+    assert core_cache.reuse_cached_results_enabled(None) is True
+    assert core_cache.reuse_cached_results_enabled(SimpleNamespace(reuse_cached_results=False)) is False
 
 
 def test_core_scorer_setup_fingerprint_changes_with_effective_scorer_config() -> None:

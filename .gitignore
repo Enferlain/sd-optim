@@ -123,6 +123,7 @@ logs/**/*.jpg
 !conf/payloads/cargo/payload.tmpl.yaml
 !conf/optimization_guide/guide.tmpl.yaml
 conf/payloads/*.json
+conf/payloads/workflows/
 
 # --- Other Project Files ---
 # Ignore contents of the logs folder, but not the folder itself
@@ -138,6 +139,7 @@ optimization-analysis/
 # Ignore non-template yaml files in conf
 conf/**/*.yaml
 !conf/**/*.tmpl.yaml
+!conf/payloads/cargo_comfy.yaml
 
 !*.txt
 # !wildcards/**/*.txt # Only if wildcards are stored in a tracked dir
@@ -172,3 +174,8 @@ sd_optim/models/*.png
 analysis_*/
 analysis_output/
 .hf-cache
+
+# --- Local Workspace / Setup Notes ---
+*.code-workspace
+UV_SETUP.md
+uv_torch_guide.md

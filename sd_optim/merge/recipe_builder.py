@@ -11,6 +11,7 @@ from sd_mecha.extensions.merge_methods import MergeMethod, RecipeNodeOrValue
 from sd_mecha.recipe_nodes import ModelRecipeNode
 
 from sd_optim.bounds import BoundsInfo, ParameterHandler
+from sd_optim.guide_graph_adapter import materialize_payloads_from_legacy_bounds_info
 from sd_optim.merge.model_selection import get_adapter_candidate_ids, get_conversion_context_node
 from sd_optim.utils.recipes import convert_with_model_dirs
 
@@ -224,54 +225,15 @@ def prepare_param_recipe_args(
     Supports combining block and key configs using fallback merge semantics.
     """
     final_param_nodes: dict[str, recipe_nodes.RecipeNode] = {}
-    block_based_values_per_param: dict[str, dict[str, Any]] = {}
-    key_based_values_per_param: dict[str, dict[str, Any]] = {}
-    handled_base_params = set()
-
-    logger.debug("Parsing optimizer params using parameter info metadata...")
-
-    for opt_param_name, info in param_info.items():
-        if opt_param_name not in params:
-            logger.warning("Optimizer did not provide value for parameter '%s'. Skipping.", opt_param_name)
-            continue
-
-        value = params[opt_param_name]
-        strategy = info.get("strategy")
-        target_type = info.get("target_type")
-        base_param = info.get("base_param")
-        item_name = info.get("item_name")
-        items_covered = info.get("items_covered", [])
-
-        if not base_param:
-            continue
-
-        handled_base_params.add(base_param)
-
-        if target_type == "block":
-            block_based_values_per_param.setdefault(base_param, {})
-        elif target_type == "key":
-            key_based_values_per_param.setdefault(base_param, {})
-        else:
-            logger.warning("Unknown target_type '%s' for '%s'.", target_type, opt_param_name)
-            continue
-
-        if strategy in ["all", "select"]:
-            if not item_name:
-                logger.warning("Missing 'item_name' for '%s' (%s).", opt_param_name, strategy)
-                continue
-            if target_type == "block":
-                block_based_values_per_param[base_param][item_name] = value
-            else:
-                key_based_values_per_param[base_param][item_name] = value
-        elif strategy in ["group", "single"]:
-            if not items_covered:
-                logger.warning("Missing 'items_covered' for '%s' (%s).", opt_param_name, strategy)
-                continue
-            for item in items_covered:
-                if target_type == "block":
-                    block_based_values_per_param[base_param][item] = value
-                else:
-                    key_based_values_per_param[base_param][item] = value
+    block_based_values_per_param, key_based_values_per_param, handled_base_params = materialize_payloads_from_legacy_bounds_info(
+        params,
+        param_info,
+    )
+    logger.debug(
+        "Prepared method payloads from supplied param metadata for recipe args: %s block params, %s key params.",
+        len(block_based_values_per_param),
+        len(key_based_values_per_param),
+    )
 
     target_model_node = get_conversion_context_node(merger)
 

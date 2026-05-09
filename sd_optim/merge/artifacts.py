@@ -29,6 +29,22 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+def _truncate_name_preserving_iteration_suffix(name: str, max_length: int) -> str:
+    """Trim an overlong artifact stem without dropping the trailing iteration marker."""
+    if len(name) <= max_length:
+        return name
+
+    iteration_marker_index = name.rfind("-it_")
+    if iteration_marker_index == -1:
+        return name[:max_length]
+
+    suffix = name[iteration_marker_index:]
+    prefix_budget = max_length - len(suffix)
+    if prefix_budget <= 0:
+        return suffix[-max_length:]
+    return f"{name[:prefix_budget]}{suffix}"
+
+
 def create_model_output_name(
     merger: Merger,
     iteration: int,
@@ -94,7 +110,7 @@ def create_model_output_name(
 
     if len(combined_name) > max_filename_len:
         logger.warning("Generated filename is too long. Truncating to %s characters.", max_filename_len)
-        combined_name = combined_name[:max_filename_len]
+        combined_name = _truncate_name_preserving_iteration_suffix(combined_name, max_filename_len)
 
     output_dir = merger.models_dir
     output_dir.mkdir(parents=True, exist_ok=True)

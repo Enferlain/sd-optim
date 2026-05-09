@@ -4,6 +4,7 @@ This file holds the detailed execution history for the `repo_reorg_p1_20260210` 
 The short actionable checklist lives in `plan.md`.
 
 ## Notes
+- Archived on 2026-05-03. New cleanup work should be tracked in `conductor/tracks/post_reorg_cleanup_20260503/plan.md`.
 - On 2026-03-17, the working plan was condensed so `plan.md` stays readable.
 - Earlier detailed line-by-line history remains available in git history before that trim.
 - New completed work should be summarized here instead of expanding `plan.md`.

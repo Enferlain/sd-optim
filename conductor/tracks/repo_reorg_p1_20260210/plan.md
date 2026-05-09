@@ -4,7 +4,9 @@ Detailed execution history and verification notes now live in `conductor/tracks/
 This file is the short working plan.
 
 ## Status
+- Archived on 2026-05-03 as completed historical work.
 - Complete for the structural/runtime reorganization goals.
+- Remaining cleanup now lives in `conductor/tracks/post_reorg_cleanup_20260503/plan.md`.
 - Any remaining config/doc wording cleanup is non-blocking follow-up maintenance, not unfinished package surgery.
 
 ## Goals
@@ -15,8 +17,9 @@ This file is the short working plan.
 - Finish the Optuna modernization work and eliminate remaining config/API drift.
 
 ## Current Focus
-- Track closed.
-- Next candidate cleanup is `bounds.py` under a separate follow-up track.
+- Archived.
+- No new implementation work should be queued here.
+- Follow-up cleanup now lives in `conductor/tracks/post_reorg_cleanup_20260503/plan.md`.
 
 ## Working Rules
 - Follow `conductor/workflow.md`.

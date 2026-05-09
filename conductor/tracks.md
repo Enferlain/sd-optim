@@ -4,6 +4,12 @@ This file tracks all major tracks for the project. Each track has its own detail
 
 ---
 
+- [ ] **Track: Post-Reorg Cleanup Follow-Up (2026-05-03)**
+  *Link: [./tracks/post_reorg_cleanup_20260503/plan.md](./tracks/post_reorg_cleanup_20260503/plan.md)*
+
+- [x] **Track: Repo Reorganization & Optimizer Refactor (Archived)**
+  *Link: [./tracks/repo_reorg_p1_20260210/plan.md](./tracks/repo_reorg_p1_20260210/plan.md)*
+
 - [ ] **Track: Code Modernization Phase 1: Legacy Refactoring and Type Hinting Implementation**
   *Link: [./tracks/modernization_p1_20260204/](./tracks/modernization_p1_20260204/)*
 

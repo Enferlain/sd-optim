@@ -7,11 +7,13 @@ import fnmatch
 from typing import Any
 from omegaconf import DictConfig, ListConfig, OmegaConf
 
+from sd_optim.guide_graph_adapter import compile_legacy_guide_to_bounds_info
 
 logger = logging.getLogger(__name__)
 
 # Define a type alias for clarity (optional)
 BoundsInfo = dict[str, dict[str, Any]]
+DEFAULT_BOUNDS: tuple[float, float] = (0.0, 1.0)
 
 
 class ParameterHandler:
@@ -38,8 +40,6 @@ class ParameterHandler:
         supporting multiple strategies per component via a 'strategies' list
         and performing conflict detection.
         """
-        params_info: BoundsInfo = {}
-        assigned_items: dict[tuple[str, str], str] = {}
         self._guide_processing_summary = self._new_guide_processing_summary()
 
         guide_components = self.cfg.optimization_guide.get("components", [])
@@ -48,15 +48,100 @@ class ParameterHandler:
             return {}
         self._guide_processing_summary["components_read"] = len(guide_components)
 
-        # Process each component
         for component_index, component_config_raw in enumerate(guide_components):
-            component_params = self._process_component(component_index, component_config_raw, assigned_items)
-            if component_params:
-                self._guide_processing_summary["components_used"] += 1
-            params_info.update(component_params)
+            if not isinstance(component_config_raw, (dict, DictConfig)):
+                logger.warning("Skipping component entry at index %s: Not a dictionary.", component_index)
+                self._record_skipped_component(component_index, "not a dictionary")
+                continue
+
+            component_config = self._resolve_config_mapping(component_config_raw)
+            guide_component_name = component_config.get("name")
+            if not guide_component_name:
+                logger.warning("Skipping component entry at index %s due to missing 'name'.", component_index)
+                self._record_skipped_component(component_index, "missing 'name'")
+                continue
+
+            component_optimize_params = component_config.get("optimize_params", [])
+            if not isinstance(component_optimize_params, list):
+                logger.warning(
+                    "Invalid 'optimize_params' format for component '%s', must be a list. Using empty list.",
+                    guide_component_name,
+                )
+
+            strategies_list_raw = component_config.get("strategies")
+            if not strategies_list_raw or not isinstance(strategies_list_raw, list):
+                logger.warning(
+                    "Component '%s' is missing a valid 'strategies' list. Skipping this component.",
+                    guide_component_name,
+                )
+                self._record_skipped_component(
+                    component_index,
+                    f"{guide_component_name}: missing valid 'strategies' list",
+                )
+
+        params_info = compile_legacy_guide_to_bounds_info(
+            self.cfg,
+            self.base_model_config,
+            self.custom_block_config,
+        )
+        self._guide_processing_summary["components_used"] = len(
+            {info["component_name"] for info in params_info.values() if info.get("component_name")}
+        )
 
         logger.debug("Generated metadata for %s optimization parameters based on guide.", len(params_info))
         return params_info
+
+    @staticmethod
+    def _resolve_config_mapping(config_raw: dict[str, Any] | DictConfig) -> dict[str, Any]:
+        if isinstance(config_raw, DictConfig):
+            return OmegaConf.to_container(config_raw, resolve=True)
+        return config_raw
+
+    @staticmethod
+    def _build_param_entry(
+        base_metadata: dict[str, Any],
+        *,
+        base_param_name: str,
+        item_name: str | None = None,
+        group_name: str | None = None,
+        items_covered: list[str] | None = None,
+    ) -> dict[str, Any]:
+        entry = {
+            **base_metadata,
+            "base_param": base_param_name,
+            "bounds": DEFAULT_BOUNDS,
+        }
+        if item_name is not None:
+            entry["item_name"] = item_name
+        if group_name is not None:
+            entry["group_name"] = group_name
+        if items_covered is not None:
+            entry["items_covered"] = items_covered
+        return entry
+
+    @staticmethod
+    def _build_base_param_map(params_info: BoundsInfo) -> dict[str, list[str]]:
+        base_param_map: dict[str, list[str]] = {}
+        for param_name, info in params_info.items():
+            base_param = info.get("base_param")
+            if base_param:
+                base_param_map.setdefault(base_param, []).append(param_name)
+        return base_param_map
+
+    @staticmethod
+    def _build_item_param_map(params_info: BoundsInfo) -> tuple[dict[str, dict[str, str]], set[str]]:
+        item_param_map: dict[str, dict[str, str]] = {}
+        valid_base_params: set[str] = set()
+
+        for param_name, info in params_info.items():
+            item_name = info.get("item_name") or info.get("group_name")
+            base_param = info.get("base_param")
+            if base_param:
+                valid_base_params.add(base_param)
+            if item_name and base_param:
+                item_param_map.setdefault(item_name, {})[base_param] = param_name
+
+        return item_param_map, valid_base_params
 
     def _process_component(
         self,
@@ -72,11 +157,7 @@ class ParameterHandler:
             return {}
 
         # Convert to plain dict for easier access
-        component_config = (
-            OmegaConf.to_container(component_config_raw, resolve=True)
-            if isinstance(component_config_raw, DictConfig)
-            else component_config_raw
-        )
+        component_config = self._resolve_config_mapping(component_config_raw)
 
         guide_component_name = component_config.get("name")
         if not guide_component_name:
@@ -125,11 +206,7 @@ class ParameterHandler:
             logger.warning(f"Invalid strategy entry format at index {strategy_index} in '{guide_component_name}'. Skipping.")
             return {}
 
-        strategy_config = (
-            OmegaConf.to_container(strategy_config_raw, resolve=True)
-            if isinstance(strategy_config_raw, DictConfig)
-            else strategy_config_raw
-        )
+        strategy_config = self._resolve_config_mapping(strategy_config_raw)
 
         strategy_type = strategy_config.get("type")
         if not strategy_type or strategy_type not in [
@@ -218,10 +295,6 @@ class ParameterHandler:
                 guide_component_name,
                 assigned_items,
             )
-        else:
-            # This shouldn't happen due to earlier validation, but just in case
-            logger.warning(f"Unknown strategy type '{strategy_type}' - this shouldn't happen!")
-            return {}
 
     def _determine_target_config(self, guide_component_name: str, strategy_config: dict[str, Any]) -> tuple[Any | None, bool, str]:
         """Determine which config to use and target type based on strategy specification"""
@@ -281,7 +354,6 @@ class ParameterHandler:
     ) -> dict[str, Any]:
         """Process 'all' strategy type"""
         params_info = {}
-        default_bounds_tuple = (0.0, 1.0)
         strategy_identifier = "all"
 
         for base_param_name in current_optimize_params:
@@ -295,12 +367,11 @@ class ParameterHandler:
 
                 assigned_items[assignment_key] = strategy_identifier
                 generated_param_name = f"{item_name}_{base_param_name}"
-                params_info[generated_param_name] = {
-                    **base_metadata,
-                    "item_name": item_name,
-                    "base_param": base_param_name,
-                    "bounds": default_bounds_tuple,
-                }
+                params_info[generated_param_name] = self._build_param_entry(
+                    base_metadata,
+                    base_param_name=base_param_name,
+                    item_name=item_name,
+                )
 
         return params_info
 
@@ -315,7 +386,6 @@ class ParameterHandler:
     ) -> dict[str, Any]:
         """Process 'select' strategy type"""
         params_info = {}
-        default_bounds_tuple = (0.0, 1.0)
         patterns = strategy_config.get("keys", [])
 
         if not patterns or not isinstance(patterns, list):
@@ -338,12 +408,11 @@ class ParameterHandler:
 
                         assigned_items[assignment_key] = f"{strategy_identifier}:{pattern}"
                         generated_param_name = f"{item_name}_{base_param_name}"
-                        params_info[generated_param_name] = {
-                            **base_metadata,
-                            "item_name": item_name,
-                            "base_param": base_param_name,
-                            "bounds": default_bounds_tuple,
-                        }
+                        params_info[generated_param_name] = self._build_param_entry(
+                            base_metadata,
+                            base_param_name=base_param_name,
+                            item_name=item_name,
+                        )
                         items_matched_in_strategy += 1
 
             if items_matched_in_strategy == 0:
@@ -364,7 +433,6 @@ class ParameterHandler:
     ) -> dict[str, Any]:
         """Process 'group' strategy type"""
         params_info = {}
-        default_bounds_tuple = (0.0, 1.0)
         groups = strategy_config.get("groups", [])
 
         if not groups or not isinstance(groups, list):
@@ -381,7 +449,7 @@ class ParameterHandler:
                     logger.warning(f"Invalid group format at index {group_index} in '{guide_component_name}'. Skipping.")
                     continue
 
-                group = OmegaConf.to_container(group_raw, resolve=True) if isinstance(group_raw, DictConfig) else group_raw
+                group = self._resolve_config_mapping(group_raw)
 
                 group_name = group.get("name")
                 group_patterns = group.get("keys", [])
@@ -421,14 +489,15 @@ class ParameterHandler:
                     logger.debug(
                         f"PARAMETER_HANDLER: Generating group param: '{generated_param_name}' covering {len(temp_items_for_group)} items"
                     )  # ← ADD THIS
-                    params_info[generated_param_name] = {
-                        **base_metadata,
-                        "strategy": "group",  # Ensure strategy is set correctly
-                        "group_name": group_name,
-                        "base_param": base_param_name,
-                        "items_covered": list(set(temp_items_for_group)),  # Use unique list
-                        "bounds": default_bounds_tuple,
-                    }
+                    params_info[generated_param_name] = self._build_param_entry(
+                        {
+                            **base_metadata,
+                            "strategy": "group",
+                        },
+                        base_param_name=base_param_name,
+                        group_name=group_name,
+                        items_covered=list(set(temp_items_for_group)),
+                    )
 
                     # Mark all items as assigned by this group
                     for item_name in temp_items_for_group:
@@ -454,7 +523,6 @@ class ParameterHandler:
     ) -> dict[str, Any]:
         """Process 'single' strategy type"""
         params_info = {}
-        default_bounds_tuple = (0.0, 1.0)
 
         for base_param_name in current_optimize_params:
             logger.debug(
@@ -488,14 +556,15 @@ class ParameterHandler:
             generated_param_name = f"{group_name}_{base_param_name}"
             logger.debug(f"PARAMETER_HANDLER: Generating single param: '{generated_param_name}'")
 
-            params_info[generated_param_name] = {
-                **base_metadata,
-                "strategy": "single",
-                "group_name": group_name,
-                "base_param": base_param_name,
-                "items_covered": items_in_component,
-                "bounds": default_bounds_tuple,
-            }
+            params_info[generated_param_name] = self._build_param_entry(
+                {
+                    **base_metadata,
+                    "strategy": "single",
+                },
+                base_param_name=base_param_name,
+                group_name=group_name,
+                items_covered=items_in_component,
+            )
 
             # Mark all items as assigned
             for item_name in items_in_component:
@@ -523,11 +592,7 @@ class ParameterHandler:
         unmatched_custom_bounds: list[str] = []
 
         # Create lookup by base_param for efficiency
-        base_param_map = {}
-        for param_name, info in params_info.items():
-            base_param = info.get("base_param")
-            if base_param:
-                base_param_map.setdefault(base_param, []).append(param_name)
+        base_param_map = self._build_base_param_map(params_info)
 
         for custom_key, custom_value in validated_custom_bounds.items():
             found_match = False
@@ -709,16 +774,7 @@ class ParameterHandler:
         child_to_parent_map: dict[str, dict[str, Any]] = {}
 
         # Create a lookup for items: item_name -> {base_param: full_param_name}
-        item_param_map: dict[str, dict[str, str]] = {}
-        valid_base_params = set()
-
-        for p_name, info in params_info.items():
-            item = info.get("item_name") or info.get("group_name")
-            base = info.get("base_param")
-            if base:
-                valid_base_params.add(base)
-            if item and base:
-                item_param_map.setdefault(item, {})[base] = p_name
+        item_param_map, valid_base_params = self._build_item_param_map(params_info)
 
         for dep_idx, dep in enumerate(dependencies_cfg):
             parent_base = dep.get("parent")

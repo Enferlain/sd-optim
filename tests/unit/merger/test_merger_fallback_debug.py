@@ -179,6 +179,26 @@ def test_serialize_and_save_recipe_uses_finalized_execution_recipe(monkeypatch, 
     assert captured["serialize_finalize"] is False
 
 
+def test_create_model_output_name_preserves_iteration_suffix_when_truncated(tmp_path) -> None:
+    merger = object.__new__(merger_mod.Merger)
+    merger.cfg = OmegaConf.create(
+        {
+            "optimization_mode": "merge",
+            "merge_method": "weighted_sum",
+            "model_paths": [
+                "a" * 90 + ".safetensors",
+                "b" * 90 + ".safetensors",
+            ],
+        }
+    )
+    merger.models_dir = tmp_path
+
+    output_path = artifacts_mod.create_model_output_name(merger, iteration=17)
+
+    assert output_path.name.endswith("-it_17.safetensors")
+    assert len(output_path.stem) <= 120
+
+
 def test_get_adapter_candidate_ids_caches_model_config_inference(monkeypatch, tmp_path) -> None:
     merger = object.__new__(merger_mod.Merger)
     merger.models_dir = tmp_path

@@ -207,13 +207,17 @@ def test_create_parameter_bounds_metadata_moves_count_log_to_debug(caplog: pytes
             }
         }
     )
+    handler.base_model_config = SimpleNamespace(identifier="sdxl-sgm", components=lambda: {})
+    handler.custom_block_config = None
+    import sd_optim.bounds as bounds_module
 
-    def _fake_process_component(component_index: int, component_config_raw: dict, assigned_items: dict) -> dict:
-        if component_index == 0:
-            return {"UNET_alpha": {"bounds": (0.0, 1.0)}}
-        return {}
-
-    handler._process_component = _fake_process_component
+    original_compiler = bounds_module.compile_legacy_guide_to_bounds_info
+    bounds_module.compile_legacy_guide_to_bounds_info = lambda cfg, base_model_config, custom_block_config: {
+        "UNET_alpha": {
+            "component_name": "unet",
+            "bounds": (0.0, 1.0),
+        }
+    }
 
     caplog.set_level("INFO")
     handler.create_parameter_bounds_metadata()
@@ -223,6 +227,8 @@ def test_create_parameter_bounds_metadata_moves_count_log_to_debug(caplog: pytes
     caplog.set_level("DEBUG")
     handler.create_parameter_bounds_metadata()
     assert "Generated metadata for 1 optimization parameters based on guide." in caplog.text
+
+    bounds_module.compile_legacy_guide_to_bounds_info = original_compiler
 
 
 def test_get_bounds_summarizes_unused_custom_bounds_without_per_key_debug_lines(

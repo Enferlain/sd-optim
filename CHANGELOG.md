@@ -5,6 +5,37 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased] - 2026-05-09
+
+### Added
+
+- Added a graph-backed guide compiler core in `sd_optim/guide_graph.py` with focused regression coverage for:
+  - compiled optimizer-visible bindings
+  - payload materialization from sampled values
+  - reduced golden payload expectations derived from recorded run artifacts
+- Added a legacy-guide adapter in `sd_optim/guide_graph_adapter.py` so the current optimization guide format can compile through the new graph-backed path while preserving current behavior
+- Added parity analysis scripts and reports for:
+  - bounds metadata generation
+  - recipe payload materialization
+- Added a runtime config toggle `reuse_cached_results` to disable cross-run image-result reuse while preserving run-manifest and artifact writing
+- Added regression coverage to preserve `-it_<n>` suffixes in long truncated artifact filenames
+
+### Changed
+
+- Switched `ParameterHandler.create_parameter_bounds_metadata()` to source legacy guide metadata from the graph-backed compiler path while keeping the existing outer validation and summary behavior
+- Switched recipe payload assembly to use graph-backed legacy-guide payload materialization instead of rebuilding payload dicts ad hoc from `param_info`
+- Tightened the recipe payload path so `prepare_param_recipe_args()` now honors the supplied `param_info` contract directly instead of silently recompiling guide payloads from config
+- Added design notes and a worked example to anchor future guide redesign around authored intent, compiled runtime expansion, and a future node-based UI
+- Updated `.gitignore` policy so workflow payload JSONs, workspace files, and local UV setup notes stay untracked while `cargo_comfy.yaml` remains trackable
+- Updated guide-design notes to treat parked `name: null` guide fragments as intentionally inactive placeholders rather than active runtime semantics
+
+### Fixed
+
+- Fixed cross-run cache control so reruns can force fresh merge/generate/score behavior without relying on cache state
+- Fixed long artifact stem truncation so saved `.mecha` recipes and reproducible merge scripts preserve the trailing iteration marker instead of silently dropping `-it_<n>`
+- Fixed a graph-adapter regression where legacy `select` and `group` rules that match nothing would abort guide compilation instead of warning and being skipped
+- Fixed recipe payload assembly drift by materializing from already-compiled legacy bounds metadata when callers pass narrowed or precomputed `param_info`
+
 ## [Unreleased] - 2026-03-18
 
 ### Added

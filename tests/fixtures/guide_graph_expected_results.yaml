@@ -1,0 +1,52 @@
+delta_widen_block_excerpt:
+  source:
+    name: unet_blocks_sub
+    target_space: block
+    items:
+      - UNET_IN00_0
+      - UNET_IN01_0
+      - UNET_OUT01_1
+      - UNET_OUT04_1
+  binding_params:
+    - magnitude_ratio
+    - direction_ratio
+    - temperature
+    - critical_quantile
+  sampled_values:
+    UNET_IN00_0_magnitude_ratio: 2.0
+    UNET_IN01_0_magnitude_ratio: 0.5
+    UNET_OUT01_1_magnitude_ratio: 0.5
+    UNET_OUT04_1_magnitude_ratio: 0.0
+    UNET_IN00_0_direction_ratio: 0.0
+    UNET_IN01_0_direction_ratio: 1.5
+    UNET_OUT01_1_direction_ratio: 2.0
+    UNET_OUT04_1_direction_ratio: 0.0
+    UNET_IN00_0_temperature: 1.5
+    UNET_IN01_0_temperature: 0.0
+    UNET_OUT01_1_temperature: 0.5
+    UNET_OUT04_1_temperature: 1.0
+    UNET_IN00_0_critical_quantile: 0.0
+    UNET_IN01_0_critical_quantile: 2.0
+    UNET_OUT01_1_critical_quantile: 0.5
+    UNET_OUT04_1_critical_quantile: 1.5
+  expected_payloads:
+    magnitude_ratio:
+      UNET_IN00_0: 2.0
+      UNET_IN01_0: 0.5
+      UNET_OUT01_1: 0.5
+      UNET_OUT04_1: 0.0
+    direction_ratio:
+      UNET_IN00_0: 0.0
+      UNET_IN01_0: 1.5
+      UNET_OUT01_1: 2.0
+      UNET_OUT04_1: 0.0
+    temperature:
+      UNET_IN00_0: 1.5
+      UNET_IN01_0: 0.0
+      UNET_OUT01_1: 0.5
+      UNET_OUT04_1: 1.0
+    critical_quantile:
+      UNET_IN00_0: 0.0
+      UNET_IN01_0: 2.0
+      UNET_OUT01_1: 0.5
+      UNET_OUT04_1: 1.5

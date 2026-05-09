@@ -17,6 +17,15 @@ def fail_on_error_enabled(cfg: Any) -> bool:
     return bool(getattr(cfg, "fail_on_error", True))
 
 
+def reuse_cached_results_enabled(cfg: Any) -> bool:
+    """Return whether cross-run cached image reuse should be used for trial execution."""
+    if cfg is None:
+        return True
+    if hasattr(cfg, "get"):
+        return bool(cfg.get("reuse_cached_results", True))
+    return bool(getattr(cfg, "reuse_cached_results", True))
+
+
 def compute_scorer_setup_fingerprint(cfg: DictConfig) -> str:
     """
     Fingerprint the scoring objective so cached `final_score` is only reused when

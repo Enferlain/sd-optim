@@ -26,6 +26,7 @@ from sd_optim.core.optimizer_cache import (
     calculate_image_hash,
     compute_generation_setup_fingerprint,
     compute_scorer_setup_fingerprint,
+    reuse_cached_results_enabled,
 )
 from sd_optim.core.optimizer_cache_io import (
     build_image_output_path,
@@ -154,6 +155,8 @@ class Optimizer(ABC):
         logs_dir = project_root / "logs"
         if not logs_dir.exists():
             logger.debug("No logs directory found, skipping history cache load.")
+        elif not reuse_cached_results_enabled(self.cfg):
+            logger.info("Universal Reuse: Disabled by config; skipping cached history scan.")
         else:
             start_time = time.time()
             logger.info("Universal Reuse: Scanning logs for cached results...")

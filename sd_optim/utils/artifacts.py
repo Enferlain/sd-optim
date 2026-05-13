@@ -225,7 +225,7 @@ def save_merge_artifacts(
             converter_names
         )
         custom_config_name = cfg.optimization_guide.get("custom_block_config_id")
-        yaml_content = get_yaml_content(custom_config_name, cfg.configs_dir)
+        yaml_content = get_yaml_content(custom_config_name, cfg.paths.configs_dir)
         fallback_path_str = get_fallback_model_path_str(cfg, merger)
 
         recipe_python_code = MechaToPythonConverter(
@@ -260,7 +260,7 @@ def save_merge_artifacts(
 def get_method_names(cfg: DictConfig, original_recipe_text: str) -> str:
     """Return the primary merge method name for the current optimization mode."""
     if cfg.optimization_mode == "merge":
-        return cfg.merge_method
+        return cfg.merge.merge_method
     if cfg.optimization_mode == "recipe":
         target_nodes_raw = cfg.recipe_optimization.get("target_nodes")
         if not target_nodes_raw:
@@ -359,7 +359,7 @@ def get_yaml_content(config_name: str | None, configs_dir_path: str) -> str | No
 
 def get_fallback_model_path_str(cfg: DictConfig, merger: Merger) -> str:
     """Return a quoted fallback model path literal for generated scripts."""
-    fallback_index = cfg.get("fallback_model_index", -1)
+    fallback_index = cfg.merge.fallback_model_index
     if (
         fallback_index is not None
         and fallback_index != -1
@@ -449,7 +449,7 @@ def build_reproducible_script(
 ) -> str:
     """Build the standalone Python reproduction script for a merge artifact."""
     models_dir_str = str(merger.models_dir.resolve())
-    merge_device = cfg.get("device", "cpu")
+    merge_device = cfg.merge.device
 
     dtype_map = {
         "fp16": "float16",
@@ -457,11 +457,11 @@ def build_reproducible_script(
         "fp64": "float64",
         "bf16": "bfloat16",
     }
-    merge_dtype_name = dtype_map.get(cfg.get("merge_dtype", "float64"), "float64")
-    save_dtype_name = dtype_map.get(cfg.get("save_dtype", "float16"), "float16")
+    merge_dtype_name = dtype_map.get(cfg.merge.merge_dtype, "float64")
+    save_dtype_name = dtype_map.get(cfg.merge.save_dtype, "float16")
     merge_dtype_str = f"torch.{merge_dtype_name}"
     save_dtype_str = f"torch.{save_dtype_name}"
-    threads_value = cfg.get("threads")
+    threads_value = cfg.merge.threads
 
     embedded_yamls = {yaml_name: yaml_content} if yaml_name and yaml_content else {}
     embedded_yamls_str = repr(embedded_yamls)

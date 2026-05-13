@@ -695,7 +695,7 @@ class ParameterHandler:
         skipped_components = list(self._guide_processing_summary.get("skipped_components", []))
         return {
             "mode": self.cfg.get("optimization_mode", "unknown"),
-            "merge_method": self.cfg.get("merge_method", "unknown"),
+            "merge_method": self.cfg.merge.merge_method,
             "base_config": getattr(self.base_model_config, "identifier", "unknown"),
             "custom_block_config": getattr(self.custom_block_config, "identifier", None),
             "components_read": components_read,

@@ -31,11 +31,13 @@ def _make_cfg(
     return OmegaConf.create(
         {
             "optimization_mode": optimization_mode,
-            "merge_method": "weighted_sum",
+            "merge": {
+                "merge_method": "weighted_sum",
+                "model_paths": ["a.safetensors", "b.safetensors"],
+                "base_model_index": 1,
+            },
             "recipe_optimization": {"recipe_path": "recipes/demo_recipe.yaml"},
-            "model_paths": ["a.safetensors", "b.safetensors"],
-            "base_model_index": 1,
-            "scorer_method": scorer_method or ["manual"],
+            "scoring": {"scorer_method": scorer_method or ["manual"]},
             "optimization_guide": {"dependencies": []},
             "optimizer": {
                 "init_points": 2,
@@ -126,7 +128,7 @@ def test_flatten_scorers_and_storage_uri_handle_nested_and_recipe_modes(tmp_path
     merge_cfg = _make_cfg(scorer_method=["manual", ["clip"]])
     recipe_cfg = _make_cfg(optimization_mode="recipe", scorer_method=["manual"])
 
-    assert study_manager.flatten_scorers(merge_cfg.scorer_method) == ["manual", "clip"]
+    assert study_manager.flatten_scorers(merge_cfg.scoring.scorer_method) == ["manual", "clip"]
 
     merge_uri, merge_filename = study_manager.build_storage_uri_for_new_study(merge_cfg, tmp_path)
     recipe_uri, recipe_filename = study_manager.build_storage_uri_for_new_study(recipe_cfg, tmp_path, is_fork=True)

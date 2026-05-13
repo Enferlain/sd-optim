@@ -94,14 +94,14 @@ def build_storage_uri_for_new_study(
         opt_mode = cfg.get("optimization_mode", "unknown_mode")
         merge_method_name = "N/A"
         if opt_mode == "merge":
-            merge_method_name = cfg.get("merge_method", "unknown_method")
+            merge_method_name = cfg.merge.merge_method
         elif opt_mode == "recipe":
             recipe_path_str = cfg.recipe_optimization.get("recipe_path")
             merge_method_name = f"recipe_{Path(recipe_path_str).stem}" if recipe_path_str else "recipe"
         elif opt_mode == "layer_adjust":
             merge_method_name = "layer_adjust"
 
-        scorers_str_list = sorted(flatten_scorers(cfg.get("scorer_method", [])))
+        scorers_str_list = sorted(flatten_scorers(cfg.scoring.scorer_method))
         scorer_name_part = "_".join(scorers_str_list)
         fork_prefix = "fork_" if is_fork else ""
 
@@ -148,14 +148,14 @@ def set_initial_study_attributes(
     parent_name: str | None = None,
 ) -> None:
     try:
-        models_str = str([str(path) for path in cfg.get("model_paths", [])])
+        models_str = str([str(path) for path in cfg.merge.model_paths])
         study.set_user_attr("config_input_models", models_str)
-        study.set_user_attr("config_base_model_index", cfg.get("base_model_index", -1))
+        study.set_user_attr("config_base_model_index", cfg.merge.base_model_index)
         study.set_user_attr("config_optimization_mode", cfg.get("optimization_mode", "N/A"))
-        study.set_user_attr("config_scorers", list(flatten_scorers(cfg.get("scorer_method", []))))
+        study.set_user_attr("config_scorers", list(flatten_scorers(cfg.scoring.scorer_method)))
 
         if cfg.get("optimization_mode") == "merge":
-            study.set_user_attr("config_merge_method", cfg.get("merge_method", "N/A"))
+            study.set_user_attr("config_merge_method", cfg.merge.merge_method)
         if parent_name:
             study.set_user_attr("forked_from", parent_name)
 
@@ -271,7 +271,7 @@ async def optimize_study(optimizer: OptunaOptimizer) -> None:
         else:
             logger.info("Resuming study '%s' directly.", parent_study_name_to_load)
             parent_scorers = set(map(str, parent_study.user_attrs.get("config_scorers", [])))
-            current_scorers = set(flatten_scorers(optimizer.cfg.get("scorer_method", [])))
+            current_scorers = set(flatten_scorers(optimizer.cfg.scoring.scorer_method))
             if parent_scorers != current_scorers:
                 raise ValueError(
                     f"FATAL: Cannot resume study '{parent_study_name_to_load}' because scorers have changed. "

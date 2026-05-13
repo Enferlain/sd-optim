@@ -9,14 +9,16 @@ def test_generation_setup_fingerprint_changes_with_merge_method() -> None:
     base_cfg = OmegaConf.create(
         {
             "optimization_mode": "merge",
-            "merge_method": "weighted_sum",
-            "models_dir": "/models",
-            "model_paths": ["model_a.safetensors", "model_b.safetensors"],
-            "base_model_index": 0,
-            "fallback_model_index": 1,
-            "add_extra_keys": False,
-            "merge_dtype": "fp32",
-            "save_dtype": "bf16",
+            "paths": {"models_dir": "/models"},
+            "merge": {
+                "merge_method": "weighted_sum",
+                "model_paths": ["model_a.safetensors", "model_b.safetensors"],
+                "base_model_index": 0,
+                "fallback_model_index": 1,
+                "add_extra_keys": False,
+                "merge_dtype": "fp32",
+                "save_dtype": "bf16",
+            },
             "webui": "comfy",
             "recipe_optimization": {
                 "recipe_path": "/recipes/example.mecha",
@@ -27,7 +29,7 @@ def test_generation_setup_fingerprint_changes_with_merge_method() -> None:
     )
 
     variant_cfg = OmegaConf.create(OmegaConf.to_container(base_cfg, resolve=True))
-    variant_cfg.merge_method = "ties_sum"
+    variant_cfg.merge.merge_method = "ties_sum"
 
     assert compute_generation_setup_fingerprint(base_cfg) != compute_generation_setup_fingerprint(variant_cfg)
 

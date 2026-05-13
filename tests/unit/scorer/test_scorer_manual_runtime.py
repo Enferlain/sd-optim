@@ -24,15 +24,17 @@ async def test_manual_score_uses_saved_preview_and_records_result(
 
     cfg = OmegaConf.create(
         {
-            "scorer_method": ["manual"],
-            "scorer_model_dir": str(tmp_path / "models"),
-            "scorer_default_device": "cpu",
-            "save_imgs": False,
-            "scorer_print_individual": False,
-            "scorer_average_type": "arithmetic",
-            "scorer_weight": {},
-            "scorer_device": {},
-            "scorer_lazy_load_list": [],
+            "paths": {"scorer_model_dir": str(tmp_path / "models")},
+            "generation": {"save_imgs": False},
+            "scoring": {
+                "scorer_method": ["manual"],
+                "scorer_default_device": "cpu",
+                "scorer_print_individual": False,
+                "scorer_average_type": "arithmetic",
+                "scorer_weight": {},
+                "scorer_device": {},
+                "scorer_lazy_load_list": [],
+            },
         }
     )
 

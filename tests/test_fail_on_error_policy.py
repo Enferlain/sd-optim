@@ -9,6 +9,12 @@ from sd_optim.core.optimizer_cache import fail_on_error_enabled
 from sd_optim.optimizers.optuna.objective import run_objective
 
 
+def _objective_cfg(**overrides: object):
+    data = {"optimizer": {"init_points": 0}}
+    data.update(overrides)
+    return OmegaConf.create(data)
+
+
 class _DummyTrial:
     number = 0
 
@@ -32,7 +38,7 @@ def test_fail_on_error_enabled_respects_explicit_false() -> None:
 
 def test_optuna_objective_raises_by_default_on_runtime_error() -> None:
     optimizer = SimpleNamespace()
-    optimizer.cfg = OmegaConf.create({})
+    optimizer.cfg = _objective_cfg()
     optimizer.optimizer_pbounds = {"alpha": (0.0, 1.0)}
     optimizer.child_to_parent = {}
     optimizer.last_trial_scorer_summary = {}
@@ -53,7 +59,7 @@ def test_optuna_objective_raises_by_default_on_runtime_error() -> None:
 
 def test_optuna_objective_can_continue_when_fail_on_error_disabled() -> None:
     optimizer = SimpleNamespace()
-    optimizer.cfg = OmegaConf.create({"fail_on_error": False})
+    optimizer.cfg = _objective_cfg(fail_on_error=False)
     optimizer.optimizer_pbounds = {"alpha": (0.0, 1.0)}
     optimizer.child_to_parent = {}
     optimizer.last_trial_scorer_summary = {}

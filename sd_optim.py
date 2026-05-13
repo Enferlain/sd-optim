@@ -8,7 +8,10 @@ from typing import Literal
 
 from omegaconf import DictConfig
 
-from sd_optim.config_schema import register_config_schemas
+from sd_optim.config.dataclasses.optimizer import OptimizerConfig
+from sd_optim.config.dataclasses.run import SdOptimConfig
+from sd_optim.config.schemas import register_all
+from sd_optim.config.validation import validate_config
 from sd_optim.utils.conversions import (
     load_and_register_custom_configs,
     load_and_register_custom_conversion,
@@ -34,25 +37,25 @@ logging.getLogger("httpcore.http11").setLevel(logging.WARNING)
 # Use a logger specific to this main script
 logger = logging.getLogger(__name__)  # Hydra often configures this further
 
-register_config_schemas()
+register_all()
 
 
-def _determine_extension_paths(cfg: DictConfig) -> tuple[Path, Path]:
+def _determine_extension_paths(cfg: SdOptimConfig | DictConfig) -> tuple[Path, Path]:
     """Resolve model-config and conversion search paths."""
     project_root = Path(__file__).resolve().parent
     default_dir = project_root / "sd_optim" / "extensions" / "bundled" / "model_configs"
 
-    configs_dir_str = cfg.get("configs_dir")
-    conversion_dir_str = cfg.get("conversion_dir")
+    configs_dir_str = cfg.paths.configs_dir
+    conversion_dir_str = cfg.paths.conversion_dir
 
     custom_configs_path = Path(configs_dir_str).resolve() if configs_dir_str else default_dir
     custom_conversion_path = Path(conversion_dir_str).resolve() if conversion_dir_str else default_dir
     return custom_configs_path, custom_conversion_path
 
 
-def _select_optimizer_class(cfg: DictConfig) -> tuple[type, str, Literal["bayes", "optuna"]]:
+def _select_optimizer_class(optimizer_config: OptimizerConfig | DictConfig) -> tuple[type, str, Literal["bayes", "optuna"]]:
     """Select the configured optimizer class."""
-    if cfg.optimizer.get("bayes", False):
+    if optimizer_config.bayes:
         try:
             from sd_optim.optimizers.bayes.optimizer import BayesOptimizer
         except ModuleNotFoundError as error:
@@ -65,12 +68,12 @@ def _select_optimizer_class(cfg: DictConfig) -> tuple[type, str, Literal["bayes"
             raise
         return BayesOptimizer, "BayesOpt", "bayes"
 
-    if cfg.optimizer.get("optuna", False):
+    if optimizer_config.optuna:
         from sd_optim.optimizers.optuna.optimizer import OptunaOptimizer
 
         return OptunaOptimizer, "Optuna", "optuna"
 
-    possible_opts = [key for key, value in cfg.optimizer.items() if isinstance(value, bool)]
+    possible_opts = ["bayes", "optuna"]
     logger.error("No optimizer selected! Please set one of %s to True in config.yaml under 'optimizer'.", possible_opts)
     raise SystemExit(1)
 
@@ -93,15 +96,16 @@ def main(cfg: DictConfig) -> None:
     logger.info("==================================================")
     logger.info("             Starting sd-optim v1.x             ")
     logger.info("==================================================")
+    validate_config(cfg)
     try:
         # run_dir = Path(os.getcwd()) # Hydra sets CWD to the output directory
         # logger.info(f"Hydra Run Directory: {run_dir}")
         # Log the entire config using OmegaConf for better readability (optional, consider DEBUG level)
         # logger.debug(f"Full configuration:\n{OmegaConf.to_yaml(cfg)}")
-        logger.info("Selected WebUI: %s", cfg.get("webui", "N/A"))
-        logger.info("Optimization Mode: %s", cfg.get("optimization_mode", "N/A"))
-        if cfg.get("optimization_mode") == "merge":
-            logger.info("Merge Method: %s", cfg.get("merge_method", "N/A"))
+        logger.info("Selected WebUI: %s", cfg.webui)
+        logger.info("Optimization Mode: %s", cfg.optimization_mode)
+        if cfg.optimization_mode == "merge":
+            logger.info("Merge Method: %s", cfg.merge.merge_method)
     except Exception as log_cfg_e:
         logger.warning("Could not log initial config details: %s", log_cfg_e)
 
@@ -112,12 +116,12 @@ def main(cfg: DictConfig) -> None:
         logger.info(
             "Using custom configs directory: %s %s",
             custom_configs_path,
-            "(Default)" if not cfg.get("configs_dir") else "(User Specified)",
+            "(Default)" if not cfg.paths.configs_dir else "(User Specified)",
         )
         logger.info(
             "Using custom conversion directory: %s %s",
             custom_conversion_path,
-            "(Default)" if not cfg.get("conversion_dir") else "(User Specified)",
+            "(Default)" if not cfg.paths.conversion_dir else "(User Specified)",
         )
 
     except Exception as path_e:
@@ -154,7 +158,7 @@ def main(cfg: DictConfig) -> None:
 
     # --- Select Optimizer Class ---
     logger.info("--- Selecting Optimizer ---")
-    optimizer_class, optimizer_name, optimizer_kind = _select_optimizer_class(cfg)
+    optimizer_class, optimizer_name, optimizer_kind = _select_optimizer_class(cfg.optimizer)
     logger.info(f"Using Optimizer: {optimizer_name}")
 
     # --- Initialize and Run Optimizer ---
@@ -171,8 +175,8 @@ def main(cfg: DictConfig) -> None:
         logger.info("Optimizer configuration validated.")
 
         # --- Launch Dashboard BEFORE Optimization ---
-        if optimizer_kind == "optuna" and cfg.optimizer.optuna_config.get("launch_dashboard", False):
-            dashboard_port = cfg.optimizer.optuna_config.get("dashboard_port", 8080)
+        if optimizer_kind == "optuna" and cfg.optimizer.optuna_config.launch_dashboard:
+            dashboard_port = cfg.optimizer.optuna_config.dashboard_port
             logger.info(f"--- Attempting to launch Optuna Dashboard in background (Port: {dashboard_port}) ---")
             dashboard_process = optim_instance.start_dashboard_background(port=dashboard_port)
             if dashboard_process is None:
@@ -180,8 +184,8 @@ def main(cfg: DictConfig) -> None:
             else:
                 logger.info("Background dashboard process launch initiated.")
 
-        init_points = cfg.optimizer.get("init_points", 0)
-        n_iters = cfg.optimizer.get("n_iters", 0)
+        init_points = cfg.optimizer.init_points
+        n_iters = cfg.optimizer.n_iters
         logger.info(f"--- Starting Optimization Loop ({init_points} init + {n_iters} iters = {init_points + n_iters} total) ---")
 
         # Run the main optimization loop

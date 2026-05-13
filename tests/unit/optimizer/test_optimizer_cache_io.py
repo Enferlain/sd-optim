@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 from PIL import Image
@@ -34,8 +35,8 @@ def test_load_history_cache_prefers_newer_manifest_entries(tmp_path: Path) -> No
 
     newer_manifest = newer_run / "run_manifest.json"
     older_manifest = older_run / "run_manifest.json"
-    newer_manifest.touch()
-    older_manifest.touch()
+    os.utime(older_manifest, (1_700_000_000, 1_700_000_000))
+    os.utime(newer_manifest, (1_700_000_100, 1_700_000_100))
 
     history_cache = optimizer_cache_io.load_history_cache(logs_dir).entries
 

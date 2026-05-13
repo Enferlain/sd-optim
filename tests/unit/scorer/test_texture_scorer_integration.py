@@ -21,15 +21,17 @@ def test_texture_scorer():
     # Mock configuration
     cfg = OmegaConf.create(
         {
-            "scorer_method": ["textureclean"],
-            "scorer_model_dir": "./models",  # Dummy dir
-            "scorer_default_device": "cpu",
-            "save_imgs": False,
-            "scorer_print_individual": True,
-            "scorer_average_type": "arithmetic",
-            "scorer_weight": {"textureclean": 1.0},
-            "scorer_device": {"textureclean": "cpu"},
-            "scorer_lazy_load_list": [],
+            "paths": {"scorer_model_dir": "./models"},  # Dummy dir
+            "generation": {"save_imgs": False},
+            "scoring": {
+                "scorer_method": ["textureclean"],
+                "scorer_default_device": "cpu",
+                "scorer_print_individual": True,
+                "scorer_average_type": "arithmetic",
+                "scorer_weight": {"textureclean": 1.0},
+                "scorer_device": {"textureclean": "cpu"},
+                "scorer_lazy_load_list": [],
+            },
         }
     )
 

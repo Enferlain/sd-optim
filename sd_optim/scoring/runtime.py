@@ -50,8 +50,8 @@ def ensure_rembg_session(scorer: Any, *, session_factory: Any) -> None:
 
 def setup_img_saving(scorer: Any) -> None:
     """Set up the directory for saving images if enabled."""
-    save_enabled = scorer.cfg.get("save_imgs", False)
-    if "manual" in scorer.cfg.get("scorer_method", []):
+    save_enabled = scorer.cfg.generation.save_imgs
+    if "manual" in scorer.cfg.scoring.scorer_method:
         save_enabled = True
 
     if save_enabled:
@@ -63,8 +63,8 @@ def setup_img_saving(scorer: Any) -> None:
 
         scorer.imgs_dir.mkdir(parents=True, exist_ok=True)
         logger.info("Image saving enabled. Saving to: %s", scorer.imgs_dir)
-        with open_dict(scorer.cfg):
-            scorer.cfg.save_imgs = True
+        with open_dict(scorer.cfg.generation):
+            scorer.cfg.generation.save_imgs = True
         return
 
     scorer.imgs_dir = None
@@ -121,14 +121,15 @@ async def score_image(scorer: Any, image: Image.Image, prompt: str, name: str | 
     scorer.last_scorer_results = {}
     logger.info("Entering score method.")
 
-    for evaluator in scorer.cfg.scorer_method:
+    scoring_cfg = scorer.cfg.scoring
+    for evaluator in scoring_cfg.scorer_method:
         if evaluator == "manual":
             show_manual_preview(scorer, image, name)
             individual_eval_score = await asyncio.to_thread(get_user_score)
             if individual_eval_score == -1.0:
                 return -1.0
 
-            weight = scorer.cfg.scorer_weight.get(evaluator, 1.0)
+            weight = scoring_cfg.scorer_weight.get(evaluator, 1.0)
             values.append(individual_eval_score)
             scorer_weights.append(weight)
             scorer.last_scorer_results[evaluator] = individual_eval_score
@@ -149,12 +150,12 @@ async def score_image(scorer: Any, image: Image.Image, prompt: str, name: str | 
             logger.error("Error scoring with %s: %s", evaluator, error, exc_info=True)
             individual_eval_score = 0.0
 
-        weight = scorer.cfg.scorer_weight.get(evaluator_lower, 1.0)
+        weight = scoring_cfg.scorer_weight.get(evaluator_lower, 1.0)
         values.append(individual_eval_score)
         scorer_weights.append(weight)
         scorer.last_scorer_results[evaluator_lower] = individual_eval_score
 
-    return average_calc(values, scorer_weights, scorer.cfg.scorer_average_type)
+    return average_calc(values, scorer_weights, scoring_cfg.scorer_average_type)
 
 
 def average_calc(values: list[float], scorer_weights: list[float], average_type: str) -> float:
@@ -194,12 +195,12 @@ def average_calc(values: list[float], scorer_weights: list[float], average_type:
 
 
 def _log_individual_score(scorer: Any, evaluator: str, score: float) -> None:
-    if scorer.cfg.scorer_print_individual:
+    if scorer.cfg.scoring.scorer_print_individual:
         logger.info("%s:%.4f", evaluator, score)
 
 
 def _should_run_scorer(scorer: Any, evaluator_lower: str, name: str | None) -> bool:
-    scorer_filters = scorer.cfg.get("scorer_filters", {})
+    scorer_filters = scorer.cfg.scoring.scorer_filters
     if not (name and scorer_filters and evaluator_lower in scorer_filters):
         return True
 
@@ -211,7 +212,7 @@ def _should_run_scorer(scorer: Any, evaluator_lower: str, name: str | None) -> b
 def _get_scorer_instance(scorer: Any, evaluator: str, evaluator_lower: str) -> Any | None:
     from .loading import load_model
 
-    lazy_load_list = [str(name).lower() for name in scorer.cfg.get("scorer_lazy_load_list", [])]
+    lazy_load_list = [str(name).lower() for name in scorer.cfg.scoring.scorer_lazy_load_list]
     scorer_instance = scorer.model.get(evaluator_lower)
 
     if scorer_instance is None and evaluator_lower in lazy_load_list:
@@ -257,13 +258,14 @@ def _score_with_instance(
 
 def _score_pca_scorer(scorer: Any, scorer_instance: Any, image: Image.Image) -> float:
     score_args = {"image": image}
-    score_args["component"] = scorer.cfg.get("pcascorer_component", 1)
-    score_args["mode"] = scorer.cfg.get("pcascorer_mode", "projection")
-    score_args["input_type"] = scorer.cfg.get("pcascorer_input_type", "color")
-    score_args["linearize"] = scorer.cfg.get("pcascorer_linearize", False)
-    score_args["invert"] = scorer.cfg.get("pcascorer_invert", False)
-    score_args["enhancement"] = scorer.cfg.get("pcascorer_enhancement", "equalize")
-    score_args["gamma"] = scorer.cfg.get("pcascorer_gamma", 1.0)
+    scoring_cfg = scorer.cfg.scoring
+    score_args["component"] = scoring_cfg.pcascorer_component
+    score_args["mode"] = scoring_cfg.pcascorer_mode
+    score_args["input_type"] = scoring_cfg.pcascorer_input_type
+    score_args["linearize"] = scoring_cfg.pcascorer_linearize
+    score_args["invert"] = scoring_cfg.pcascorer_invert
+    score_args["enhancement"] = scoring_cfg.pcascorer_enhancement
+    score_args["gamma"] = scoring_cfg.pcascorer_gamma
     return scorer_instance.score(**score_args)
 
 
@@ -276,14 +278,14 @@ def _score_hpsv3_scorer(
 ) -> float:
     mu_score, sigma_score = scorer_instance.score(image=image, prompt=prompt)
 
-    if scorer.cfg.scorer_print_individual:
+    if scorer.cfg.scoring.scorer_print_individual:
         logger.info("%s (score): %.4f", evaluator, mu_score)
         logger.info("%s (uncertainty): %.4f", evaluator, sigma_score)
 
-    k = scorer.cfg.get("hpsv3_uncertainty_penalty", 0.5)
+    k = scorer.cfg.scoring.hpsv3_uncertainty_penalty
     individual_eval_score = mu_score - (k * sigma_score)
 
-    if scorer.cfg.scorer_print_individual:
+    if scorer.cfg.scoring.scorer_print_individual:
         logger.info("%s (processed final): %.4f", evaluator, individual_eval_score)
 
     return individual_eval_score

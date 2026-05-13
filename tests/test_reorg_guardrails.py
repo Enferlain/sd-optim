@@ -135,7 +135,7 @@ def test_get_bounds_logs_compact_summary_at_info(caplog: pytest.LogCaptureFixtur
     handler.cfg = OmegaConf.create(
         {
             "optimization_mode": "merge",
-            "merge_method": "weighted_sum",
+            "merge": {"merge_method": "weighted_sum"},
             "optimization_guide": {"custom_block_config_id": "sdxl-optim_blocks_sub"},
         }
     )
@@ -238,7 +238,7 @@ def test_get_bounds_summarizes_unused_custom_bounds_without_per_key_debug_lines(
     handler.cfg = OmegaConf.create(
         {
             "optimization_mode": "merge",
-            "merge_method": "weighted_sum",
+            "merge": {"merge_method": "weighted_sum"},
             "optimization_guide": {},
         }
     )
@@ -273,7 +273,7 @@ def test_get_bounds_logs_full_parameter_list_at_debug(caplog: pytest.LogCaptureF
     handler.cfg = OmegaConf.create(
         {
             "optimization_mode": "merge",
-            "merge_method": "weighted_sum",
+            "merge": {"merge_method": "weighted_sum"},
             "optimization_guide": {},
         }
     )

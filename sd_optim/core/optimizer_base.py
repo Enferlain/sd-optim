@@ -72,15 +72,15 @@ class Optimizer(ABC):
 
         # Now that validation is passed, we can safely get the models_dir.
         # This logic is now explicit and clear right where it's needed.
-        models_dir = Path(self.cfg.models_dir).resolve()
+        models_dir = Path(self.cfg.paths.models_dir).resolve()
         logger.info(f"Using primary models directory from config: {models_dir}")
 
         # The rest of the __post_init__ is exactly the same as before.
         # It just uses the 'models_dir' variable we defined right here.
-        if not self.cfg.model_paths:
+        if not self.cfg.merge.model_paths:
             raise ValueError("'model_paths' cannot be empty.")
 
-        representative_model_name = self.cfg.model_paths[0]
+        representative_model_name = self.cfg.merge.model_paths[0]
         representative_model_path = models_dir / representative_model_name
         if not representative_model_path.exists():
             # Fallback to check if an absolute path was given in the list
@@ -132,7 +132,7 @@ class Optimizer(ABC):
 
         # --- STAGE 3: COMPLETE THE REST OF THE SETUP ---
         self.setup_parameter_space()
-        self.generator = Generator(self.cfg.url, self.cfg.batch_size, self.cfg.webui)
+        self.generator = Generator(self.cfg.url, self.cfg.generation.batch_size, self.cfg.webui)
         self.scorer = Scorer(self.cfg)
         self.scorer_setup_fp = compute_scorer_setup_fingerprint(self.cfg)
         self.generation_setup_fp = compute_generation_setup_fingerprint(self.cfg)
@@ -162,7 +162,7 @@ class Optimizer(ABC):
             logger.info("Universal Reuse: Scanning logs for cached results...")
             cache_load_result = load_history_cache(
                 logs_dir,
-                scan_legacy_pngs=bool(self.cfg.get("reuse_scan_legacy_pngs", False)),
+                scan_legacy_pngs=bool(self.cfg.reuse_scan_legacy_pngs),
             )
             self.history_cache = cache_load_result.entries
             elapsed = time.time() - start_time

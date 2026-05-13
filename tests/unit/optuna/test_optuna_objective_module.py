@@ -9,6 +9,12 @@ from omegaconf import OmegaConf
 from sd_optim.optimizers.optuna.objective import evaluate_condition, run_objective, suggest_parameters
 
 
+def _objective_cfg(**overrides: object):
+    data = {"optimizer": {"init_points": 0}}
+    data.update(overrides)
+    return OmegaConf.create(data)
+
+
 class _DummyTrial:
     number = 3
 
@@ -97,7 +103,7 @@ def test_suggest_parameters_without_bounds_prunes_trial() -> None:
 
 def test_run_objective_falls_back_to_last_scorer_results() -> None:
     optimizer = SimpleNamespace(
-        cfg=OmegaConf.create({}),
+        cfg=_objective_cfg(),
         optimizer_pbounds={"alpha": 0.5},
         child_to_parent={},
         scorer=SimpleNamespace(last_scorer_results={"manual": 0.7}),
@@ -155,7 +161,7 @@ def test_run_objective_logs_iteration_start_before_parameter_suggestion(monkeypa
 
 def test_run_objective_prunes_when_early_stopping_threshold_is_hit() -> None:
     optimizer = SimpleNamespace(
-        cfg=OmegaConf.create({}),
+        cfg=_objective_cfg(),
         optimizer_pbounds={"alpha": 0.5},
         child_to_parent={},
         scorer=SimpleNamespace(last_scorer_results={}),

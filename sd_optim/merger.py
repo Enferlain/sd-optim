@@ -80,15 +80,15 @@ class Merger:
         if not model_path:  # Safety check
             logger.error("Output file path not set in Merger before merge call.")
             # Define a default path or raise error
-            model_path = self.models_dir / f"merge_output_default_{cfg.merge_method}.safetensors"
+            model_path = self.models_dir / f"merge_output_default_{cfg.merge.merge_method}.safetensors"
             logger.warning(f"Using default output path: {model_path}")
             self.output_file = model_path  # Attempt to set it
 
         # --- Recipe Building ---
-        logger.debug(f"Building merge recipe for method: {cfg.merge_method}")
+        logger.debug(f"Building merge recipe for method: {cfg.merge.merge_method}")
 
         # 2. Resolve merge method
-        merge_func = resolve_merge_method(cfg.merge_method)
+        merge_func = resolve_merge_method(cfg.merge.merge_method)
 
         # 3. Select base model (for delta subtraction, conversion context)
         base_model_node = select_base_model(self)

@@ -8,6 +8,7 @@ import torch
 
 from omegaconf import DictConfig, ListConfig
 from sd_mecha.recipe_nodes import MergeRecipeNode
+from sd_optim.config.validation import validate_config
 from .methods import resolve_merge_method
 
 logger = logging.getLogger(__name__)
@@ -55,7 +56,10 @@ def validate_run_config(cfg: DictConfig) -> None:
     """Validate the runtime configuration before optimizer startup."""
     logger.info("Validating run configuration...")
 
-    models_dir_str = cfg.get("models_dir")
+    if hasattr(cfg, "optimizer"):
+        validate_config(cfg)
+
+    models_dir_str = cfg.paths.models_dir
     if not models_dir_str:
         raise ValueError("'models_dir' must be set in your config.yaml.")
     models_dir = Path(models_dir_str).resolve()
@@ -65,24 +69,24 @@ def validate_run_config(cfg: DictConfig) -> None:
         )
 
     if cfg.optimization_mode == "merge":
-        if not cfg.model_paths or len(cfg.model_paths) < 1:
+        if not cfg.merge.model_paths or len(cfg.merge.model_paths) < 1:
             raise ValueError(
                 "For 'merge' mode, 'model_paths' must contain at least one model path."
             )
-        if not cfg.merge_method:
+        if not cfg.merge.merge_method:
             raise ValueError(
                 "Configuration missing required field: 'merge_method' for 'merge' mode."
             )
     elif cfg.optimization_mode == "recipe":
-        recipe_cfg = cfg.get("recipe_optimization")
+        recipe_cfg = cfg.recipe_optimization
         if not recipe_cfg:
             raise ValueError(
                 "`optimization_mode` is 'recipe', but 'recipe_optimization' section is missing."
             )
 
-        recipe_path_str = recipe_cfg.get("recipe_path")
-        target_nodes_raw = recipe_cfg.get("target_nodes")
-        target_params_list = recipe_cfg.get("target_params")
+        recipe_path_str = recipe_cfg.recipe_path
+        target_nodes_raw = recipe_cfg.target_nodes
+        target_params_list = recipe_cfg.target_params
 
         if not recipe_path_str:
             raise ValueError("Recipe optimization requires 'recipe_path'.")
@@ -143,25 +147,25 @@ def validate_run_config(cfg: DictConfig) -> None:
             )
             raise ValueError("Unexpected error during recipe validation.") from error
 
-        if cfg.get("model_paths"):
+        if cfg.merge.model_paths:
             logger.info(
                 "NOTE: In 'recipe' mode, `model_paths` is only used to locate the `models_dir`."
             )
     elif cfg.optimization_mode == "layer_adjust":
-        if not cfg.model_paths or len(cfg.model_paths) < 1:
+        if not cfg.merge.model_paths or len(cfg.merge.model_paths) < 1:
             raise ValueError(
                 "`model_paths` must contain at least one model for 'layer_adjust' mode."
             )
     else:
         raise ValueError(f"Invalid optimization_mode: '{cfg.optimization_mode}'")
 
-    if not hasattr(cfg, "merge_dtype") or cfg.merge_dtype not in PRECISION_MAPPING:
+    if not hasattr(cfg, "merge") or cfg.merge.merge_dtype not in PRECISION_MAPPING:
         raise ValueError(
-            f"Invalid 'merge_dtype': '{cfg.get('merge_dtype')}'. Must be one of {list(PRECISION_MAPPING.keys())}"
+            f"Invalid 'merge_dtype': '{cfg.merge.merge_dtype}'. Must be one of {list(PRECISION_MAPPING.keys())}"
         )
-    if not hasattr(cfg, "save_dtype") or cfg.save_dtype not in PRECISION_MAPPING:
+    if not hasattr(cfg, "merge") or cfg.merge.save_dtype not in PRECISION_MAPPING:
         raise ValueError(
-            f"Invalid 'save_dtype': '{cfg.get('save_dtype')}'. Must be one of {list(PRECISION_MAPPING.keys())}"
+            f"Invalid 'save_dtype': '{cfg.merge.save_dtype}'. Must be one of {list(PRECISION_MAPPING.keys())}"
         )
 
     logger.info("Configuration successfully validated.")

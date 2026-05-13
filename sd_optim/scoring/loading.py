@@ -103,7 +103,7 @@ def load_model(scorer: Any, evaluator_lower: str) -> bool:
         ensure_rembg_session(scorer, session_factory=scorer.rembg_session_factory)
 
     logger.info("Lazy loading scorer model: '%s'", evaluator_lower)
-    scorer_model_dir_path = Path(scorer.cfg.scorer_model_dir)
+    scorer_model_dir_path = Path(scorer.cfg.paths.scorer_model_dir)
     clip_l_path = scorer_model_dir_path / "CLIP-ViT-L-14.pt"
     clip_b_path = scorer_model_dir_path / "CLIP-ViT-B-32.safetensors"
     scorer_factory = build_scorer_factory(clip_l_path, clip_b_path)
@@ -145,13 +145,14 @@ def load_model(scorer: Any, evaluator_lower: str) -> bool:
 def load_all_models(scorer: Any) -> None:
     """Load all non-lazy configured scorer model instances."""
     logger.info("Loading scorer model instances...")
-    lazy_load_list = [s.lower() for s in scorer.cfg.get("scorer_lazy_load_list", [])]
-    scorer_model_dir_path = Path(scorer.cfg.scorer_model_dir)
+    scoring_cfg = scorer.cfg.scoring
+    lazy_load_list = [s.lower() for s in scoring_cfg.scorer_lazy_load_list]
+    scorer_model_dir_path = Path(scorer.cfg.paths.scorer_model_dir)
     clip_l_path = scorer_model_dir_path / "CLIP-ViT-L-14.pt"
     clip_b_path = scorer_model_dir_path / "CLIP-ViT-B-32.safetensors"
     scorer_factory = build_scorer_factory(clip_l_path, clip_b_path)
 
-    for evaluator in scorer.cfg.scorer_method:
+    for evaluator in scoring_cfg.scorer_method:
         evaluator_lower = evaluator.lower()
         if evaluator_lower in ["manual", "background_blackness"]:
             continue
@@ -189,10 +190,10 @@ def load_all_models(scorer: Any) -> None:
             continue
 
         if evaluator_lower in {"hybridnoise", "hybridnoise_fullimg"}:
-            constructor_args["kernel_size"] = scorer.cfg.get("hybridnoise_kernel_size", 3)
-            constructor_args["noise_threshold"] = scorer.cfg.get("hybridnoise_noise_threshold", 20.0)
+            constructor_args["kernel_size"] = scoring_cfg.hybridnoise_kernel_size
+            constructor_args["noise_threshold"] = scoring_cfg.hybridnoise_noise_threshold
             if evaluator_lower == "hybridnoise":
-                constructor_args["color_tolerance"] = scorer.cfg.get("hybridnoise_color_tolerance", 30)
+                constructor_args["color_tolerance"] = scoring_cfg.hybridnoise_color_tolerance
 
         try:
             logger.debug("Instantiating %s with args: %s", scorer_class.__name__, constructor_args)
@@ -214,7 +215,7 @@ def _resolve_constructor_args(
     config: dict[str, Any],
 ) -> tuple[dict[str, Any], bool]:
     constructor_args: dict[str, Any] = {}
-    scorer_model_dir_path = Path(scorer.cfg.scorer_model_dir)
+    scorer_model_dir_path = Path(scorer.cfg.paths.scorer_model_dir)
     signature = inspect.signature(scorer_class.__init__)
     extra_args_config = config.get("extra_args", {})
 
@@ -245,7 +246,7 @@ def _resolve_constructor_args(
     constructor_args.update(_resolve_extra_args(scorer, extra_args_config))
 
     if "device" in signature.parameters and "device" not in constructor_args:
-        constructor_args["device"] = scorer.cfg.scorer_device.get(evaluator_lower, "cpu")
+        constructor_args["device"] = scorer.cfg.scoring.scorer_device.get(evaluator_lower, "cpu")
 
     return constructor_args, True
 

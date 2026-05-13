@@ -127,7 +127,7 @@ def test_recipe_rewrite_shows_bounds_assembled_into_recipe_payloads(
     handler.cfg = OmegaConf.create(
         {
             "optimization_mode": "recipe",
-            "merge_method": "recipe_bounds_demo_for_tests",
+            "merge": {"merge_method": "recipe_bounds_demo_for_tests"},
             "recipe_optimization": {
                 "recipe_path": str(recipe_path),
                 "target_params": ["alpha", "beta"],
@@ -232,7 +232,7 @@ def test_graph_backed_payload_maps_match_legacy_recipe_payload_assembly() -> Non
     handler.cfg = OmegaConf.create(
         {
             "optimization_mode": "recipe",
-            "merge_method": "recipe_bounds_demo_for_tests",
+            "merge": {"merge_method": "recipe_bounds_demo_for_tests"},
             "recipe_optimization": {
                 "target_params": ["alpha", "beta"],
             },
@@ -320,7 +320,7 @@ def test_prepare_param_recipe_args_uses_supplied_param_info(
     handler.cfg = OmegaConf.create(
         {
             "optimization_mode": "recipe",
-            "merge_method": "recipe_bounds_demo_for_tests",
+            "merge": {"merge_method": "recipe_bounds_demo_for_tests"},
             "recipe_optimization": {
                 "target_params": ["alpha"],
             },

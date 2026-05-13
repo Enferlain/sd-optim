@@ -64,10 +64,10 @@ def test_start_dashboard_for_optimizer_uses_study_storage_path(monkeypatch, tmp_
     module = _load_dashboard_module()
     optimizer = SimpleNamespace(
         cfg=OmegaConf.create(
-            {
-                "optimization_mode": "merge",
-                "merge_method": "weighted_sum",
-                "scorer_method": ["manual"],
+                {
+                    "optimization_mode": "merge",
+                    "merge": {"merge_method": "weighted_sum"},
+                    "scoring": {"scorer_method": ["manual"]},
                 "optimizer": {"optuna_config": {"storage_dir": str(tmp_path)}},
             }
         ),

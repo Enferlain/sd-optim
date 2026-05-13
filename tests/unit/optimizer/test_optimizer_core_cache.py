@@ -23,14 +23,16 @@ def test_core_generation_fingerprint_is_stable_for_equivalent_config() -> None:
     cfg = OmegaConf.create(
         {
             "optimization_mode": "merge",
-            "merge_method": "weighted_sum",
-            "models_dir": "/models",
-            "model_paths": ["model_a.safetensors", "model_b.safetensors"],
-            "base_model_index": 0,
-            "fallback_model_index": 1,
-            "add_extra_keys": False,
-            "merge_dtype": "fp32",
-            "save_dtype": "bf16",
+            "paths": {"models_dir": "/models"},
+            "merge": {
+                "merge_method": "weighted_sum",
+                "model_paths": ["model_a.safetensors", "model_b.safetensors"],
+                "base_model_index": 0,
+                "fallback_model_index": 1,
+                "add_extra_keys": False,
+                "merge_dtype": "fp32",
+                "save_dtype": "bf16",
+            },
             "webui": "comfy",
             "recipe_optimization": {
                 "recipe_path": "/recipes/example.mecha",
@@ -82,17 +84,19 @@ def test_core_reuse_cached_results_enabled_defaults_true() -> None:
 def test_core_scorer_setup_fingerprint_changes_with_effective_scorer_config() -> None:
     base_cfg = OmegaConf.create(
         {
-            "scorer_method": ["Aesthetic", "MANUAL"],
-            "scorer_weight": {"aesthetic": 1.0, "manual": 0.5},
-            "scorer_filters": {"manual": {"only": ["portrait"]}},
-            "scorer_average_type": "weighted_arithmetic",
-            "scorer_model_dir": "/models/scorers",
-            "manual_prompt": "rate this",
-            "aesthetic_model": "shadow-v1",
+            "scoring": {
+                "scorer_method": ["Aesthetic", "MANUAL"],
+                "scorer_weight": {"aesthetic": 1.0, "manual": 0.5},
+                "scorer_filters": {"manual": {"only": ["portrait"]}},
+                "scorer_average_type": "weighted_arithmetic",
+                "manual_prompt": "rate this",
+                "aesthetic_model": "shadow-v1",
+            },
+            "paths": {"scorer_model_dir": "/models/scorers"},
         }
     )
     variant_cfg = OmegaConf.create(OmegaConf.to_container(base_cfg, resolve=True))
-    variant_cfg.scorer_weight.manual = 0.75
+    variant_cfg.scoring.scorer_weight.manual = 0.75
 
     assert core_cache.compute_scorer_setup_fingerprint(base_cfg) != core_cache.compute_scorer_setup_fingerprint(
         variant_cfg
@@ -104,8 +108,10 @@ def test_core_generation_fingerprint_handles_non_dict_configs() -> None:
     weird_recipe_cfg = OmegaConf.create(
         {
             "optimization_mode": "recipe",
-            "merge_method": "weighted_sum",
-            "model_paths": ["relative_model.safetensors"],
+            "merge": {
+                "merge_method": "weighted_sum",
+                "model_paths": ["relative_model.safetensors"],
+            },
             "recipe_optimization": ["unexpected", "shape"],
         }
     )

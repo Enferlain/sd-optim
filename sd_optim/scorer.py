@@ -44,15 +44,15 @@ class Scorer:
         self._scorers_needing_rembg = set(SCORERS_NEEDING_REMBG)
         self.rembg_session_factory = new_session
         self._rembg_required = any(
-            str(s).lower() in self._scorers_needing_rembg for s in self.cfg.get("scorer_method", [])
+            str(s).lower() in self._scorers_needing_rembg for s in self.cfg.scoring.scorer_method
         )
 
         setup_img_saving(self)
 
-        with open_dict(self.cfg):
-            self.cfg.scorer_weight = self.cfg.scorer_weight or {}
+        with open_dict(self.cfg.scoring):
+            self.cfg.scoring.scorer_weight = self.cfg.scoring.scorer_weight or {}
             # Ensure scorer_device exists before setup_evaluator_paths uses it
-            self.cfg.scorer_device = self.cfg.scorer_device or {}
+            self.cfg.scoring.scorer_device = self.cfg.scoring.scorer_device or {}
 
         setup_evaluator_paths(self)  # Populates self.model_path and sets default devices/weights
         get_models(self)  # Downloads files if needed
@@ -61,7 +61,7 @@ class Scorer:
 
     def unload_lazy_models(self):
         """Unloads models that were loaded on-demand."""
-        lazy_load_list = [s.lower() for s in self.cfg.get("scorer_lazy_load_list", [])]
+        lazy_load_list = [s.lower() for s in self.cfg.scoring.scorer_lazy_load_list]
         models_to_unload = [model_name for model_name in self.model if model_name in lazy_load_list]
 
         for model_name in models_to_unload:

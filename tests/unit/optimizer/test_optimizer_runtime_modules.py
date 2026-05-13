@@ -75,9 +75,8 @@ def test_run_trial_iteration_returns_cached_score_on_full_hit() -> None:
         last_trial_scorer_summary={},
         cfg=OmegaConf.create(
             {
-                "batch_size": 1,
-                "img_average_type": "arithmetic",
-                "scorer_method": ["manual"],
+                "generation": {"batch_size": 1, "img_average_type": "arithmetic"},
+                "scoring": {"scorer_method": ["manual"]},
                 "optimizer": {"init_points": 1},
             }
         ),
@@ -109,8 +108,8 @@ def test_runtime_cache_helper_returns_full_hit_score() -> None:
     optimizer = SimpleNamespace(
         cfg=OmegaConf.create(
             {
-                "img_average_type": "arithmetic",
-                "scorer_method": ["manual"],
+                "generation": {"img_average_type": "arithmetic"},
+                "scoring": {"scorer_method": ["manual"]},
             }
         ),
         last_trial_scorer_summary={},
@@ -193,15 +192,17 @@ def test_run_trial_iteration_ignores_cached_score_when_reuse_disabled(tmp_path: 
         last_trial_scorer_summary={},
         cfg=OmegaConf.create(
             {
-                "batch_size": 1,
-                "img_average_type": "arithmetic",
-                "scorer_method": ["manual"],
+                "generation": {
+                    "batch_size": 1,
+                    "img_average_type": "arithmetic",
+                    "generator_concurrency_limit": 1,
+                    "generator_keepalive_interval": 60,
+                    "generator_total_timeout": 10,
+                    "save_imgs": False,
+                },
+                "scoring": {"scorer_method": ["manual"]},
                 "optimization_mode": "merge",
-                "generator_concurrency_limit": 1,
-                "generator_keepalive_interval": 60,
-                "generator_total_timeout": 10,
                 "reuse_cached_results": False,
-                "save_imgs": False,
                 "optimizer": {"init_points": 1},
             }
         ),
@@ -288,14 +289,16 @@ def test_run_trial_iteration_executes_generation_path_with_stubs(tmp_path: Path)
         last_trial_scorer_summary={},
         cfg=OmegaConf.create(
             {
-                "batch_size": 1,
-                "img_average_type": "arithmetic",
-                "scorer_method": ["manual"],
+                "generation": {
+                    "batch_size": 1,
+                    "img_average_type": "arithmetic",
+                    "generator_concurrency_limit": 1,
+                    "generator_keepalive_interval": 60,
+                    "generator_total_timeout": 10,
+                    "save_imgs": False,
+                },
+                "scoring": {"scorer_method": ["manual"]},
                 "optimization_mode": "merge",
-                "generator_concurrency_limit": 1,
-                "generator_keepalive_interval": 60,
-                "generator_total_timeout": 10,
-                "save_imgs": False,
                 "optimizer": {"init_points": 1},
             }
         ),

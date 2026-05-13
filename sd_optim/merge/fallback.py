@@ -74,7 +74,7 @@ def resolve_fallback_node(
     """Resolve the configured fallback node for the current merge context."""
     models_for_lookup = get_models_for_fallback_lookup(merger, final_recipe_node)
     fallback_node: ModelRecipeNode | None = None
-    fallback_index = merger.cfg.get("fallback_model_index", -1)
+    fallback_index = merger.cfg.merge.fallback_model_index
 
     if fallback_index is None or fallback_index == -1:
         if log_resolution:

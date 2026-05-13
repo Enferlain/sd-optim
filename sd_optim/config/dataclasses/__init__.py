@@ -1,35 +1,21 @@
 from __future__ import annotations
 
-from sd_optim.config.dataclasses.optimizer import (
-    BayesAcquisitionConfig,
-    BayesBoundsTransformerConfig,
-    BayesConfig,
-    OptimizerConfig,
-    OptunaConfig,
-    OptunaSamplerConfig,
-)
 from sd_optim.config.dataclasses.generation import GenerationConfig
 from sd_optim.config.dataclasses.merge import MergeConfig
-from sd_optim.config.dataclasses.recipe import RecipeOptimizationConfig
+from sd_optim.config.dataclasses.optimizer import OptimizerConfig
 from sd_optim.config.dataclasses.paths import PathConfig
+from sd_optim.config.dataclasses.recipe import RecipeOptimizationConfig
 from sd_optim.config.dataclasses.run import SdOptimConfig
 from sd_optim.config.dataclasses.scoring import ScoringConfig
 from sd_optim.config.dataclasses.visualization import VisualizationConfig
-from sd_optim.config.schemas import register_sd_optim as register_config_schemas
 
 __all__ = [
-    "BayesAcquisitionConfig",
-    "BayesBoundsTransformerConfig",
-    "BayesConfig",
     "GenerationConfig",
     "MergeConfig",
     "OptimizerConfig",
-    "OptunaConfig",
-    "OptunaSamplerConfig",
     "PathConfig",
     "RecipeOptimizationConfig",
     "ScoringConfig",
     "SdOptimConfig",
     "VisualizationConfig",
-    "register_config_schemas",
 ]

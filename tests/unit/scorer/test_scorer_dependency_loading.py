@@ -42,7 +42,12 @@ def test_rembg_required_scorer_raises_clear_error_without_rembg(monkeypatch):
     monkeypatch.setattr(scorer_mod, "setup_evaluator_paths", lambda self: None)
     monkeypatch.setattr(scorer_mod, "get_models", lambda self: None)
     monkeypatch.setattr(scorer_mod, "load_all_models", lambda self: None)
-    cfg = OmegaConf.create({"scorer_method": ["textureclean"], "scorer_weight": {}, "scorer_device": {}})
+    cfg = OmegaConf.create(
+        {
+            "generation": {"save_imgs": False},
+            "scoring": {"scorer_method": ["textureclean"], "scorer_weight": {}, "scorer_device": {}},
+        }
+    )
     with pytest.raises(ImportError, match="requires 'rembg'"):
         scorer_mod.Scorer(cfg)
 

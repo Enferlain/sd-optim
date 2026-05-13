@@ -24,7 +24,7 @@ def create_model_nodes(merger: Merger) -> list[ModelRecipeNode]:
     edge cases on Windows.
     """
     model_nodes: list[ModelRecipeNode] = []
-    model_paths_list = merger.cfg.get("model_paths", [])
+    model_paths_list = merger.cfg.merge.model_paths
 
     if not isinstance(model_paths_list, (list, ListConfig)):
         logger.warning("'model_paths' in config is not a list. No model nodes will be created.")
@@ -86,4 +86,3 @@ def create_model_nodes(merger: Merger) -> list[ModelRecipeNode]:
 
     logger.info("Finished creating nodes. Total successful: %s.", len(model_nodes))
     return model_nodes
-

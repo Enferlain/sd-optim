@@ -12,6 +12,7 @@ import aiohttp
 import torch
 from hydra.core.hydra_config import HydraConfig
 
+from sd_optim.config.dataclasses.generation import GenerationConfig
 from sd_optim.core.optimizer_cache import fail_on_error_enabled
 from sd_optim.core.optimizer_cache_io import save_run_manifest
 from sd_optim.core.optimizer_runtime_cache import maybe_reuse_cached_trial_results
@@ -25,6 +26,18 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+def _build_generation_client_settings(generation_config: GenerationConfig) -> tuple[dict[str, int | float | None], aiohttp.ClientTimeout | None]:
+    total_timeout_seconds = generation_config.generator_total_timeout
+    timeout_settings = aiohttp.ClientTimeout(total=total_timeout_seconds) if total_timeout_seconds and total_timeout_seconds > 0 else None
+    return (
+        {
+            "limit": generation_config.generator_concurrency_limit,
+            "keepalive_timeout": generation_config.generator_keepalive_interval,
+        },
+        timeout_settings,
+    )
+
+
 def log_iteration_start(
     optimizer: Optimizer,
     params: dict[str, Any] | None,
@@ -32,8 +45,7 @@ def log_iteration_start(
     effective_iteration: int,
 ) -> None:
     """Log the visible start of an iteration."""
-    optimizer_cfg = optimizer.cfg.get("optimizer", {}) if hasattr(optimizer.cfg, "get") else {}
-    init_points = optimizer_cfg.get("init_points", 0) if hasattr(optimizer_cfg, "get") else 0
+    init_points = optimizer.cfg.optimizer.init_points
     iteration_type = "warmup" if effective_iteration <= init_points else "optimization"
 
     if effective_iteration in {1, init_points + 1}:
@@ -135,7 +147,8 @@ async def run_trial_iteration(optimizer: Optimizer, params: dict[str, Any]) -> f
     else:
         log_iteration_start(optimizer, params, effective_iteration=effective_iteration)
 
-    payloads, target_paths = optimizer.prompter.render_payloads(optimizer.cfg.batch_size)
+    generation_config = optimizer.cfg.generation
+    payloads, target_paths = optimizer.prompter.render_payloads(generation_config.batch_size)
     if not payloads:
         logger.error("Prompter generated no payloads.")
         raise RuntimeError("Prompter failed to generate any payloads.")
@@ -151,12 +164,10 @@ async def run_trial_iteration(optimizer: Optimizer, params: dict[str, Any]) -> f
         _save_run_manifest_if_needed(optimizer)
         return cached_score
 
-    concurrency_limit = optimizer.cfg.get("generator_concurrency_limit", 2)
-    keepalive_interval = optimizer.cfg.get("generator_keepalive_interval", 60)
-    total_timeout_seconds = optimizer.cfg.get("generator_total_timeout", 3600)
-
-    connector = aiohttp.TCPConnector(limit=concurrency_limit, keepalive_timeout=keepalive_interval)
-    timeout_settings = aiohttp.ClientTimeout(total=total_timeout_seconds) if total_timeout_seconds > 0 else None
+    connector_kwargs, timeout_settings = _build_generation_client_settings(generation_config)
+    concurrency_limit = generation_config.generator_concurrency_limit
+    total_timeout_seconds = generation_config.generator_total_timeout
+    connector = aiohttp.TCPConnector(**connector_kwargs)
 
     async with aiohttp.ClientSession(connector=connector, timeout=timeout_settings) as session:
         try:
@@ -346,7 +357,7 @@ async def run_trial_iteration(optimizer: Optimizer, params: dict[str, Any]) -> f
                         weight,
                     )
 
-                    if optimizer.cfg.save_imgs:
+                    if generation_config.save_imgs:
                         effective_iteration = optimizer.iteration + optimizer.completed_trials
                         scorer_results["combined"] = individual_score
                         optimizer.save_img(
@@ -400,7 +411,7 @@ async def run_trial_iteration(optimizer: Optimizer, params: dict[str, Any]) -> f
         raise RuntimeError("Generation failed: No images were produced or scored.")
     else:
         try:
-            avg_score = average_calc(scores, norm_weights, optimizer.cfg.img_average_type)
+            avg_score = average_calc(scores, norm_weights, generation_config.img_average_type)
             logger.info("Calculated average score: %.4f", avg_score)
         except Exception as avg_error:
             logger.error("Error calculating average score: %s", avg_error, exc_info=True)
@@ -409,7 +420,7 @@ async def run_trial_iteration(optimizer: Optimizer, params: dict[str, Any]) -> f
     optimizer.last_trial_scorer_summary = build_trial_scorer_summary(
         payload_entries,
         final_score=avg_score,
-        combine_scores=lambda values, weights: average_calc(values, weights, optimizer.cfg.img_average_type),
+        combine_scores=lambda values, weights: average_calc(values, weights, generation_config.img_average_type),
     )
 
     optimizer.update_best_score(params, avg_score)

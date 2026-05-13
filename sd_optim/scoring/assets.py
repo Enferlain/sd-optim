@@ -17,15 +17,16 @@ logger = logging.getLogger(__name__)
 def setup_evaluator_paths(scorer: Any) -> None:
     """Populate scorer model paths and default per-scorer config values."""
     logger.debug("Setting up evaluator paths...")
-    scorer_model_dir_path = Path(scorer.cfg.scorer_model_dir)
+    scorer_model_dir_path = Path(scorer.cfg.paths.scorer_model_dir)
+    scoring_cfg = scorer.cfg.scoring
 
-    with open_dict(scorer.cfg):
-        if not isinstance(scorer.cfg.get("scorer_device"), DictConfig):
-            scorer.cfg.scorer_device = {}
-        if not isinstance(scorer.cfg.get("scorer_weight"), DictConfig):
-            scorer.cfg.scorer_weight = {}
+    with open_dict(scoring_cfg):
+        if not isinstance(scoring_cfg.scorer_device, DictConfig):
+            scoring_cfg.scorer_device = {}
+        if not isinstance(scoring_cfg.scorer_weight, DictConfig):
+            scoring_cfg.scorer_weight = {}
 
-        configured_scorers = scorer.cfg.get("scorer_method", [])
+        configured_scorers = scoring_cfg.scorer_method
         if not isinstance(configured_scorers, (list, ListConfig)):
             logger.warning("scorer_method is not a list, cannot process evaluators.")
             configured_scorers = []
@@ -43,7 +44,7 @@ def setup_evaluator_paths(scorer: Any) -> None:
                 )
                 continue
 
-            alt_location = scorer.cfg.get("scorer_alt_location", {}) or {}
+            alt_location = scoring_cfg.scorer_alt_location or {}
             evaluator_alt_config = alt_location.get(evaluator_lower)
             current_model_dir = scorer_model_dir_path
             primary_filename = model_data_entry.get("file_name")
@@ -92,9 +93,9 @@ def setup_evaluator_paths(scorer: Any) -> None:
                 )
 
             try:
-                default_device = scorer.cfg.get("scorer_default_device", "cpu")
-                scorer.cfg.scorer_device.setdefault(evaluator_lower, default_device)
-                scorer.cfg.scorer_weight.setdefault(evaluator_lower, 1.0)
+                default_device = scoring_cfg.scorer_default_device
+                scoring_cfg.scorer_device.setdefault(evaluator_lower, default_device)
+                scoring_cfg.scorer_weight.setdefault(evaluator_lower, 1.0)
             except Exception as setdefault_error:
                 logger.error(
                     "Error setting default config for '%s': %s",
@@ -103,18 +104,19 @@ def setup_evaluator_paths(scorer: Any) -> None:
                 )
 
     logger.debug("Populated model paths: %s", scorer.model_path)
-    logger.debug("Final scorer devices: %s", scorer.cfg.get("scorer_device", {}))
-    logger.debug("Final scorer weights: %s", scorer.cfg.get("scorer_weight", {}))
+    logger.debug("Final scorer devices: %s", scoring_cfg.scorer_device)
+    logger.debug("Final scorer weights: %s", scoring_cfg.scorer_weight)
 
 
 def get_models(scorer: Any) -> None:
     """Download required scorer model files if they do not already exist."""
     logger.debug("Checking for necessary scorer model files...")
-    scorer_model_dir_path = Path(scorer.cfg.scorer_model_dir)
+    scorer_model_dir_path = Path(scorer.cfg.paths.scorer_model_dir)
+    configured_scorers = scorer.cfg.scoring.scorer_method
 
     med_config_path = scorer_model_dir_path / "med_config.json"
     if (
-        any(x.lower() in ["blip", "imagereward"] for x in scorer.cfg.scorer_method)
+        any(x.lower() in ["blip", "imagereward"] for x in configured_scorers)
         and not med_config_path.is_file()
     ):
         logger.info("Downloading med_config.json (needed for BLIP/ImageReward)")
@@ -125,7 +127,7 @@ def get_models(scorer: Any) -> None:
 
     clip_l_path = scorer_model_dir_path / "CLIP-ViT-L-14.pt"
     if (
-        any(x.lower() in ["laion", "chad"] for x in scorer.cfg.scorer_method)
+        any(x.lower() in ["laion", "chad"] for x in configured_scorers)
         and not clip_l_path.is_file()
     ):
         logger.info("Downloading CLIP ViT-L-14 model (required for Laion/Chad)")
@@ -136,7 +138,7 @@ def get_models(scorer: Any) -> None:
 
     clip_b_path = scorer_model_dir_path / "CLIP-ViT-B-32.safetensors"
     if (
-        any(x.lower() in ["wdaes"] for x in scorer.cfg.scorer_method)
+        any(x.lower() in ["wdaes"] for x in configured_scorers)
         and not clip_b_path.is_file()
     ):
         logger.warning(
@@ -146,7 +148,7 @@ def get_models(scorer: Any) -> None:
         )
 
     downloaded_this_run: set[str] = set()
-    for evaluator in scorer.cfg.scorer_method:
+    for evaluator in configured_scorers:
         evaluator_lower = evaluator.lower()
         if evaluator_lower in ["manual", "aestheticv25"]:
             continue

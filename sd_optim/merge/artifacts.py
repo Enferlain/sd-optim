@@ -61,7 +61,7 @@ def create_model_output_name(
     max_filename_len = 120
 
     if merger.cfg.optimization_mode == "merge":
-        model_names = [Path(path).stem for path in merger.cfg.model_paths]
+        model_names = [Path(path).stem for path in merger.cfg.merge.model_paths]
 
         if len(model_names) >= 2:
             name_part = f"{model_names[0]}-{model_names[1]}"
@@ -70,10 +70,10 @@ def create_model_output_name(
         else:
             name_part = "merged_model"
 
-        merge_method_name = merger.cfg.merge_method
+        merge_method_name = merger.cfg.merge.merge_method
         combined_name = f"{name_part}-{merge_method_name}-it_{iteration}"
     elif merger.cfg.optimization_mode == "layer_adjust":
-        model_name = Path(merger.cfg.model_paths[0]).stem
+        model_name = Path(merger.cfg.merge.model_paths[0]).stem
         combined_name = f"layer_adjusted-{model_name}-it_{iteration}"
     elif merger.cfg.optimization_mode == "recipe":
         if recipe_node is not None:

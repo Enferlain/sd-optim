@@ -41,7 +41,7 @@ def _make_handler(
     handler.cfg = OmegaConf.create(
         {
             "optimization_mode": "merge",
-            "merge_method": "weighted_sum",
+            "merge": {"merge_method": "weighted_sum"},
             "optimization_guide": {"components": guide_components},
         }
     )
@@ -580,7 +580,7 @@ def test_get_bounds_returns_empty_when_no_params_generated() -> None:
 
 def test_build_parameter_space_summary_counts_bound_shapes() -> None:
     handler = ParameterHandler.__new__(ParameterHandler)
-    handler.cfg = OmegaConf.create({"optimization_mode": "merge", "merge_method": "weighted_sum"})
+    handler.cfg = OmegaConf.create({"optimization_mode": "merge", "merge": {"merge_method": "weighted_sum"}})
     handler.base_model_config = _FakeModelConfig("base", {})
     handler.custom_block_config = None
     handler._guide_processing_summary = {

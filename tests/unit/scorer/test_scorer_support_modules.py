@@ -12,12 +12,14 @@ def test_assets_helper_sets_paths_and_defaults() -> None:
     scorer = SimpleNamespace(
         cfg=OmegaConf.create(
             {
-                "scorer_model_dir": "C:/models",
-                "scorer_method": ["cityaes"],
-                "scorer_device": {},
-                "scorer_weight": {},
-                "scorer_default_device": "cpu",
-                "scorer_alt_location": {},
+                "paths": {"scorer_model_dir": "C:/models"},
+                "scoring": {
+                    "scorer_method": ["cityaes"],
+                    "scorer_device": {},
+                    "scorer_weight": {},
+                    "scorer_default_device": "cpu",
+                    "scorer_alt_location": {},
+                },
             }
         ),
         model_path={},
@@ -26,8 +28,8 @@ def test_assets_helper_sets_paths_and_defaults() -> None:
     assets_mod.setup_evaluator_paths(scorer)
 
     assert scorer.model_path["cityaes"] == Path("C:/models") / "CityAesthetics-Anime-v1.8.safetensors"
-    assert scorer.cfg.scorer_device["cityaes"] == "cpu"
-    assert scorer.cfg.scorer_weight["cityaes"] == 1.0
+    assert scorer.cfg.scoring.scorer_device["cityaes"] == "cpu"
+    assert scorer.cfg.scoring.scorer_weight["cityaes"] == 1.0
 
 
 def test_loading_helper_builds_factory_entries() -> None:

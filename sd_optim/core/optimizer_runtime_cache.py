@@ -28,7 +28,7 @@ def resolve_trial_cache_candidates(
 ) -> tuple[str, list[CacheResult]]:
     """Classify payloads against reusable history cache entries for one trial."""
     reuse_cached_results = reuse_cached_results_enabled(optimizer.cfg)
-    current_scorers = {s.lower() for s in optimizer.cfg.scorer_method}
+    current_scorers = {s.lower() for s in optimizer.cfg.scoring.scorer_method}
     scorer_setup_fp = optimizer.scorer_setup_fp
     cache_results: list[CacheResult] = []
     overall_tier = "full_hit"
@@ -105,7 +105,7 @@ def _reuse_full_hit_results(
 ) -> float:
     cached_scores = [c[1]["final_score"] for c in cache_results]
     cached_weights = [c[2].get("score_weight", 1.0) for c in cache_results]
-    avg_score = average_calc(cached_scores, cached_weights, optimizer.cfg.img_average_type)
+    avg_score = average_calc(cached_scores, cached_weights, optimizer.cfg.generation.img_average_type)
     payload_entries: list[dict[str, Any]] = []
     for idx, (_, cached, payload, _) in enumerate(cache_results):
         payload_name = target_paths[idx] if idx < len(target_paths) else f"payload_{idx}"
@@ -120,7 +120,7 @@ def _reuse_full_hit_results(
     optimizer.last_trial_scorer_summary = build_trial_scorer_summary(
         payload_entries,
         final_score=avg_score,
-        combine_scores=lambda values, weights: average_calc(values, weights, optimizer.cfg.img_average_type),
+        combine_scores=lambda values, weights: average_calc(values, weights, optimizer.cfg.generation.img_average_type),
     )
     elapsed = time.time() - iteration_start_time
     logger.info("CACHE HIT: All %s images reused. Score: %.4f (%.2fs)", len(cached_scores), avg_score, elapsed)
@@ -134,7 +134,7 @@ async def _reuse_partial_hit_results(
     target_paths: list[str],
     iteration_start_time: float,
 ) -> float | None:
-    current_scorers = {s.lower() for s in optimizer.cfg.scorer_method}
+    current_scorers = {s.lower() for s in optimizer.cfg.scoring.scorer_method}
     scorer_setup_fp = optimizer.scorer_setup_fp
     logger.info(
         "PARTIAL CACHE HIT: %s images found, re-scoring with current scorers (%s)",
@@ -208,11 +208,11 @@ async def _reuse_partial_hit_results(
             break
 
     if overall_tier == "partial_hit" and rescored_scores:
-        avg_score = average_calc(rescored_scores, rescored_weights, optimizer.cfg.img_average_type)
+        avg_score = average_calc(rescored_scores, rescored_weights, optimizer.cfg.generation.img_average_type)
         optimizer.last_trial_scorer_summary = build_trial_scorer_summary(
             payload_entries,
             final_score=avg_score,
-            combine_scores=lambda values, weights: average_calc(values, weights, optimizer.cfg.img_average_type),
+            combine_scores=lambda values, weights: average_calc(values, weights, optimizer.cfg.generation.img_average_type),
         )
         elapsed = time.time() - iteration_start_time
         logger.info(

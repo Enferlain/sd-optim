@@ -14,7 +14,7 @@ defaults:
 
 # --- Run & Logging Configuration (Hydra) ---
 # Sets the name for the run, used in the output directory name.
-run_name: ${merge_method}_${scorer_method} # Example: weighted_sum_['laion','chad']
+run_name: ${merge.merge_method}_${scoring.scorer_method} # Example: weighted_sum_['laion','chad']
 hydra:
   run:
     # Defines the output directory for logs, images, and merged models for each run.
@@ -33,29 +33,29 @@ url: "${webui_urls[${webui}]}" # This line automatically selects the correct URL
 
 # --- Core File Paths ---
 # These paths tell the optimizer where to find necessary files.
-configs_dir: path/to/sd-optim/sd_optim/extensions/bundled/model_configs # Path to your custom sd-mecha block definition .yaml files.
-conversion_dir: path/to/sd-optim/sd_optim/extensions/bundled/model_configs # Path to your custom sd-mecha converter .py scripts.
-models_dir: path/to/your/models/Stable-diffusion # Path to your checkpoint/model directory.
-wildcards_dir: path/to/your/wildcards # Path to your wildcard files for dynamic prompting.
-scorer_model_dir: path/to/your/models/Scorer # Path where scorer models are downloaded to and loaded from.
-
-# --- Model Inputs ---
-# A list of full paths to the models you want to use in the merge.
-# Order matters, as the index is used for base_model and fallback_model.
-model_paths:
-  - path/to/model_a.safetensors
-  - path/to/model_b.safetensors
-  # - path/to/any_lora.safetensors # LoRAs are automatically detected and converted to deltas.
-base_model_index: 0 # Index (from 0) of the model in model_paths to use as the base for 'delta' methods (e.g., add_difference).
-fallback_model_index: -1 # Optional: Index of a model to use for any missing keys in the final merge. Use -1 or null to disable.
+paths:
+  configs_dir: path/to/sd-optim/sd_optim/extensions/bundled/model_configs # Path to your custom sd-mecha block definition .yaml files.
+  conversion_dir: path/to/sd-optim/sd_optim/extensions/bundled/model_configs # Path to your custom sd-mecha converter .py scripts.
+  models_dir: path/to/your/models/Stable-diffusion # Path to your checkpoint/model directory.
+  wildcards_dir: path/to/your/wildcards # Path to your wildcard files for dynamic prompting.
+  scorer_model_dir: path/to/your/models/Scorer # Path where scorer models are downloaded to and loaded from.
 
 # --- Merge Settings (sd-mecha) ---
-merge_method: weighted_sum # Name of the sd-mecha merge method to optimize (can be built-in or custom from merge_methods.py).
-device: cuda # Device for merging: 'cuda' for GPU (faster), 'cpu' for system RAM (uses less VRAM).
-threads: 4 # Number of threads for sd-mecha to use during merging. More can be faster but uses more RAM.
-merge_dtype: fp32 # Precision for calculations: fp16, bf16, fp32, fp64. fp32 or fp64 is recommended for accuracy.
-save_dtype: bf16 # Precision for the final saved model file: fp16, bf16, fp32, fp64. bf16 or fp16 is recommended for size.
-add_extra_keys: False # For v-prediction models, set to True to add v_pred and ztsnr keys to the final model.
+merge:
+  # A list of full paths to the models you want to use in the merge.
+  # Order matters, as the index is used for base_model and fallback_model.
+  model_paths:
+    - path/to/model_a.safetensors
+    - path/to/model_b.safetensors
+    # - path/to/any_lora.safetensors # LoRAs are automatically detected and converted to deltas.
+  base_model_index: 0 # Index (from 0) of the model in model_paths to use as the base for 'delta' methods (e.g., add_difference).
+  fallback_model_index: -1 # Optional: Index of a model to use for any missing keys in the final merge. Use -1 or null to disable.
+  merge_method: weighted_sum # Name of the sd-mecha merge method to optimize (can be built-in or custom from merge_methods.py).
+  device: cuda # Device for merging: 'cuda' for GPU (faster), 'cpu' for system RAM (uses less VRAM).
+  threads: 4 # Number of threads for sd-mecha to use during merging. More can be faster but uses more RAM.
+  merge_dtype: fp32 # Precision for calculations: fp16, bf16, fp32, fp64. fp32 or fp64 is recommended for accuracy.
+  save_dtype: bf16 # Precision for the final saved model file: fp16, bf16, fp32, fp64. bf16 or fp16 is recommended for size.
+  add_extra_keys: False # For v-prediction models, set to True to add v_pred and ztsnr keys to the final model.
 
 # --- General Workflow ---
 save_merge_artifacts: True # If True, saves a self-contained, runnable .py script that can reproduce the merge exactly.
@@ -188,38 +188,38 @@ optimizer:
 
 
 # --- Image Generation ---
-batch_size: 1 # Number of images to generate for EACH payload per iteration.
-save_imgs: True # Save all generated images to the run's 'imgs' folder.
-img_average_type: arithmetic # How to average scores within a batch: 'arithmetic', 'geometric', or 'quadratic'.
-
-# --- Generator/aiohttp Settings ---
-generator_concurrency_limit: 10 # Max number of simultaneous API requests to the WebUI.
-generator_keepalive_interval: 60 # Interval (seconds) for sending TCP Keep-Alive probes to prevent connection drops.
-generator_total_timeout: 0 # Max total time (seconds) for a single API call. Set to 0 or null to disable client timeout.
+generation:
+  batch_size: 1 # Number of images to generate for EACH payload per iteration.
+  save_imgs: True # Save all generated images to the run's 'imgs' folder.
+  img_average_type: arithmetic # How to average scores within a batch: 'arithmetic', 'geometric', or 'quadratic'.
+  generator_concurrency_limit: 10 # Max number of simultaneous API requests to the WebUI.
+  generator_keepalive_interval: 60 # Interval (seconds) for sending TCP Keep-Alive probes to prevent connection drops.
+  generator_total_timeout: 0 # Max total time (seconds) for a single API call. Set to 0 or null to disable client timeout.
 
 # --- Scoring ---
-# List of scorer identifiers to use. The final score is an average of these.
-# See scorer.py for all available identifiers (e.g., laion, hpsv3, pick, cityaes, luminaflex, manual, background_blackness).
-scorer_method: [manual]
-scorer_average_type: arithmetic # How to average scores from DIFFERENT scorers: 'arithmetic', 'geometric', or 'quadratic'.
-scorer_weight: # Optional weights for each scorer (default is 1.0).
-  # cityaes: 1.2
-  # laion: 0.5
-scorer_filters: # Optional filter for the scorers on the payloads
-  backgroundblackness: # Name of the scorer
-    exclude: ['payload_name_to_exclude'] # This payload will not be evaluated by this scorer
-scorer_default_device: cpu # Default device for scorers: 'cpu' or 'cuda'.
-scorer_device: # Optional device override per scorer.
-  # imagereward: cuda
-scorer_alt_location: # Optional alternative paths for specific scorer models.
-  # imagereward:
-  #   model_name: ImageReward.pt
-  #   model_dir: path/to/your/imagereward/folder
-scorer_print_individual: True # Print the score from each individual scorer in the console.
-scorer_lazy_load_list: [] # List of large scorers to load on-demand to save VRAM (e.g., [hpsv3, imagereward]).
-# Optional: Add this to control how much uncertainty (sigma) penalizes the score.
-# A higher value means a stronger penalty. Default is 0.5 if not specified.
-hpsv3_uncertainty_penalty: 0.5
+scoring:
+  # List of scorer identifiers to use. The final score is an average of these.
+  # See scorer.py for all available identifiers (e.g., laion, hpsv3, pick, cityaes, luminaflex, manual, background_blackness).
+  scorer_method: [manual]
+  scorer_average_type: arithmetic # How to average scores from DIFFERENT scorers: 'arithmetic', 'geometric', or 'quadratic'.
+  scorer_weight: # Optional weights for each scorer (default is 1.0).
+    # cityaes: 1.2
+    # laion: 0.5
+  scorer_filters: # Optional filter for the scorers on the payloads
+    backgroundblackness: # Name of the scorer
+      exclude: ['payload_name_to_exclude'] # This payload will not be evaluated by this scorer
+  scorer_default_device: cpu # Default device for scorers: 'cpu' or 'cuda'.
+  scorer_device: # Optional device override per scorer.
+    # imagereward: cuda
+  scorer_alt_location: # Optional alternative paths for specific scorer models.
+    # imagereward:
+    #   model_name: ImageReward.pt
+    #   model_dir: path/to/your/imagereward/folder
+  scorer_print_individual: True # Print the score from each individual scorer in the console.
+  scorer_lazy_load_list: [] # List of large scorers to load on-demand to save VRAM (e.g., [hpsv3, imagereward]).
+  # Optional: Add this to control how much uncertainty (sigma) penalizes the score.
+  # A higher value means a stronger penalty. Default is 0.5 if not specified.
+  hpsv3_uncertainty_penalty: 0.5
 
 # --- Visualization ---
 visualizations:
@@ -228,17 +228,17 @@ visualizations:
   # unet_diagram: False # (Deprecated)
   # heatmap: False # (Not implemented)
 
-# --- Scorer-Specific Settings ---
-# PCAScorer settings
-pcascorer_component: 1
-pcascorer_mode: 'projection'
-pcascorer_input_type: 'color'
-pcascorer_linearize: False
-pcascorer_invert: False
-pcascorer_enhancement: 'equalize'
-pcascorer_gamma: 1.0
+  # --- Scorer-Specific Settings ---
+  # PCAScorer settings
+  pcascorer_component: 1
+  pcascorer_mode: 'projection'
+  pcascorer_input_type: 'color'
+  pcascorer_linearize: False
+  pcascorer_invert: False
+  pcascorer_enhancement: 'equalize'
+  pcascorer_gamma: 1.0
 
-# HybridNoiseScorer settings
-hybridnoise_kernel_size: 3
-hybridnoise_noise_threshold: 20.0
-hybridnoise_color_tolerance: 30
+  # HybridNoiseScorer settings
+  hybridnoise_kernel_size: 3
+  hybridnoise_noise_threshold: 20.0
+  hybridnoise_color_tolerance: 30

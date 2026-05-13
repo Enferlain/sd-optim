@@ -25,7 +25,7 @@ def resolve_layer_adjust_output_path(merger: Merger, cfg: DictConfig) -> Path:
         return output_path
 
     logger.error("Output file path not set in Merger before layer_adjust call.")
-    model_name_for_fallback = Path(cfg.model_paths[0]).stem if cfg.model_paths else "unknown_model"
+    model_name_for_fallback = Path(cfg.merge.model_paths[0]).stem if cfg.merge.model_paths else "unknown_model"
     output_path = merger.models_dir / f"layer_adjusted_{model_name_for_fallback}_fallback.safetensors"
     logger.warning("Using fallback output path: %s", output_path)
     merger.output_file = output_path
@@ -65,17 +65,17 @@ def layer_adjust(merger: Merger, params: dict[str, Any], cfg: DictConfig) -> Pat
     """Load a model, apply layer adjustments, and save the modified state dict."""
     output_path = resolve_layer_adjust_output_path(merger, cfg)
 
-    if not cfg.model_paths:
+    if not cfg.merge.model_paths:
         raise ValueError("No model paths specified for layer adjustment.")
 
     model_path = resolve_layer_adjust_model_path(
-        models_dir=Path(cfg.models_dir),
-        model_path_str=cfg.model_paths[0],
+        models_dir=Path(cfg.paths.models_dir),
+        model_path_str=cfg.merge.model_paths[0],
     )
 
     logger.info("Loading model for layer adjustment: %s", model_path)
     try:
-        state_dict = load_layer_adjust_state_dict(model_path, cfg.device)
+        state_dict = load_layer_adjust_state_dict(model_path, cfg.merge.device)
     except Exception as error:
         logger.error("Failed to load model %s: %s", model_path, error, exc_info=True)
         raise

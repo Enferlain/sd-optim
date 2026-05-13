@@ -128,7 +128,7 @@ class Prompter:
     cfg: DictConfig
 
     def __post_init__(self):
-        self.dealer = CardDealer(self.cfg.get("wildcards_dir", "wildcards"))
+        self.dealer = CardDealer(self.cfg.paths.wildcards_dir)
         self.load_payloads()
 
     def load_payloads(self) -> None:

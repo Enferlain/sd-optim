@@ -48,11 +48,13 @@ def test_validate_run_config_accepts_minimal_layer_adjust_setup(tmp_path) -> Non
 
     cfg = OmegaConf.create(
         {
-            "models_dir": str(models_dir),
+            "paths": {"models_dir": str(models_dir)},
             "optimization_mode": "layer_adjust",
-            "model_paths": ["base.safetensors"],
-            "merge_dtype": "fp16",
-            "save_dtype": "fp16",
+            "merge": {
+                "model_paths": ["base.safetensors"],
+                "merge_dtype": "fp16",
+                "save_dtype": "fp16",
+            },
         }
     )
 

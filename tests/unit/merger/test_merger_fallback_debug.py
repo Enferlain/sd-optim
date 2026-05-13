@@ -95,11 +95,13 @@ def test_execute_recipe_wraps_fallback_in_recipe_instead_of_sd_mecha_kwarg(monke
     merger.cfg = OmegaConf.create(
         {
             "optimization_mode": "merge",
-            "fallback_model_index": 0,
-            "device": "cpu",
-            "merge_dtype": "fp32",
-            "save_dtype": "fp32",
-            "threads": 1,
+            "merge": {
+                "fallback_model_index": 0,
+                "device": "cpu",
+                "merge_dtype": "fp32",
+                "save_dtype": "fp32",
+                "threads": 1,
+            },
         }
     )
     merger.models = [sd_mecha.model("fallback.safetensors")]
@@ -139,8 +141,10 @@ def test_serialize_and_save_recipe_uses_finalized_execution_recipe(monkeypatch, 
     merger.cfg = OmegaConf.create(
         {
             "optimization_mode": "merge",
-            "fallback_model_index": 0,
-            "save_dtype": "fp32",
+            "merge": {
+                "fallback_model_index": 0,
+                "save_dtype": "fp32",
+            },
         }
     )
     merger.models = [sd_mecha.model("fallback.safetensors")]
@@ -184,11 +188,13 @@ def test_create_model_output_name_preserves_iteration_suffix_when_truncated(tmp_
     merger.cfg = OmegaConf.create(
         {
             "optimization_mode": "merge",
-            "merge_method": "weighted_sum",
-            "model_paths": [
-                "a" * 90 + ".safetensors",
-                "b" * 90 + ".safetensors",
-            ],
+            "merge": {
+                "merge_method": "weighted_sum",
+                "model_paths": [
+                    "a" * 90 + ".safetensors",
+                    "b" * 90 + ".safetensors",
+                ],
+            },
         }
     )
     merger.models_dir = tmp_path

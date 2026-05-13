@@ -85,7 +85,7 @@ def validate_node_is_not_lora(
 
 def select_base_model(merger: Merger) -> recipe_nodes.ModelRecipeNode | None:
     """Select the base model node based on configuration index."""
-    base_model_index = merger.cfg.get("base_model_index", None)
+    base_model_index = merger.cfg.merge.base_model_index
     if base_model_index is None:
         return None
 
@@ -130,7 +130,7 @@ def get_conversion_context_node(merger: Merger) -> recipe_nodes.ModelRecipeNode:
             logger.info("Using explicitly defined base_model '%s' as conversion context.", base_model.path)
             return base_model
 
-    fallback_index = merger.cfg.get("fallback_model_index", -1)
+    fallback_index = merger.cfg.merge.fallback_model_index
     if fallback_index != -1 and 0 <= fallback_index < len(merger.models):
         fallback_model = merger.models[fallback_index]
         validate_node_is_not_lora(merger, fallback_model)

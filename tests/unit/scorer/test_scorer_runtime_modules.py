@@ -19,8 +19,8 @@ def test_runtime_setup_img_saving_enables_manual_mode_without_hydra(tmp_path, mo
 
     cfg = OmegaConf.create(
         {
-            "scorer_method": ["manual"],
-            "save_imgs": False,
+            "generation": {"save_imgs": False},
+            "scoring": {"scorer_method": ["manual"]},
         }
     )
     scorer = SimpleNamespace(cfg=cfg, imgs_dir=None)
@@ -31,7 +31,7 @@ def test_runtime_setup_img_saving_enables_manual_mode_without_hydra(tmp_path, mo
     runtime_mod.setup_img_saving(scorer)
 
     assert scorer.imgs_dir == (tmp_path / "imgs_fallback").resolve()
-    assert scorer.cfg.save_imgs is True
+    assert scorer.cfg.generation.save_imgs is True
     assert scorer.imgs_dir.is_dir()
 
 

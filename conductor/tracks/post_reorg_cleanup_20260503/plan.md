@@ -36,20 +36,35 @@
 - [~] Task: Reduce `sd_optim/core/optimizer_runtime.py` by extracting non-core orchestration helpers into smaller focused modules.
   - Note: Add an explicit config toggle for cross-run cached image reuse so interrupted runs can still save manifests/artifacts without automatically reusing prior scoring results on reruns.
   - Note: Added `reuse_cached_results` as a runtime/base-level gate for universal reuse scanning and per-trial cache hits, with focused tests covering the disabled path.
+  - Note: Extracted cache reuse classification plus cached full-hit / partial-hit handling into `sd_optim/core/optimizer_runtime_cache.py`, leaving `optimizer_runtime.py` more focused on trial orchestration, model processing, and sequential generation/scoring.
 - [ ] Task: Re-check `sd_optim/merger.py` for any remaining helper delegation or orchestration that can move cleanly into `sd_optim/merge/*`.
 - [ ] Task: Audit bundled experimental merge-method modules for dead commented blocks, duplicate helper logic, inconsistent naming, and any lingering lint or syntax problems.
 - [ ] Task: Narrow broad `except Exception` handling where newer package boundaries make more specific error handling practical.
-- [ ] Task: Improve consistency of logging and config access in older modules, especially where dynamic `DictConfig.get(...)` usage still obscures required settings.
+- [~] Task: Improve consistency of logging and config access in older modules, especially where dynamic `DictConfig.get(...)` usage still obscures required settings.
+  - Note: Added the first dataclass-backed Hydra schema layer for stable runtime settings: root paths/model inputs, merge/runtime toggles, recipe optimization, optimizer configs, generator transport, scorer settings, and visualizations. The guide and payload surfaces intentionally remain dynamic while their authored model is still evolving.
 - [x] Task: Replace legacy-surface regression coverage with tests that target the intended long-term package boundaries where safe.
   - Note: Added a focused recipe-facing regression test that traces guide expansion through bounds metadata, merge parameter node construction, final recipe rewrite text, and deserialized `sd-mecha` payloads for both sparse `select` and whole-component `single` key targeting.
 - [~] Task: Build a clean-room graph-backed guide compiler against expected recipe artifacts instead of continuing only with incremental `ParameterHandler` reshaping.
+  - Note: The fuller design decisions from the node-sketch discussion are captured in `conductor/tracks/post_reorg_cleanup_20260503/guide_node_design_notes.md` and should be treated as the current handoff note for the future authored-guide / node-UI direction.
   - Note: Use recorded `.hydra` snapshots plus emitted `.mecha` / reproducible Python artifacts as golden baselines for expected payload shape. Treat current bounds logic as a parity reference, not as the design center.
-  - Note: Started a parallel typed implementation in `sd_optim/guide_graph.py` plus `tests/test_guide_graph.py`, with a reduced golden payload fixture distilled from the recorded `delta_widen` recipe artifact.
+  - Note: Started a parallel typed implementation in `sd_optim/guide_compiler.py` plus `tests/test_guide_compiler.py`, with a reduced golden payload fixture distilled from the recorded `delta_widen` recipe artifact.
   - Note: `ParameterHandler.create_parameter_bounds_metadata()` now sources legacy-guide metadata from the graph-backed compiler while keeping the existing outer validation and summary shell, so the new path is active without immediately rewriting the rest of bounds/runtime.
   - Note: `name: null` in the current guide should be treated as an intentionally inactive placeholder when users want to keep a section around without participating in the current run, so skipping it is currently correct behavior rather than an adapter gap.
   - Note: Follow-up regressions from the first swap are now addressed: legacy `select` / `group` no-match cases warn and skip again instead of aborting guide compilation, and `prepare_param_recipe_args()` now materializes payloads from the supplied `param_info` contract instead of silently recompiling the guide from config.
-- [ ] Task: Define and document the graph-native guide serialization shape, including an explicit inactive/disabled way to keep guide fragments around without participating in the current run.
+  - Note: Treat the guide conceptually as an optimization targeting spec. It is not just a bounds file, merge config, or UI schema; those are downstream views of the same authored intent.
+  - Note: The clean split is authored graph vs compiled graph. The authored graph should stay small and semantic; the compiled graph can fan out into many resolved targets, optimizer-visible params, payload mappings, and dependencies.
+  - Note: Keep both a human-usable text guide and a future node/graph editor. They should compile into the same internal model rather than becoming separate systems.
+  - Note: The current YAML likely hides the real structure too much. The node sketch surfaced a simpler mental model: choose targets, shape them, optionally subtract from them, attach value behavior, bind to params, then resolve.
+  - Note: The likely visible authored graph vocabulary is small: Source, Selection, Type, Domain, Param, and Build. Defaults should usually stay implicit rather than becoming extra nodes.
+  - Note: For the node mental model, the simplest useful authored flow is: choose a Source -> optionally narrow it with a Selection -> choose a Type such as all/group/exclude -> optionally override Domain or Param -> feed the branch into a Build. Build-wide resolution should handle exclusions, broad defaults, and narrower overrides before final compilation.
+  - Note: `all`, `select`, `group`, and `single` are better treated as convenience presets over filtering/grouping behavior than as the long-term conceptual center of the system.
+- [~] Task: Define and document the graph-native guide serialization shape, including an explicit inactive/disabled way to keep guide fragments around without participating in the current run.
+  - Note: The graph save format can be more structured than the text guide, but should still represent the same authored intent: source, optional selection, explicit type, optional domain/param overrides, and build target, not raw compiler internals.
+  - Note: Graph complexity is mostly a presentation problem, not a reason to reject the model. The UI should favor authored rules by default and hide compiled detail behind collapse/filter/isolate/side-panel views.
+  - Note: Draft the first concrete shape in `conductor/tracks/post_reorg_cleanup_20260503/graph_native_guide_shape.md`, including node vocabulary, allowed connections, inactive fragments, and examples for broad defaults, carve-outs, and grouped exceptions.
+  - Note: Started the actual graph-native runtime path in `sd_optim/guide_nodes.py`. It now follows a build-centered branch model: `source -> type -> param -> build` for broad defaults, `source -> selection -> type -> domain -> param -> build` for grouped overrides, and `source -> selection -> type(exclude) -> build` for stronger subtractive branches.
 - [ ] Task: Write a migration guide from the current text guide/legacy semantics to the graph-native guide model after the new serialization shape is settled.
+  - Note: The migration guide should explain both directions: how current strategy-style guides map into the shared targeting/binding model, and how that same model appears in the future node editor and human text guide.
 - [ ] Task: Refresh track docs and indexes that still describe deleted modules or stale pre-package layouts.
 
 ## Exit Criteria

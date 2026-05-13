@@ -2,7 +2,7 @@ from pathlib import Path
 
 import yaml
 
-from sd_optim.guide_graph import (
+from sd_optim.guide_compiler import (
     BindingSpec,
     NamedGroupSpec,
     SelectionSpec,
@@ -13,7 +13,7 @@ from sd_optim.guide_graph import (
 )
 
 
-FIXTURE_PATH = Path(__file__).parent / "fixtures" / "guide_graph_expected_results.yaml"
+FIXTURE_PATH = Path(__file__).parent / "fixtures" / "guide_compiler_expected_results.yaml"
 
 
 def test_graph_compiler_recreates_expected_block_payload_excerpt() -> None:

@@ -5,7 +5,7 @@ import sd_mecha
 from typing import Any
 from omegaconf import DictConfig, ListConfig, OmegaConf
 
-from sd_optim.guide_graph import (
+from sd_optim.guide_compiler import (
     BindingSpec,
     CompiledBinding,
     SelectionSpec,

@@ -7,7 +7,7 @@ import fnmatch
 from typing import Any
 from omegaconf import DictConfig, ListConfig, OmegaConf
 
-from sd_optim.guide_graph_adapter import compile_legacy_guide_to_bounds_info
+from sd_optim.guide_legacy import compile_legacy_guide_to_bounds_info
 
 logger = logging.getLogger(__name__)
 

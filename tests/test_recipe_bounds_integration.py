@@ -12,7 +12,7 @@ from torch import Tensor
 
 import sd_optim.merge.recipe_builder as recipe_builder
 from sd_optim.bounds import ParameterHandler
-from sd_optim.guide_graph_adapter import materialize_legacy_guide_payloads
+from sd_optim.guide_legacy import materialize_legacy_guide_payloads
 
 
 @sd_mecha.merge_method(identifier="recipe_bounds_demo_for_tests")

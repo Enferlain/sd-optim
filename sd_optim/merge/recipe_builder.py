@@ -11,7 +11,7 @@ from sd_mecha.extensions.merge_methods import MergeMethod, RecipeNodeOrValue
 from sd_mecha.recipe_nodes import ModelRecipeNode
 
 from sd_optim.bounds import BoundsInfo, ParameterHandler
-from sd_optim.guide_graph_adapter import materialize_payloads_from_legacy_bounds_info
+from sd_optim.guide_legacy import materialize_payloads_from_legacy_bounds_info
 from sd_optim.merge.model_selection import get_adapter_candidate_ids, get_conversion_context_node
 from sd_optim.utils.recipes import convert_with_model_dirs
 

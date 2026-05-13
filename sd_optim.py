@@ -8,6 +8,7 @@ from typing import Literal
 
 from omegaconf import DictConfig
 
+from sd_optim.config_schema import register_config_schemas
 from sd_optim.utils.conversions import (
     load_and_register_custom_configs,
     load_and_register_custom_conversion,
@@ -32,6 +33,8 @@ logging.getLogger("httpcore.http11").setLevel(logging.WARNING)
 
 # Use a logger specific to this main script
 logger = logging.getLogger(__name__)  # Hydra often configures this further
+
+register_config_schemas()
 
 
 def _determine_extension_paths(cfg: DictConfig) -> tuple[Path, Path]:

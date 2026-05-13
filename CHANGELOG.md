@@ -5,15 +5,22 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased] - 2026-05-12
+
+### Added
+
+- Added the first graph-native guide compiler path in `sd_optim/guide_nodes.py`, compiling build-centered authored branches such as `source -> type -> param -> build`, `source -> selection -> type -> domain -> param -> build`, and `source -> selection -> type(exclude) -> build` into optimizer-visible bindings
+- Added graph-native guide tests covering selected block rules, disabled parked branches, excludes, shared groups, named groups, domains, and payload materialization
+
 ## [Unreleased] - 2026-05-09
 
 ### Added
 
-- Added a graph-backed guide compiler core in `sd_optim/guide_graph.py` with focused regression coverage for:
+- Added a graph-backed guide compiler core in `sd_optim/guide_compiler.py` with focused regression coverage for:
   - compiled optimizer-visible bindings
   - payload materialization from sampled values
   - reduced golden payload expectations derived from recorded run artifacts
-- Added a legacy-guide adapter in `sd_optim/guide_graph_adapter.py` so the current optimization guide format can compile through the new graph-backed path while preserving current behavior
+- Added a legacy-guide adapter in `sd_optim/guide_legacy.py` so the current optimization guide format can compile through the new graph-backed path while preserving current behavior
 - Added parity analysis scripts and reports for:
   - bounds metadata generation
   - recipe payload materialization
@@ -22,6 +29,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Extracted cache reuse classification and cached full/partial-hit handling out of `sd_optim/core/optimizer_runtime.py` into `sd_optim/core/optimizer_runtime_cache.py` so the runtime file is more focused on trial orchestration
 - Switched `ParameterHandler.create_parameter_bounds_metadata()` to source legacy guide metadata from the graph-backed compiler path while keeping the existing outer validation and summary behavior
 - Switched recipe payload assembly to use graph-backed legacy-guide payload materialization instead of rebuilding payload dicts ad hoc from `param_info`
 - Tightened the recipe payload path so `prepare_param_recipe_args()` now honors the supplied `param_info` contract directly instead of silently recompiling guide payloads from config

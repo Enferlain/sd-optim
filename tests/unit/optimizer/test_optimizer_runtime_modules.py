@@ -18,6 +18,13 @@ def test_optimizer_runtime_module_exports_trial_helpers() -> None:
     assert callable(module.sequential_producer)
 
 
+def test_optimizer_runtime_cache_module_exports_cache_helpers() -> None:
+    module = importlib.import_module("sd_optim.core.optimizer_runtime_cache")
+
+    assert callable(module.resolve_trial_cache_candidates)
+    assert callable(module.maybe_reuse_cached_trial_results)
+
+
 def test_sequential_producer_enqueues_generated_image() -> None:
     module = importlib.import_module("sd_optim.core.optimizer_runtime")
 
@@ -88,6 +95,45 @@ def test_run_trial_iteration_returns_cached_score_on_full_hit() -> None:
     )
 
     result = asyncio.run(module.run_trial_iteration(optimizer, params))
+
+    assert result == 0.75
+    assert optimizer.last_trial_scorer_summary["aggregate"]["combined"] == 0.75
+
+
+def test_runtime_cache_helper_returns_full_hit_score() -> None:
+    module = importlib.import_module("sd_optim.core.optimizer_runtime_cache")
+    params = {"alpha": 0.5}
+    payload = {"prompt": "cached", "seed": 1, "score_weight": 1.0}
+    image_hash = calculate_image_hash(params, payload, generation_setup_fp="gen-fp")
+
+    optimizer = SimpleNamespace(
+        cfg=OmegaConf.create(
+            {
+                "img_average_type": "arithmetic",
+                "scorer_method": ["manual"],
+            }
+        ),
+        last_trial_scorer_summary={},
+        history_cache={
+            image_hash: {
+                "final_score": 0.75,
+                "scores": {"manual": 0.75, "combined": 0.75},
+                "scorer_setup_fp": "score-fp",
+            }
+        },
+        scorer_setup_fp="score-fp",
+        generation_setup_fp="gen-fp",
+    )
+
+    result = asyncio.run(
+        module.maybe_reuse_cached_trial_results(
+            optimizer,
+            params=params,
+            payloads=[payload],
+            target_paths=["cached_payload"],
+            iteration_start_time=0.0,
+        )
+    )
 
     assert result == 0.75
     assert optimizer.last_trial_scorer_summary["aggregate"]["combined"] == 0.75

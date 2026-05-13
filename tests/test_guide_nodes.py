@@ -354,7 +354,7 @@ def test_build_combines_all_group_and_exclude_branches_like_sketch() -> None:
     }
 
 
-def test_build_named_group_type_compiles_multiple_shared_bindings() -> None:
+def test_multiple_group_branches_compile_multiple_grouped_bindings() -> None:
     graph = {
         "version": 1,
         "nodes": [
@@ -367,22 +367,35 @@ def test_build_named_group_type_compiles_multiple_shared_bindings() -> None:
                 },
             },
             {
-                "id": "selected_keys",
+                "id": "out_keys",
                 "type": "selection",
                 "data": {
                     "mode": "regex",
-                    "patterns": ["model.diffusion_model.*"],
+                    "patterns": ["*.out.0.*"],
                 },
             },
             {
-                "id": "key_groups",
+                "id": "out_group",
                 "type": "type",
                 "data": {
                     "mode": "group",
-                    "groups": [
-                        {"name": "out_0", "patterns": ["*.out.0.*"]},
-                        {"name": "time_embed", "patterns": ["*.time_embed.*"]},
-                    ],
+                    "name": "out_0",
+                },
+            },
+            {
+                "id": "time_embed_keys",
+                "type": "selection",
+                "data": {
+                    "mode": "regex",
+                    "patterns": ["*.time_embed.*"],
+                },
+            },
+            {
+                "id": "time_embed_group",
+                "type": "type",
+                "data": {
+                    "mode": "group",
+                    "name": "time_embed",
                 },
             },
             {
@@ -397,9 +410,12 @@ def test_build_named_group_type_compiles_multiple_shared_bindings() -> None:
             },
         ],
         "edges": [
-            {"from": "unet", "to": "selected_keys"},
-            {"from": "selected_keys", "to": "key_groups"},
-            {"from": "key_groups", "to": "rank_ratio"},
+            {"from": "unet", "to": "out_keys"},
+            {"from": "out_keys", "to": "out_group"},
+            {"from": "out_group", "to": "rank_ratio"},
+            {"from": "unet", "to": "time_embed_keys"},
+            {"from": "time_embed_keys", "to": "time_embed_group"},
+            {"from": "time_embed_group", "to": "rank_ratio"},
             {"from": "rank_ratio", "to": "build_rank"},
         ],
     }
@@ -434,4 +450,214 @@ def test_build_named_group_type_compiles_multiple_shared_bindings() -> None:
             "model.diffusion_model.out.0.weight": 0.5,
             "model.diffusion_model.time_embed.weight": 0.75,
         }
+    }
+
+
+def test_group_node_rejects_internal_multi_group_definition() -> None:
+    graph = {
+        "version": 1,
+        "nodes": [
+            {
+                "id": "unet",
+                "type": "source",
+                "data": {
+                    "source_kind": "key",
+                    "component": "unet",
+                },
+            },
+            {
+                "id": "bad_group",
+                "type": "type",
+                "data": {
+                    "mode": "group",
+                    "groups": [
+                        {"name": "out_0", "patterns": ["*.out.0.*"]},
+                    ],
+                },
+            },
+            {
+                "id": "rank_ratio",
+                "type": "param",
+                "data": {"name": "rank_ratio"},
+            },
+            {
+                "id": "build_rank",
+                "type": "build",
+                "data": {},
+            },
+        ],
+        "edges": [
+            {"from": "unet", "to": "bad_group"},
+            {"from": "bad_group", "to": "rank_ratio"},
+            {"from": "rank_ratio", "to": "build_rank"},
+        ],
+    }
+
+    try:
+        compile_graph_guide_to_bindings(
+            graph,
+            base_model_config=_FakeModelConfig(
+                "sdxl-sgm",
+                {"unet": ["model.diffusion_model.out.0.weight"]},
+            ),
+            custom_block_config=None,
+        )
+    except ValueError as error:
+        assert "cannot define data.groups" in str(error)
+    else:
+        raise AssertionError("Expected graph guide to reject data.groups on a group node.")
+
+
+def test_build_group_branch_without_selection_or_domain_uses_shared_defaults() -> None:
+    graph = {
+        "version": 1,
+        "nodes": [
+            {
+                "id": "unet",
+                "type": "source",
+                "data": {
+                    "source_kind": "block",
+                    "component": "unet",
+                },
+            },
+            {
+                "id": "shared_surface",
+                "type": "type",
+                "data": {
+                    "mode": "group",
+                    "name": "shared_surface",
+                },
+            },
+            {
+                "id": "alpha",
+                "type": "param",
+                "data": {"name": "alpha"},
+            },
+            {
+                "id": "build_alpha",
+                "type": "build",
+                "data": {},
+            },
+        ],
+        "edges": [
+            {"from": "unet", "to": "shared_surface"},
+            {"from": "shared_surface", "to": "alpha"},
+            {"from": "alpha", "to": "build_alpha"},
+        ],
+    }
+
+    compiled = compile_graph_guide_to_bindings(
+        graph,
+        base_model_config=_FakeModelConfig("sdxl-sgm", {"unet": ["TEXT_A"]}),
+        custom_block_config=_FakeModelConfig(
+            "sdxl-optim_blocks_sub",
+            {"unet": ["UNET_IN05_1", "UNET_OUT05_1", "UNET_MID00"]},
+        ),
+    )
+
+    assert [binding.optimizer_param_name for binding in compiled] == [
+        "shared_surface_alpha",
+    ]
+    assert compiled[0].targets == ("UNET_IN05_1", "UNET_OUT05_1", "UNET_MID00")
+    assert build_optimizer_bounds(compiled) == {
+        "shared_surface_alpha": (0.0, 1.0),
+    }
+
+
+def test_build_exclude_branch_applies_across_all_params_in_same_build() -> None:
+    graph = {
+        "version": 1,
+        "nodes": [
+            {
+                "id": "unet",
+                "type": "source",
+                "data": {
+                    "source_kind": "block",
+                    "component": "unet",
+                },
+            },
+            {
+                "id": "all_targets_alpha",
+                "type": "type",
+                "data": {"mode": "all"},
+            },
+            {
+                "id": "alpha",
+                "type": "param",
+                "data": {"name": "alpha"},
+            },
+            {
+                "id": "all_targets_beta",
+                "type": "type",
+                "data": {"mode": "all"},
+            },
+            {
+                "id": "beta",
+                "type": "param",
+                "data": {"name": "beta"},
+            },
+            {
+                "id": "excluded_block",
+                "type": "selection",
+                "data": {
+                    "mode": "block",
+                    "items": ["UNET_OUT05_1"],
+                },
+            },
+            {
+                "id": "exclude_target",
+                "type": "type",
+                "data": {"mode": "exclude"},
+            },
+            {
+                "id": "build_main",
+                "type": "build",
+                "data": {},
+            },
+        ],
+        "edges": [
+            {"from": "unet", "to": "all_targets_alpha"},
+            {"from": "all_targets_alpha", "to": "alpha"},
+            {"from": "alpha", "to": "build_main"},
+            {"from": "unet", "to": "all_targets_beta"},
+            {"from": "all_targets_beta", "to": "beta"},
+            {"from": "beta", "to": "build_main"},
+            {"from": "unet", "to": "excluded_block"},
+            {"from": "excluded_block", "to": "exclude_target"},
+            {"from": "exclude_target", "to": "build_main"},
+        ],
+    }
+
+    compiled = compile_graph_guide_to_bindings(
+        graph,
+        base_model_config=_FakeModelConfig("sdxl-sgm", {"unet": ["TEXT_A"]}),
+        custom_block_config=_FakeModelConfig(
+            "sdxl-optim_blocks_sub",
+            {"unet": ["UNET_IN05_1", "UNET_OUT05_1", "UNET_MID00"]},
+        ),
+    )
+
+    assert [binding.optimizer_param_name for binding in compiled] == [
+        "UNET_IN05_1_alpha",
+        "UNET_MID00_alpha",
+        "UNET_IN05_1_beta",
+        "UNET_MID00_beta",
+    ]
+    assert materialize_recipe_payloads(
+        {
+            "UNET_IN05_1_alpha": 0.1,
+            "UNET_MID00_alpha": 0.2,
+            "UNET_IN05_1_beta": 0.3,
+            "UNET_MID00_beta": 0.4,
+        },
+        compiled,
+    ) == {
+        "alpha": {
+            "UNET_IN05_1": 0.1,
+            "UNET_MID00": 0.2,
+        },
+        "beta": {
+            "UNET_IN05_1": 0.3,
+            "UNET_MID00": 0.4,
+        },
     }

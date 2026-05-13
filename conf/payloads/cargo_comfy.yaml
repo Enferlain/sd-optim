@@ -1,5 +1,11 @@
 defaults:
   - cargo:
-    - comfy_test
-    
+    - ayanami_pov
+    - rosmontis_black
+    - dragon_side
+    - dragon_full
+    - shiro_black
+    # - multi_payload
+    # - comfy_test
+
 score_weight: 1.0

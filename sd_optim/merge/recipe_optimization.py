@@ -11,6 +11,7 @@ from hydra.core.hydra_config import HydraConfig
 from sd_mecha.recipe_nodes import MergeRecipeNode
 
 from sd_optim.bounds import BoundsInfo
+from sd_optim.guide_runtime import GraphRuntimeBundle
 from sd_optim.merge.artifacts import save_recipe_artifacts
 from sd_optim.merge.execution import execute_recipe
 from sd_optim.merge.recipe_builder import prepare_param_recipe_args
@@ -22,6 +23,7 @@ if TYPE_CHECKING:
     from sd_optim.merger import Merger
 
 logger = logging.getLogger(__name__)
+GuideRuntimeInput = BoundsInfo | GraphRuntimeBundle
 
 
 def sanitize_recipe_text_for_deserialize(recipe_text: str) -> str:
@@ -80,7 +82,7 @@ def load_validated_target_node(merger: Merger, original_recipe_text: str) -> Mer
 def recipe_optimization(
     merger: Merger,
     params: dict[str, Any],
-    param_info: BoundsInfo,
+    param_info: GuideRuntimeInput,
     cache: dict | None,
     iteration: int,
 ) -> Path:

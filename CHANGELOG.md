@@ -5,6 +5,24 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased] - 2026-05-14
+
+### Added
+
+- Added a practical migration note in `conductor/tracks/post_reorg_cleanup_20260503/legacy_to_graph_native_guide_migration.md` explaining how legacy strategy-style guides map into the graph-native authored model, including worked examples and current transitional limitations
+- Added `sd_optim/guide_runtime.py` as the first graph-native runtime bundle surface, with focused tests covering graph-authored optimizer bounds, runtime summary metadata, and direct block/key payload materialization from compiled bindings
+
+### Changed
+
+- Tightened graph-native guide semantics so one `group` node now always means one incoming set sharing one value; multiple grouped values must be expressed as multiple explicit branches instead of one node with internal subgroup fanout
+- Aligned the saved graph-shape draft and `sd_optim/guide_nodes.py` around the same build-centered branch model for `all`, `group`, and `exclude`
+- Wired the recipe stack and optimizer startup to recognize graph runtime bundles directly: `recipe_builder`, `merger`, and `recipe_optimization` now accept compiled graph runtime data without `BoundsInfo`, and optimizer startup now treats `optimization_guide.graph` as an explicit graph-authored runtime path
+- Made graph mode explicitly reject legacy-only guide features instead of half-applying them: `custom_bounds` is rejected during graph startup/setup, and Optuna dependency mapping now rejects `optimization_guide.dependencies` for graph runtime bundles until a graph-native dependency design exists
+
+### Fixed
+
+- Fixed graph-guide semantic drift by rejecting `data.groups` on graph `group` nodes and updating runtime tests to cover multiple grouped values through separate branches
+
 ## [Unreleased] - 2026-05-12
 
 ### Added

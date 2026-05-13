@@ -10,6 +10,7 @@ import optuna
 from hydra.core.hydra_config import HydraConfig
 from omegaconf import ListConfig
 
+from sd_optim.guide_runtime import GraphRuntimeBundle
 from sd_optim.optimizers.optuna.objective import run_objective
 from sd_optim.optimizers.optuna.reporting import analyze_parameter_importance, record_trial_callback
 from sd_optim.optimizers.optuna.sampler_factory import configure_sampler
@@ -36,10 +37,19 @@ def initialize_optuna_state(optimizer: OptunaOptimizer) -> None:
     optimizer.no_improvement_count = 0
     optimizer.trial_scores = []
     optimizer.logger = TrialLogger()
-    optimizer.child_to_parent = optimizer.bounds_initializer.validate_dependencies(
-        optimizer.param_info,
-        optimizer.cfg.optimization_guide.get("dependencies", []),
-    )
+    dependencies_cfg = optimizer.cfg.optimization_guide.get("dependencies", [])
+    guide_runtime = getattr(optimizer, "guide_runtime", None)
+    if isinstance(guide_runtime, GraphRuntimeBundle):
+        if dependencies_cfg:
+            raise ValueError(
+                "optimization_guide.dependencies is not supported with graph runtime bundles yet."
+            )
+        optimizer.child_to_parent = {}
+    else:
+        optimizer.child_to_parent = optimizer.bounds_initializer.validate_dependencies(
+            optimizer.param_info,
+            dependencies_cfg,
+        )
 
 
 def initialize_storage_dir(cfg: DictConfig) -> Path:

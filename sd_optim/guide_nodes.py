@@ -8,7 +8,6 @@ from sd_optim.guide_compiler import (
     BindingSpec,
     BoundValue,
     CompiledBinding,
-    NamedGroupSpec,
     SelectionSpec,
     TargetSource,
     TargetSpace,
@@ -28,7 +27,6 @@ class _ResolvedBranch:
     param_name: str | None
     bounds: BoundValue
     shared_group_name: str | None
-    named_groups: tuple[NamedGroupSpec, ...]
     has_explicit_selection: bool
     path_index: int
 
@@ -252,15 +250,17 @@ def _resolve_branch_path(
         )
 
     bounds = _domain_value(domain_node) if domain_node is not None else (0.0, 1.0)
-    named_groups: tuple[NamedGroupSpec, ...] = ()
     shared_group_name: str | None = None
 
     if branch_type == "group":
-        named_groups = _named_groups(type_data)
-        if not named_groups:
-            shared_group_name = type_data.get("name")
-            if not isinstance(shared_group_name, str) or not shared_group_name:
-                shared_group_name = str(type_node["id"])
+        if "groups" in type_data:
+            raise ValueError(
+                f"Type node '{type_node['id']}' cannot define data.groups. "
+                "One graph 'group' node may only produce one grouped value."
+            )
+        shared_group_name = type_data.get("name")
+        if not isinstance(shared_group_name, str) or not shared_group_name:
+            shared_group_name = str(type_node["id"])
 
     return _ResolvedBranch(
         source=source,
@@ -270,7 +270,6 @@ def _resolve_branch_path(
         param_name=param_name,
         bounds=bounds,
         shared_group_name=shared_group_name,
-        named_groups=named_groups,
         has_explicit_selection=selection_node is not None,
         path_index=_path_index(path),
     )
@@ -323,50 +322,6 @@ def _compile_build_branches(
                     )
                 )
                 assigned_targets.update((branch.source.name, target) for target in available_targets)
-                continue
-
-            if branch.named_groups:
-                available_set = set(available_targets)
-                filtered_groups = tuple(
-                    NamedGroupSpec(
-                        name=group.name,
-                        include=tuple(
-                            target
-                            for target in available_targets
-                            if target in _matching_targets(available_targets, group.include, group.exclude)
-                        ),
-                    )
-                    for group in branch.named_groups
-                    if _matching_targets(available_targets, group.include, group.exclude)
-                )
-                if not filtered_groups:
-                    continue
-                bindings.append(
-                    BindingSpec(
-                        method_param_name=param_name,
-                        component_name=branch.component_name,
-                        strategy_label="graph_group",
-                        selection=SelectionSpec(
-                            source_name=branch.source.name,
-                            include=available_targets,
-                        ),
-                        grouping="named_groups",
-                        bounds=branch.bounds,
-                        named_groups=tuple(
-                            NamedGroupSpec(
-                                name=group.name,
-                                include=tuple(
-                                    target
-                                    for target in group.include
-                                    if target in available_set
-                                ),
-                            )
-                            for group in filtered_groups
-                        ),
-                    )
-                )
-                for group in filtered_groups:
-                    assigned_targets.update((branch.source.name, target) for target in group.include)
                 continue
 
             bindings.append(
@@ -450,40 +405,6 @@ def _single_node_of_type(path: list[GraphNode], node_type: str) -> GraphNode:
     if len(matches) != 1:
         raise ValueError(f"Build branches must contain exactly one '{node_type}' node.")
     return matches[0]
-
-
-def _named_groups(type_data: Mapping[str, Any]) -> tuple[NamedGroupSpec, ...]:
-    groups = type_data.get("groups")
-    if groups is None:
-        return ()
-    if not isinstance(groups, list):
-        raise ValueError("Type node groups must be a list when provided.")
-
-    named_groups: list[NamedGroupSpec] = []
-    for index, group in enumerate(groups):
-        if not isinstance(group, Mapping):
-            raise ValueError(f"Group entry at index {index} must be a mapping.")
-        name = group.get("name")
-        if not isinstance(name, str) or not name:
-            raise ValueError(f"Group entry at index {index} must define a non-empty name.")
-        include = [
-            *_string_tuple(group.get("items", ()), f"group '{name}' items"),
-            *_string_tuple(group.get("patterns", ()), f"group '{name}' patterns"),
-        ]
-        if not include:
-            raise ValueError(f"Group '{name}' must define items or patterns.")
-        exclude = [
-            *_string_tuple(group.get("exclude_items", ()), f"group '{name}' exclude_items"),
-            *_string_tuple(group.get("exclude_patterns", ()), f"group '{name}' exclude_patterns"),
-        ]
-        named_groups.append(
-            NamedGroupSpec(
-                name=name,
-                include=tuple(include),
-                exclude=tuple(exclude),
-            )
-        )
-    return tuple(named_groups)
 
 
 def _domain_value(domain_node: GraphNode) -> BoundValue:

@@ -12,6 +12,7 @@ from sd_mecha.recipe_nodes import ModelRecipeNode
 
 from sd_optim.bounds import BoundsInfo, ParameterHandler
 from sd_optim.guide_legacy import materialize_payloads_from_legacy_bounds_info
+from sd_optim.guide_runtime import GraphRuntimeBundle, materialize_target_space_payloads
 from sd_optim.merge.model_selection import get_adapter_candidate_ids, get_conversion_context_node
 from sd_optim.utils.recipes import convert_with_model_dirs
 
@@ -19,6 +20,7 @@ if TYPE_CHECKING:
     from sd_optim.merger import Merger
 
 logger = logging.getLogger(__name__)
+GuideRuntimeInput = BoundsInfo | GraphRuntimeBundle
 
 
 def get_expected_model_arg_count(merge_method: MergeMethod) -> int | None:
@@ -216,7 +218,7 @@ def prepare_model_recipe_args(
 def prepare_param_recipe_args(
     merger: Merger,
     params: dict[str, Any],
-    param_info: BoundsInfo,
+    param_info: GuideRuntimeInput,
     merge_method: MergeMethod,
 ) -> dict[str, recipe_nodes.RecipeNode]:
     """
@@ -225,12 +227,16 @@ def prepare_param_recipe_args(
     Supports combining block and key configs using fallback merge semantics.
     """
     final_param_nodes: dict[str, recipe_nodes.RecipeNode] = {}
-    block_based_values_per_param, key_based_values_per_param, handled_base_params = materialize_payloads_from_legacy_bounds_info(
+    (
+        block_based_values_per_param,
+        key_based_values_per_param,
+        handled_base_params,
+    ) = _materialize_runtime_payloads(
         params,
         param_info,
     )
     logger.debug(
-        "Prepared method payloads from supplied param metadata for recipe args: %s block params, %s key params.",
+        "Prepared method payloads from supplied runtime metadata for recipe args: %s block params, %s key params.",
         len(block_based_values_per_param),
         len(key_based_values_per_param),
     )
@@ -309,8 +315,16 @@ def prepare_param_recipe_args(
     logger.debug("Handled Base Params (Strategies): %s", handled_base_params)
     logger.debug("Unhandled Expected Kwargs: %s", unhandled_kwargs)
 
-    custom_bounds_config = merger.cfg.optimization_guide.get("custom_bounds", {})
-    validated_custom_bounds = ParameterHandler.validate_custom_bounds(custom_bounds_config)
+    validated_custom_bounds: dict[str, Any] = {}
+    if isinstance(param_info, GraphRuntimeBundle):
+        custom_bounds_config = merger.cfg.optimization_guide.get("custom_bounds", {})
+        if custom_bounds_config:
+            raise ValueError(
+                "custom_bounds is a legacy-guide feature and cannot be used with graph runtime bundles."
+            )
+    else:
+        custom_bounds_config = merger.cfg.optimization_guide.get("custom_bounds", {})
+        validated_custom_bounds = ParameterHandler.validate_custom_bounds(custom_bounds_config)
     recipe_target_params: set[str] = set()
     if merger.cfg.optimization_mode == "recipe":
         target_params_raw = merger.cfg.recipe_optimization.get("target_params", [])
@@ -348,3 +362,19 @@ def prepare_param_recipe_args(
 
     logger.info("Prepared %s final parameter nodes for merge method '%s'.", len(final_param_nodes), merge_method.identifier)
     return final_param_nodes
+
+
+def _materialize_runtime_payloads(
+    params: dict[str, Any],
+    param_info: GuideRuntimeInput,
+) -> tuple[dict[str, dict[str, Any]], dict[str, dict[str, Any]], set[str]]:
+    if isinstance(param_info, GraphRuntimeBundle):
+        return materialize_target_space_payloads(
+            params,
+            param_info.compiled_bindings,
+        )
+
+    return materialize_payloads_from_legacy_bounds_info(
+        params,
+        param_info,
+    )

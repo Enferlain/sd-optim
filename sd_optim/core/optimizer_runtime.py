@@ -182,11 +182,12 @@ async def run_trial_iteration(optimizer: Optimizer, params: dict[str, Any]) -> f
             start_merge_time = time.time()
 
             effective_iteration = optimizer.iteration + optimizer.completed_trials
+            guide_runtime = getattr(optimizer, "guide_runtime", None) or optimizer.param_info
             if optimizer.cfg.optimization_mode == "merge":
                 optimizer.merger.output_file = optimizer.merger.create_model_output_name(iteration=effective_iteration)
                 model_path = optimizer.merger.merge(
                     params=params,
-                    param_info=optimizer.param_info,
+                    param_info=guide_runtime,
                     cache=optimizer.cache,
                     iteration=effective_iteration,
                 )
@@ -196,7 +197,7 @@ async def run_trial_iteration(optimizer: Optimizer, params: dict[str, Any]) -> f
             elif optimizer.cfg.optimization_mode == "recipe":
                 model_path = optimizer.merger.recipe_optimization(
                     params=params,
-                    param_info=optimizer.param_info,
+                    param_info=guide_runtime,
                     cache=optimizer.cache,
                     iteration=effective_iteration,
                 )

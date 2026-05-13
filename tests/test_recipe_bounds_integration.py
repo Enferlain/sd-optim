@@ -13,6 +13,7 @@ from torch import Tensor
 import sd_optim.merge.recipe_builder as recipe_builder
 from sd_optim.bounds import ParameterHandler
 from sd_optim.guide_legacy import materialize_legacy_guide_payloads
+from sd_optim.guide_runtime import build_graph_runtime_bundle
 
 
 @sd_mecha.merge_method(identifier="recipe_bounds_demo_for_tests")
@@ -377,3 +378,189 @@ def test_prepare_param_recipe_args_uses_supplied_param_info(
     assert new_param_nodes["alpha"].value_dict == {
         "TEXT_A": 0.3,
     }
+
+
+def test_prepare_param_recipe_args_accepts_graph_runtime_bundle(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    graph = {
+        "version": 1,
+        "nodes": [
+            {
+                "id": "unet_keys",
+                "type": "source",
+                "data": {
+                    "source_kind": "key",
+                    "component": "unet",
+                },
+            },
+            {
+                "id": "selected_keys",
+                "type": "selection",
+                "data": {
+                    "mode": "regex",
+                    "patterns": ["TEXT_*"],
+                },
+            },
+            {
+                "id": "all_keys",
+                "type": "type",
+                "data": {"mode": "all"},
+            },
+            {
+                "id": "alpha",
+                "type": "param",
+                "data": {"name": "alpha"},
+            },
+            {
+                "id": "build_alpha",
+                "type": "build",
+                "data": {},
+            },
+        ],
+        "edges": [
+            {"from": "unet_keys", "to": "selected_keys"},
+            {"from": "selected_keys", "to": "all_keys"},
+            {"from": "all_keys", "to": "alpha"},
+            {"from": "alpha", "to": "build_alpha"},
+        ],
+    }
+    graph_bundle = build_graph_runtime_bundle(
+        graph,
+        base_model_config=_FakeModelConfig(
+            "sdxl-sgm",
+            {
+                "unet": ["TEXT_A", "TEXT_B", "TEXT_C"],
+            },
+        ),
+        custom_block_config=None,
+    )
+
+    merger = SimpleNamespace(
+        cfg=OmegaConf.create(
+            {
+                "optimization_mode": "recipe",
+                "merge": {"merge_method": "recipe_bounds_demo_for_tests"},
+                "recipe_optimization": {
+                    "target_params": ["alpha"],
+                },
+                "optimization_guide": {},
+            }
+        ),
+        base_model_config=_FakeModelConfig(
+            "sdxl-sgm",
+            {
+                "unet": ["TEXT_A", "TEXT_B", "TEXT_C"],
+            },
+        ),
+        custom_block_config=None,
+        models_dir=tmp_path,
+        models=[],
+        _model_config_candidates_cache={},
+    )
+    monkeypatch.setattr(recipe_builder, "get_conversion_context_node", lambda _: object())
+
+    new_param_nodes = recipe_builder.prepare_param_recipe_args(
+        merger,
+        {
+            "TEXT_A_alpha": 0.2,
+            "TEXT_B_alpha": 0.4,
+            "TEXT_C_alpha": 0.8,
+        },
+        graph_bundle,
+        recipe_bounds_demo_for_tests,
+    )
+
+    assert new_param_nodes["alpha"].value_dict == {
+        "TEXT_A": 0.2,
+        "TEXT_B": 0.4,
+        "TEXT_C": 0.8,
+    }
+
+
+def test_prepare_param_recipe_args_rejects_custom_bounds_for_graph_runtime_bundle(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    graph = {
+        "version": 1,
+        "nodes": [
+            {
+                "id": "unet_keys",
+                "type": "source",
+                "data": {
+                    "source_kind": "key",
+                    "component": "unet",
+                },
+            },
+            {
+                "id": "all_keys",
+                "type": "type",
+                "data": {"mode": "all"},
+            },
+            {
+                "id": "alpha",
+                "type": "param",
+                "data": {"name": "alpha"},
+            },
+            {
+                "id": "build_alpha",
+                "type": "build",
+                "data": {},
+            },
+        ],
+        "edges": [
+            {"from": "unet_keys", "to": "all_keys"},
+            {"from": "all_keys", "to": "alpha"},
+            {"from": "alpha", "to": "build_alpha"},
+        ],
+    }
+    graph_bundle = build_graph_runtime_bundle(
+        graph,
+        base_model_config=_FakeModelConfig(
+            "sdxl-sgm",
+            {
+                "unet": ["TEXT_A"],
+            },
+        ),
+        custom_block_config=None,
+    )
+
+    merger = SimpleNamespace(
+        cfg=OmegaConf.create(
+            {
+                "optimization_mode": "recipe",
+                "merge": {"merge_method": "recipe_bounds_demo_for_tests"},
+                "recipe_optimization": {
+                    "target_params": ["alpha", "beta"],
+                },
+                "optimization_guide": {
+                    "custom_bounds": {
+                        "beta": 0.9,
+                    }
+                },
+            }
+        ),
+        base_model_config=_FakeModelConfig(
+            "sdxl-sgm",
+            {
+                "unet": ["TEXT_A"],
+            },
+        ),
+        custom_block_config=None,
+        models_dir=tmp_path,
+        models=[],
+        _model_config_candidates_cache={},
+    )
+    monkeypatch.setattr(recipe_builder, "get_conversion_context_node", lambda _: object())
+
+    with pytest.raises(ValueError, match="custom_bounds is a legacy-guide feature"):
+        recipe_builder.prepare_param_recipe_args(
+            merger,
+            {
+                "TEXT_A_alpha": 0.2,
+            },
+            graph_bundle,
+            recipe_bounds_demo_for_tests,
+        )

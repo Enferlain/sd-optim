@@ -281,6 +281,7 @@ Type node responsibilities:
 - tell the build how to interpret the branch
 - keep `all` as a type, not a selection
 - let exclusion remain stronger than inclusion inside the same build
+- treat `group` as one grouped output value for the incoming set, never multiple internal buckets
 
 ### 4. Domain
 
@@ -362,8 +363,30 @@ Build node responsibilities:
 - gather all incoming branches
 - apply exclusion across the whole build
 - let narrower/grouped branches win before broader `all` branches
-- fill in default selection, domain, and param behavior where appropriate
+- fill in implicit source selection and default domain behavior where those nodes are absent
+- require an explicit param for non-`exclude` branches, even when other defaults stay implicit
 - only then compile the final bindings
+
+## Current locked defaults
+
+Until the saved graph format and runtime compiler evolve further, the current intended defaults are:
+
+- no `selection` node means "use the full source item set"
+- no `domain` node means "use the default `(0.0, 1.0)` range"
+- no `param` node is only valid for `exclude` branches
+- `Type(group)` with no explicit selection or domain means the whole incoming set shares one value
+- `Type(exclude)` applies across the entire build, not just one param branch
+
+That means the current small authored defaults are:
+
+- broad per-target default:
+  `Source -> Type(all) -> Param -> Build`
+- broad shared default:
+  `Source -> Type(group) -> Param -> Build`
+- grouped exception:
+  `Source -> Selection(...) -> Type(group) -> Domain? -> Param -> Build`
+- stronger carve-out:
+  `Source -> Selection(...) -> Type(exclude) -> Build`
 
 ## Recommended connection patterns
 
@@ -430,6 +453,11 @@ These patterns line up with the sketch discussion:
 - broad defaults
 - carve-outs
 - grouped exceptions
+
+Important clarification:
+
+- one `group` node receives one incoming set and produces one grouped value
+- if authored intent needs two grouped values, that is two separate branches, not one `group` node with internal subgroups
 
 ## Allowed edge rules
 
@@ -513,7 +541,7 @@ That means:
 These points still need follow-up:
 
 1. whether exact item-picking and regex selection should stay under one `selection` node type or split later
-2. whether `group` needs any extra saved settings beyond an optional group name or named group list
+2. whether `group` needs any extra saved settings beyond an optional group name
 3. how much of default param/domain inheritance should be shown in editor UX versus left implicit
 4. whether dependencies should become a first-class authored node later
 5. whether some simple chains should be collapsed into compound nodes in saved graph form

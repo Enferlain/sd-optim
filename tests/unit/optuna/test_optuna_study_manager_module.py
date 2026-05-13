@@ -8,6 +8,7 @@ import optuna
 import pytest
 from omegaconf import OmegaConf
 
+from sd_optim.guide_runtime import GraphRuntimeBundle, GraphRuntimeSummary
 from sd_optim.optimizers.optuna import study_manager
 
 
@@ -109,6 +110,78 @@ def test_initialize_optuna_state_wires_storage_logger_and_dependencies(monkeypat
     assert optimizer.optuna_storage_dir == tmp_path
     assert optimizer.logger is logger_instance
     assert optimizer.child_to_parent["beta"]["parent"] == "alpha"
+
+
+def test_initialize_optuna_state_skips_legacy_dependency_mapping_for_graph_runtime(monkeypatch, tmp_path: Path) -> None:
+    cfg = _make_cfg(optuna_overrides={"storage_dir": str(tmp_path)})
+    logger_instance = _DummyTrialLogger()
+    monkeypatch.setattr(study_manager, "TrialLogger", lambda: logger_instance)
+    monkeypatch.setattr(study_manager, "initialize_storage_dir", lambda cfg: tmp_path)  # noqa: ARG005
+
+    optimizer = SimpleNamespace(
+        cfg=cfg,
+        param_info={},
+        guide_runtime=GraphRuntimeBundle(
+            compiled_bindings=(),
+            optimizer_bounds={"alpha": (0.0, 1.0)},
+            summary=GraphRuntimeSummary(
+                source_count=1,
+                build_count=1,
+                binding_count=1,
+                compiled_parameter_count=1,
+                target_space_counts={"key": 1},
+                grouping_counts={"per_target": 1},
+                bounds_shape_counts={
+                    "fixed": 0,
+                    "categorical": 0,
+                    "continuous": 1,
+                    "default_bounds_used": 1,
+                },
+            ),
+        ),
+        bounds_initializer=SimpleNamespace(
+            validate_dependencies=lambda param_info, deps: (_ for _ in ()).throw(AssertionError("legacy dependency validation should not run"))  # noqa: ARG005
+        ),
+    )
+
+    study_manager.initialize_optuna_state(optimizer)
+
+    assert optimizer.child_to_parent == {}
+
+
+def test_initialize_optuna_state_rejects_dependencies_for_graph_runtime(monkeypatch, tmp_path: Path) -> None:
+    cfg = _make_cfg(optuna_overrides={"storage_dir": str(tmp_path)})
+    cfg.optimization_guide.dependencies = [{"parent": "alpha", "child": "beta"}]
+    logger_instance = _DummyTrialLogger()
+    monkeypatch.setattr(study_manager, "TrialLogger", lambda: logger_instance)
+    monkeypatch.setattr(study_manager, "initialize_storage_dir", lambda cfg: tmp_path)  # noqa: ARG005
+
+    optimizer = SimpleNamespace(
+        cfg=cfg,
+        param_info={},
+        guide_runtime=GraphRuntimeBundle(
+            compiled_bindings=(),
+            optimizer_bounds={"alpha": (0.0, 1.0)},
+            summary=GraphRuntimeSummary(
+                source_count=1,
+                build_count=1,
+                binding_count=1,
+                compiled_parameter_count=1,
+                target_space_counts={"key": 1},
+                grouping_counts={"per_target": 1},
+                bounds_shape_counts={
+                    "fixed": 0,
+                    "categorical": 0,
+                    "continuous": 1,
+                    "default_bounds_used": 1,
+                },
+            ),
+        ),
+        bounds_initializer=SimpleNamespace(validate_dependencies=lambda param_info, deps: {}),  # noqa: ARG005
+    )
+
+    with pytest.raises(ValueError, match="dependencies is not supported with graph runtime bundles yet"):
+        study_manager.initialize_optuna_state(optimizer)
 
 
 def test_initialize_storage_dir_and_storage_uri_fallback(monkeypatch, tmp_path: Path) -> None:

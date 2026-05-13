@@ -9,6 +9,7 @@ from omegaconf import DictConfig
 from sd_mecha.recipe_nodes import ModelRecipeNode, RecipeNode
 
 from sd_optim.bounds import BoundsInfo
+from sd_optim.guide_runtime import GraphRuntimeBundle
 from sd_optim.merge.artifacts import create_model_output_name as build_model_output_name
 from sd_optim.merge.artifacts import save_recipe_artifacts as save_merge_artifacts
 from sd_optim.merge.execution import execute_recipe
@@ -28,6 +29,7 @@ from sd_optim.utils.recipes import build_recipe_cache_map
 
 logger = logging.getLogger(__name__)
 __all__ = ["Merger", "fallback_debug_logged"]
+GuideRuntimeInput = BoundsInfo | GraphRuntimeBundle
 
 @dataclass
 class Merger:
@@ -66,7 +68,7 @@ class Merger:
     def merge(
         self,
         params: dict[str, Any],  # Flat params from optimizer
-        param_info: BoundsInfo,  # <<< ADDED: Full metadata from ParameterHandler
+        param_info: GuideRuntimeInput,
         cache: dict | None,
         iteration: int = 0,  # <<< ADD iteration parameter
     ) -> Path:
@@ -130,7 +132,7 @@ class Merger:
     def recipe_optimization(
         self,
         params: dict[str, Any],
-        param_info: BoundsInfo,
+        param_info: GuideRuntimeInput,
         cache: dict | None,
         iteration: int,
     ) -> Path:

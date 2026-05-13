@@ -6,6 +6,7 @@ import json
 
 from contextlib import suppress
 from abc import ABC, abstractmethod
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -37,6 +38,7 @@ from sd_optim.core.optimizer_runtime import run_trial_iteration, sequential_prod
 from sd_mecha.recipe_nodes import ModelRecipeNode
 from sd_optim.bounds import ParameterHandler, BoundsInfo
 from sd_optim.generator import Generator
+from sd_optim.guide_runtime import GraphRuntimeBundle, build_graph_runtime_bundle
 from sd_optim.merger import Merger
 from sd_optim.prompter import Prompter
 from sd_optim.scorer import Scorer
@@ -56,6 +58,7 @@ class Optimizer(ABC):
     cfg: DictConfig
     best_rolling_score: float = 0.0
     param_info: BoundsInfo = field(default_factory=dict, init=False)
+    guide_runtime: BoundsInfo | GraphRuntimeBundle | None = field(default=None, init=False)
     optimizer_pbounds: dict[str, tuple[float, float] | float | int | list] = field(default_factory=dict, init=False)
     optimization_start_time: float | None = None  # Add start time tracker
     completed_trials: int = 0  # To track trials from resumed studies
@@ -178,14 +181,32 @@ class Optimizer(ABC):
     def setup_parameter_space(self):
         """Generates parameter info and extracts bounds for the optimizer."""
         logger.info("Setting up optimization parameter space...")
-        self.param_info, self.optimizer_pbounds = self.bounds_initializer.get_bounds(self.cfg.optimization_guide.get("custom_bounds"))
-        self.optimizer_pbounds = {}
-        for param_name, info in self.param_info.items():
-            bounds_value = info.get("bounds")
-            if bounds_value is None:
-                logger.warning(f"Parameter '{param_name}' missing 'bounds' in info. Skipping for optimizer.")
-                continue
-            self.optimizer_pbounds[param_name] = bounds_value
+        graph_guide = self._graph_guide_config()
+        if graph_guide is not None:
+            custom_bounds_config = self.cfg.optimization_guide.get("custom_bounds", {})
+            if custom_bounds_config:
+                raise ValueError(
+                    "custom_bounds is a legacy-guide feature and cannot be used with graph runtime bundles."
+                )
+
+            graph_runtime = build_graph_runtime_bundle(
+                graph_guide,
+                base_model_config=self.bounds_initializer.base_model_config,
+                custom_block_config=self.bounds_initializer.custom_block_config,
+            )
+            self.guide_runtime = graph_runtime
+            self.param_info = {}
+            self.optimizer_pbounds = dict(graph_runtime.optimizer_bounds)
+        else:
+            self.param_info, self.optimizer_pbounds = self.bounds_initializer.get_bounds(self.cfg.optimization_guide.get("custom_bounds"))
+            self.optimizer_pbounds = {}
+            for param_name, info in self.param_info.items():
+                bounds_value = info.get("bounds")
+                if bounds_value is None:
+                    logger.warning(f"Parameter '{param_name}' missing 'bounds' in info. Skipping for optimizer.")
+                    continue
+                self.optimizer_pbounds[param_name] = bounds_value
+            self.guide_runtime = self.param_info
 
         # Optional: Check if optimizer_pbounds is empty and raise error
         if not self.optimizer_pbounds:
@@ -193,6 +214,14 @@ class Optimizer(ABC):
             # Decide if this should be fatal or just a warning depending on the optimizer
             raise ValueError("Optimization parameter space for the optimizer is empty.")
         logger.debug("Prepared %s parameters for the optimizer with specific bounds.", len(self.optimizer_pbounds))
+
+    def _graph_guide_config(self) -> Mapping[str, Any] | None:
+        graph_guide = self.cfg.optimization_guide.get("graph")
+        if not isinstance(graph_guide, Mapping):
+            return None
+        if "nodes" not in graph_guide or "edges" not in graph_guide:
+            return None
+        return graph_guide
 
     async def _sequential_producer(
         self,

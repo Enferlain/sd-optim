@@ -8,6 +8,7 @@ from types import SimpleNamespace
 
 import pytest
 from omegaconf import OmegaConf
+from sd_optim.guide_runtime import GraphRuntimeBundle, GraphRuntimeSummary
 
 
 def test_optimizer_base_module_exports_optimizer_class() -> None:
@@ -97,3 +98,106 @@ def test_setup_parameter_space_keeps_parameter_count_log_at_debug(caplog: pytest
     caplog.set_level("DEBUG")
     optimizer.setup_parameter_space()
     assert "Prepared 1 parameters for the optimizer with specific bounds." in caplog.text
+
+
+def test_setup_parameter_space_uses_graph_runtime_bundle_when_graph_config_present(monkeypatch) -> None:
+    module = importlib.import_module("sd_optim.core.optimizer_base")
+
+    class _TestOptimizer(module.Optimizer):
+        def optimize(self) -> None:
+            return None
+
+        def validate_optimizer_config(self) -> bool:
+            return True
+
+        def get_optimization_history(self) -> list:
+            return []
+
+        def get_best_parameters(self) -> dict:
+            return {}
+
+        def postprocess(self) -> None:
+            return None
+
+    graph_bundle = GraphRuntimeBundle(
+        compiled_bindings=(),
+        optimizer_bounds={"alpha": (0.0, 1.0)},
+        summary=GraphRuntimeSummary(
+            source_count=1,
+            build_count=1,
+            binding_count=1,
+            compiled_parameter_count=1,
+            target_space_counts={"key": 1},
+            grouping_counts={"per_target": 1},
+            bounds_shape_counts={
+                "fixed": 0,
+                "categorical": 0,
+                "continuous": 1,
+                "default_bounds_used": 1,
+            },
+        ),
+    )
+    monkeypatch.setattr(module, "build_graph_runtime_bundle", lambda *args, **kwargs: graph_bundle)
+
+    optimizer = object.__new__(_TestOptimizer)
+    optimizer.cfg = OmegaConf.create(
+        {
+            "optimization_guide": {
+                "graph": {
+                    "nodes": [],
+                    "edges": [],
+                },
+                "custom_bounds": {},
+            }
+        }
+    )
+    optimizer.bounds_initializer = SimpleNamespace(
+        base_model_config=object(),
+        custom_block_config=None,
+    )
+
+    optimizer.setup_parameter_space()
+
+    assert optimizer.guide_runtime is graph_bundle
+    assert optimizer.param_info == {}
+    assert optimizer.optimizer_pbounds == {"alpha": (0.0, 1.0)}
+
+
+def test_setup_parameter_space_rejects_custom_bounds_for_graph_runtime_bundle() -> None:
+    module = importlib.import_module("sd_optim.core.optimizer_base")
+
+    class _TestOptimizer(module.Optimizer):
+        def optimize(self) -> None:
+            return None
+
+        def validate_optimizer_config(self) -> bool:
+            return True
+
+        def get_optimization_history(self) -> list:
+            return []
+
+        def get_best_parameters(self) -> dict:
+            return {}
+
+        def postprocess(self) -> None:
+            return None
+
+    optimizer = object.__new__(_TestOptimizer)
+    optimizer.cfg = OmegaConf.create(
+        {
+            "optimization_guide": {
+                "graph": {
+                    "nodes": [],
+                    "edges": [],
+                },
+                "custom_bounds": {"alpha": 0.5},
+            }
+        }
+    )
+    optimizer.bounds_initializer = SimpleNamespace(
+        base_model_config=object(),
+        custom_block_config=None,
+    )
+
+    with pytest.raises(ValueError, match="custom_bounds is a legacy-guide feature"):
+        optimizer.setup_parameter_space()

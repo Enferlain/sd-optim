@@ -179,3 +179,8 @@ analysis_output/
 *.code-workspace
 UV_SETUP.md
 uv_torch_guide.md
+
+# Beads / Dolt files (added by bd init)
+.dolt/
+*.db
+.beads-credential-key

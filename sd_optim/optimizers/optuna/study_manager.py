@@ -10,7 +10,7 @@ import optuna
 from hydra.core.hydra_config import HydraConfig
 from omegaconf import ListConfig
 
-from sd_optim.guide_runtime import GraphRuntimeBundle
+from sd_optim.guide_runtime import GraphRuntimeBundle, validate_graph_dependencies
 from sd_optim.optimizers.optuna.objective import run_objective
 from sd_optim.optimizers.optuna.reporting import analyze_parameter_importance, record_trial_callback
 from sd_optim.optimizers.optuna.sampler_factory import configure_sampler
@@ -40,11 +40,10 @@ def initialize_optuna_state(optimizer: OptunaOptimizer) -> None:
     dependencies_cfg = optimizer.cfg.optimization_guide.get("dependencies", [])
     guide_runtime = getattr(optimizer, "guide_runtime", None)
     if isinstance(guide_runtime, GraphRuntimeBundle):
-        if dependencies_cfg:
-            raise ValueError(
-                "optimization_guide.dependencies is not supported with graph runtime bundles yet."
-            )
-        optimizer.child_to_parent = {}
+        optimizer.child_to_parent = validate_graph_dependencies(
+            guide_runtime,
+            dependencies_cfg,
+        )
     else:
         optimizer.child_to_parent = optimizer.bounds_initializer.validate_dependencies(
             optimizer.param_info,

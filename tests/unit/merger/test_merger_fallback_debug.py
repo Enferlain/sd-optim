@@ -5,6 +5,7 @@ import logging
 import sys
 import types
 
+import pytest
 import sd_mecha
 from omegaconf import OmegaConf
 from sd_mecha.keys_map import RealizedKeyRelation
@@ -235,3 +236,35 @@ def test_is_adapter_model_config_uses_identifier_suffix() -> None:
 
     assert model_selection_mod.is_adapter_model_config(merger, types.SimpleNamespace(identifier="sdxl-kohya_kohya_lora")) is True
     assert model_selection_mod.is_adapter_model_config(merger, types.SimpleNamespace(identifier="sdxl-sgm")) is False
+
+
+def test_validate_node_is_not_lora_wraps_model_config_inference_failures(monkeypatch, tmp_path) -> None:
+    merger = object.__new__(merger_mod.Merger)
+    merger.models_dir = tmp_path
+    merger._model_config_candidates_cache = {}
+
+    monkeypatch.setattr(
+        model_selection_mod,
+        "get_model_config_candidates",
+        lambda node, model_dirs_to_add: (_ for _ in ()).throw(OSError("config lookup failed")),  # noqa: ARG005
+    )
+
+    with pytest.raises(RuntimeError, match="Could not verify model 'adapter.safetensors'"):
+        model_selection_mod.validate_node_is_not_lora(merger, sd_mecha.model("adapter.safetensors"))
+
+
+def test_select_base_model_wraps_model_config_inference_failures(monkeypatch, tmp_path) -> None:
+    merger = object.__new__(merger_mod.Merger)
+    merger.cfg = OmegaConf.create({"merge": {"base_model_index": 0}})
+    merger.models_dir = tmp_path
+    merger._model_config_candidates_cache = {}
+    merger.models = [sd_mecha.model("base.safetensors")]
+
+    monkeypatch.setattr(
+        model_selection_mod,
+        "get_model_config_candidates",
+        lambda node, model_dirs_to_add: (_ for _ in ()).throw(OSError("config lookup failed")),  # noqa: ARG005
+    )
+
+    with pytest.raises(ValueError, match="Could not verify base model 'base.safetensors'"):
+        model_selection_mod.select_base_model(merger)

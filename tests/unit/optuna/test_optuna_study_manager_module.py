@@ -149,7 +149,7 @@ def test_initialize_optuna_state_skips_legacy_dependency_mapping_for_graph_runti
     assert optimizer.child_to_parent == {}
 
 
-def test_initialize_optuna_state_rejects_dependencies_for_graph_runtime(monkeypatch, tmp_path: Path) -> None:
+def test_initialize_optuna_state_maps_graph_runtime_dependencies(monkeypatch, tmp_path: Path) -> None:
     cfg = _make_cfg(optuna_overrides={"storage_dir": str(tmp_path)})
     cfg.optimization_guide.dependencies = [{"parent": "alpha", "child": "beta"}]
     logger_instance = _DummyTrialLogger()
@@ -180,8 +180,21 @@ def test_initialize_optuna_state_rejects_dependencies_for_graph_runtime(monkeypa
         bounds_initializer=SimpleNamespace(validate_dependencies=lambda param_info, deps: {}),  # noqa: ARG005
     )
 
-    with pytest.raises(ValueError, match="dependencies is not supported with graph runtime bundles yet"):
-        study_manager.initialize_optuna_state(optimizer)
+    monkeypatch.setattr(
+        study_manager,
+        "validate_graph_dependencies",
+        lambda guide_runtime, dependencies_cfg: {"beta": {"parent": "alpha", "condition": "!= 0", "default": 1.0}},
+    )
+
+    study_manager.initialize_optuna_state(optimizer)
+
+    assert optimizer.child_to_parent == {
+        "beta": {
+            "parent": "alpha",
+            "condition": "!= 0",
+            "default": 1.0,
+        }
+    }
 
 
 def test_initialize_storage_dir_and_storage_uri_fallback(monkeypatch, tmp_path: Path) -> None:

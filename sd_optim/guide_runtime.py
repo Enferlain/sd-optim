@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
 
@@ -32,6 +33,10 @@ class GraphRuntimeBundle:
     compiled_bindings: tuple[CompiledBinding, ...]
     optimizer_bounds: dict[str, BoundValue]
     summary: GraphRuntimeSummary
+
+
+GraphDependencyMap = dict[str, dict[str, Any]]
+_GraphDependencyScope = tuple[str, str, tuple[str, ...]]
 
 
 def build_graph_runtime_bundle(
@@ -66,6 +71,84 @@ def build_graph_runtime_bundle(
         optimizer_bounds=optimizer_bounds,
         summary=summary,
     )
+
+
+def validate_graph_dependencies(
+    guide_runtime: GraphRuntimeBundle,
+    dependencies_cfg: list[dict[str, Any]] | None,
+) -> GraphDependencyMap:
+    """Map authored graph dependency declarations to optimizer-visible params."""
+    if not dependencies_cfg:
+        return {}
+
+    logger.info("Validating graph runtime parameter dependencies...")
+    scoped_params = _build_graph_dependency_scope_map(guide_runtime.compiled_bindings)
+    child_to_parent_map: GraphDependencyMap = {}
+
+    for dep_idx, dep in enumerate(dependencies_cfg):
+        if not isinstance(dep, Mapping):
+            logger.warning("Graph dependency at index %s is not a mapping. Skipping.", dep_idx)
+            continue
+
+        parent_base = dep.get("parent")
+        child_base = dep.get("child")
+        condition_str = dep.get("condition", "!= 0")
+        default_val = dep.get("default", 1.0)
+
+        if not isinstance(parent_base, str) or not parent_base or not isinstance(child_base, str) or not child_base:
+            logger.warning("Graph dependency at index %s missing 'parent' or 'child'. Skipping.", dep_idx)
+            continue
+
+        parent_scopes = scoped_params.get(parent_base)
+        child_scopes = scoped_params.get(child_base)
+        if not parent_scopes:
+            logger.warning("Graph dependency parent parameter '%s' was not found. Skipping.", parent_base)
+            continue
+        if not child_scopes:
+            logger.warning("Graph dependency child parameter '%s' was not found. Skipping.", child_base)
+            continue
+
+        mapped_count = 0
+        for scope, child_full in child_scopes.items():
+            parent_full = parent_scopes.get(scope)
+            if parent_full is None:
+                continue
+            child_to_parent_map[child_full] = {
+                "parent": parent_full,
+                "condition": condition_str,
+                "default": default_val,
+            }
+            mapped_count += 1
+
+        if mapped_count > 0:
+            logger.info(
+                "  Mapped graph dependency '%s' -> '%s' for %s binding scope(s).",
+                parent_base,
+                child_base,
+                mapped_count,
+            )
+        else:
+            logger.debug(
+                "  No matching graph binding scopes found for dependency '%s' -> '%s'.",
+                parent_base,
+                child_base,
+            )
+
+    return child_to_parent_map
+
+
+def _build_graph_dependency_scope_map(
+    compiled_bindings: tuple[CompiledBinding, ...] | list[CompiledBinding],
+) -> dict[str, dict[_GraphDependencyScope, str]]:
+    scoped_params: dict[str, dict[_GraphDependencyScope, str]] = {}
+    for binding in compiled_bindings:
+        scope = (
+            binding.target_space,
+            binding.source_name,
+            binding.targets,
+        )
+        scoped_params.setdefault(binding.method_param_name, {})[scope] = binding.optimizer_param_name
+    return scoped_params
 
 
 def summarize_graph_runtime(

@@ -25,23 +25,24 @@ The graph-backed pieces that already exist are:
 - [sd_optim/guide_legacy.py](/D:/Projects/sd-optim/sd_optim/guide_legacy.py)
   - legacy guide -> graph-backed bindings / payloads / bounds metadata
 
-The main runtime is **not** using the graph path yet. The active callers still go through `ParameterHandler` and legacy `BoundsInfo`:
+The main runtime now has a direct graph path for startup, optimizer proposals, merge payloads, recipe payloads, and Optuna dependency mapping. The legacy callers still go through `ParameterHandler` and `BoundsInfo` when no `optimization_guide.graph` is configured:
 
 - [sd_optim/core/optimizer_base.py](/D:/Projects/sd-optim/sd_optim/core/optimizer_base.py)
   - instantiates `ParameterHandler`
   - calls `get_bounds(...)`
 - [sd_optim/optimizers/optuna/study_manager.py](/D:/Projects/sd-optim/sd_optim/optimizers/optuna/study_manager.py)
-  - calls `bounds_initializer.validate_dependencies(...)`
+  - maps graph dependencies from compiled binding scopes
+  - calls `bounds_initializer.validate_dependencies(...)` only for legacy runtime data
 - [sd_optim/merge/recipe_builder.py](/D:/Projects/sd-optim/sd_optim/merge/recipe_builder.py)
-  - consumes `BoundsInfo`
-  - calls `materialize_payloads_from_legacy_bounds_info(...)`
-  - still calls `ParameterHandler.validate_custom_bounds(...)`
+  - consumes `GraphRuntimeBundle` directly in graph mode
+  - calls `materialize_payloads_from_legacy_bounds_info(...)` only in legacy mode
+  - still calls `ParameterHandler.validate_custom_bounds(...)` only for legacy fixed kwarg behavior
 - [sd_optim/merger.py](/D:/Projects/sd-optim/sd_optim/merger.py)
   - merge / recipe entrypoints still accept `BoundsInfo`
 - [sd_optim/merge/recipe_optimization.py](/D:/Projects/sd-optim/sd_optim/merge/recipe_optimization.py)
   - still takes `BoundsInfo`
 
-In other words: the graph compiler exists, but only tests call it directly today.
+In other words: the graph compiler is now a runtime path, while the legacy path remains active for compatibility.
 
 ### What the graph runtime still needs
 
@@ -111,22 +112,21 @@ The graph runtime should be able to feed merge and recipe optimization directly 
 
 #### 4. An explicit dependency decision
 
-Dependencies are still wired through:
+Legacy-authored dependencies are still configured through:
 
 - `cfg.optimization_guide.dependencies`
-- `ParameterHandler.validate_dependencies(...)`
 
-The graph shape note already leaves this as an open question.
+Graph mode now maps that same dependency config through compiled graph binding scopes in `sd_optim/guide_runtime.py`, so dependency behavior can run without routing through `BoundsInfo` or `ParameterHandler.validate_dependencies(...)`.
 
-Before switching runtime callers, we need an explicit product decision:
+The remaining product decision is whether the authored graph eventually gets a first-class dependency node or keeps this transitional config surface:
 
-1. dependencies are legacy-only for now
-2. dependencies get a graph-native authored form
-3. dependencies are suspended until the graph path grows its own version
+1. keep `optimization_guide.dependencies` as the shared transitional surface
+2. add a graph-native authored dependency form
+3. remove dependency support from graph mode if the concept does not fit the newer model
 
 What should **not** happen is silently reusing `BoundsInfo` dependency mapping as the graph contract.
 
-This is the only notable runtime area where the graph path still lacks a settled authored story.
+The runtime fallback is gone; only the authored shape is still unsettled.
 
 #### 5. A graph loading surface in config/runtime
 
@@ -205,6 +205,7 @@ Deliverable:
 Status:
 
 - Done for the recipe stack. [recipe_builder.py](/D:/Projects/sd-optim/sd_optim/merge/recipe_builder.py), [merger.py](/D:/Projects/sd-optim/sd_optim/merger.py), and [recipe_optimization.py](/D:/Projects/sd-optim/sd_optim/merge/recipe_optimization.py) now accept `GraphRuntimeBundle` directly and materialize payloads from compiled bindings without routing through legacy `BoundsInfo`.
+- Graph-generated optimizer params now have explicit regression coverage through the merge trial loop into `Merger.merge()`, and graph-authored method parameter names are checked against the selected merge method before sd-mecha recipe construction.
 
 #### Phase 3: Wire optimizer startup to choose graph path directly
 
@@ -232,7 +233,7 @@ Deliverable:
 
 Status:
 
-- Transitional guard is in place. [study_manager.py](/D:/Projects/sd-optim/sd_optim/optimizers/optuna/study_manager.py) now rejects `optimization_guide.dependencies` when running from a graph runtime bundle instead of silently attempting legacy dependency mapping. A real graph-native dependency design is still open.
+- Runtime mapping is in place. [sd_optim/guide_runtime.py](/D:/Projects/sd-optim/sd_optim/guide_runtime.py) maps `optimization_guide.dependencies` from compiled graph binding scopes, and [study_manager.py](/D:/Projects/sd-optim/sd_optim/optimizers/optuna/study_manager.py) uses that graph-native mapper instead of `ParameterHandler.validate_dependencies(...)` when running from a `GraphRuntimeBundle`. A first-class authored dependency node is still open.
 
 #### Phase 5: Reduce repo-internal reliance on `bounds.py`
 
@@ -252,10 +253,10 @@ Deliverable:
 
 ### Practical next task
 
-The most useful next implementation slice is:
+The remaining useful implementation slice is:
 
-1. add the graph runtime bundle
-2. switch graph payload materialization in `recipe_builder`
-3. leave optimizer dependency handling unresolved until the authored dependency decision is made
+1. decide whether graph dependencies stay in the transitional config surface or become authored graph nodes
+2. add polished graph guide config examples/templates
+3. keep `custom_bounds` legacy-only and express graph domains with domain nodes
 
-That gives the graph path a real runtime consumer without dragging legacy `custom_bounds` or `BoundsInfo` deeper into the new system.
+That keeps graph runtime behavior direct without dragging legacy `custom_bounds` or `BoundsInfo` deeper into the new system.

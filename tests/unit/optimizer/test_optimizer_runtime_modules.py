@@ -9,6 +9,8 @@ from omegaconf import OmegaConf
 from PIL import Image
 
 from sd_optim.core.optimizer_cache import calculate_image_hash
+from sd_optim.guide_compiler import CompiledBinding
+from sd_optim.guide_runtime import GraphRuntimeBundle, GraphRuntimeSummary
 
 
 def test_optimizer_runtime_module_exports_trial_helpers() -> None:
@@ -321,3 +323,134 @@ def test_run_trial_iteration_executes_generation_path_with_stubs(tmp_path: Path)
     assert result == 0.8
     assert update_calls == [({"alpha": 0.25}, 0.8)]
     assert optimizer.last_trial_scorer_summary["aggregate"]["combined"] == 0.8
+
+
+def test_run_trial_iteration_passes_graph_runtime_bundle_to_merge(tmp_path: Path) -> None:
+    module = importlib.import_module("sd_optim.core.optimizer_runtime")
+    graph_bundle = GraphRuntimeBundle(
+        compiled_bindings=(
+            CompiledBinding(
+                optimizer_param_name="TEXT_A_alpha",
+                method_param_name="alpha",
+                component_name="unet",
+                strategy_label="graph_all",
+                target_space="key",
+                source_name="unet_keys",
+                targets=("TEXT_A",),
+                bounds=(0.0, 1.0),
+                grouping="per_target",
+            ),
+        ),
+        optimizer_bounds={"TEXT_A_alpha": (0.0, 1.0)},
+        summary=GraphRuntimeSummary(
+            source_count=1,
+            build_count=1,
+            binding_count=1,
+            compiled_parameter_count=1,
+            target_space_counts={"key": 1},
+            grouping_counts={"per_target": 1},
+            bounds_shape_counts={
+                "fixed": 0,
+                "categorical": 0,
+                "continuous": 1,
+                "default_bounds_used": 1,
+            },
+        ),
+    )
+
+    class DummyPrompter:
+        def render_payloads(self, batch_size):  # noqa: ARG002
+            return [{"prompt": "generated", "score_weight": 1.0}], ["generated_payload"]
+
+    class DummyGenerator:
+        async def unload_model(self, session):  # noqa: ARG002
+            return None
+
+        async def load_model(self, model_path, session):  # noqa: ARG002
+            assert model_path.exists()
+            return None
+
+        async def generate(self, payload, cfg, session):  # noqa: ARG002
+            yield Image.new("RGB", (2, 2), color=(0, 255, 0))
+
+    class DummyScorer:
+        last_scorer_results = {"manual": 0.8}
+
+        async def score(self, image, prompt, name):  # noqa: ARG002
+            assert image.size == (2, 2)
+            return 0.8
+
+        def unload_lazy_models(self):
+            return None
+
+    class DummyMerger:
+        def __init__(self, output_path: Path):
+            self.output_path = output_path
+            self.output_file: Path | None = None
+            self.calls: list[dict[str, object]] = []
+
+        def create_model_output_name(self, iteration):  # noqa: ARG002
+            return self.output_path
+
+        def merge(self, params, param_info, cache, iteration):
+            self.calls.append(
+                {
+                    "params": params,
+                    "param_info": param_info,
+                    "cache": cache,
+                    "iteration": iteration,
+                }
+            )
+            self.output_path.write_text("model-bytes", encoding="utf-8")
+            self.output_file = self.output_path
+            return self.output_path
+
+    update_calls: list[tuple[dict, float]] = []
+    merger = DummyMerger(tmp_path / "graph_model.safetensors")
+    params = {"TEXT_A_alpha": 0.25}
+    optimizer = SimpleNamespace(
+        iteration=-1,
+        completed_trials=0,
+        last_trial_scorer_summary={},
+        cfg=OmegaConf.create(
+            {
+                "generation": {
+                    "batch_size": 1,
+                    "img_average_type": "arithmetic",
+                    "generator_concurrency_limit": 1,
+                    "generator_keepalive_interval": 60,
+                    "generator_total_timeout": 10,
+                    "save_imgs": False,
+                },
+                "scoring": {"scorer_method": ["manual"]},
+                "optimization_mode": "merge",
+                "optimizer": {"init_points": 1},
+            }
+        ),
+        prompter=DummyPrompter(),
+        generator=DummyGenerator(),
+        scorer=DummyScorer(),
+        merger=merger,
+        guide_runtime=graph_bundle,
+        param_info={"legacy": {"bounds": (0.0, 1.0)}},
+        cache={"recipe": "cache"},
+        history_cache={},
+        current_run_manifest={},
+        scorer_setup_fp="score-fp",
+        generation_setup_fp="gen-fp",
+        save_img=lambda *args, **kwargs: None,  # noqa: ARG005
+        update_best_score=lambda params, avg_score: update_calls.append((params, avg_score)),
+    )
+
+    result = asyncio.run(module.run_trial_iteration(optimizer, params))
+
+    assert result == 0.8
+    assert merger.calls == [
+        {
+            "params": params,
+            "param_info": graph_bundle,
+            "cache": {"recipe": "cache"},
+            "iteration": 0,
+        }
+    ]
+    assert update_calls == [(params, 0.8)]

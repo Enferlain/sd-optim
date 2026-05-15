@@ -15,7 +15,7 @@ from sd_optim.guide_runtime import GraphRuntimeBundle
 from sd_optim.merge.artifacts import save_recipe_artifacts
 from sd_optim.merge.execution import execute_recipe
 from sd_optim.merge.recipe_builder import prepare_param_recipe_args
-from sd_optim.utils.artifacts import rewrite_recipe_text, serialize_nodes_for_rewrite
+from sd_optim.merge.recipe_rewrite import rewrite_recipe_text, serialize_nodes_for_rewrite
 from sd_optim.utils.config import normalize_target_node_refs
 from sd_optim.utils.recipes import build_recipe_cache_map
 

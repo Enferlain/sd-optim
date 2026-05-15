@@ -11,17 +11,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Added a practical migration note in `conductor/tracks/post_reorg_cleanup_20260503/legacy_to_graph_native_guide_migration.md` explaining how legacy strategy-style guides map into the graph-native authored model, including worked examples and current transitional limitations
 - Added `sd_optim/guide_runtime.py` as the first graph-native runtime bundle surface, with focused tests covering graph-authored optimizer bounds, runtime summary metadata, and direct block/key payload materialization from compiled bindings
+- Added merge-owned helper modules for recipe rewriting, recipe graph inspection, and merge runtime orchestration in `sd_optim/merge/recipe_rewrite.py`, `sd_optim/merge/recipe_inspection.py`, and `sd_optim/merge/runtime.py`
 
 ### Changed
 
 - Tightened graph-native guide semantics so one `group` node now always means one incoming set sharing one value; multiple grouped values must be expressed as multiple explicit branches instead of one node with internal subgroup fanout
 - Aligned the saved graph-shape draft and `sd_optim/guide_nodes.py` around the same build-centered branch model for `all`, `group`, and `exclude`
 - Wired the recipe stack and optimizer startup to recognize graph runtime bundles directly: `recipe_builder`, `merger`, and `recipe_optimization` now accept compiled graph runtime data without `BoundsInfo`, and optimizer startup now treats `optimization_guide.graph` as an explicit graph-authored runtime path
-- Made graph mode explicitly reject legacy-only guide features instead of half-applying them: `custom_bounds` is rejected during graph startup/setup, and Optuna dependency mapping now rejects `optimization_guide.dependencies` for graph runtime bundles until a graph-native dependency design exists
+- Made graph mode explicitly reject legacy-only guide features instead of half-applying them: `custom_bounds` is rejected during graph startup/setup, while Optuna dependency mapping now resolves `optimization_guide.dependencies` from graph runtime bindings without calling `ParameterHandler`
+- Added regression coverage for graph-generated optimizer parameters flowing through the merge trial pipeline into `Merger.merge()` as a `GraphRuntimeBundle`
+- Split the old mixed `sd_optim/utils/artifacts.py` surface into merge-owned modules, moving runnable merge-artifact export to `sd_optim/merge/reproducible_artifacts.py` and keeping recipe rewrite helpers out of the generic utils package
+- Reduced `sd_optim/merger.py` to a thinner public entrypoint by moving merge-iteration orchestration into `sd_optim/merge/runtime.py`
+- Replaced remaining stable merge-side config `.get(...)` access with direct structured reads in touched modules such as `sd_optim/merge/artifacts.py`, `sd_optim/merge/reproducible_artifacts.py`, and `sd_optim/merge/recipe_builder.py`
+- Refreshed the active post-reorg conductor notes so the documented cleanup queue matches the current package layout and completed refactor slices
 
 ### Fixed
 
 - Fixed graph-guide semantic drift by rejecting `data.groups` on graph `group` nodes and updating runtime tests to cover multiple grouped values through separate branches
+- Fixed graph merge preparation to reject graph-authored method parameters that are not valid keyword parameters for the selected merge method before sd-mecha recipe construction
+- Fixed merge-side error boundaries by narrowing a first cleanup slice of broad `except Exception` handling in `sd_optim/merge/model_selection.py` and `sd_optim/merge/layer_adjust.py` to explicit model-config inference, checkpoint load, state-dict mutation, and artifact save failures
 
 ## [Unreleased] - 2026-05-12
 

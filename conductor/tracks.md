@@ -6,6 +6,7 @@ This file tracks all major tracks for the project. Each track has its own detail
 
 - [ ] **Track: Post-Reorg Cleanup Follow-Up (2026-05-03)**
   *Link: [./tracks/post_reorg_cleanup_20260503/plan.md](./tracks/post_reorg_cleanup_20260503/plan.md)*
+  Active task queue lives in Beads under `sd-optim-27w`.
 
 - [x] **Track: Repo Reorganization & Optimizer Refactor (Archived)**
   *Link: [./tracks/repo_reorg_p1_20260210/plan.md](./tracks/repo_reorg_p1_20260210/plan.md)*

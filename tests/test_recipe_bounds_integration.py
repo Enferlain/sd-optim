@@ -1,7 +1,4 @@
 from collections.abc import Iterable
-import importlib
-import sys
-import types
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -11,6 +8,7 @@ from omegaconf import OmegaConf
 from torch import Tensor
 
 import sd_optim.merge.recipe_builder as recipe_builder
+from sd_optim.merge import recipe_rewrite
 from sd_optim.bounds import ParameterHandler
 from sd_optim.guide_legacy import materialize_legacy_guide_payloads
 from sd_optim.guide_runtime import build_graph_runtime_bundle
@@ -45,16 +43,6 @@ class _FakeModelConfig:
 
     def components(self) -> dict[str, _FakeComponent]:
         return self._components
-
-
-def _import_artifacts_with_pynput_stub(monkeypatch: pytest.MonkeyPatch):
-    pynput_mod = types.ModuleType("pynput")
-    keyboard_mod = types.ModuleType("pynput.keyboard")
-    keyboard_mod.Key = types.SimpleNamespace(ctrl="ctrl", shift="shift", alt="alt")
-    pynput_mod.keyboard = keyboard_mod
-    monkeypatch.setitem(sys.modules, "pynput", pynput_mod)
-    monkeypatch.setitem(sys.modules, "pynput.keyboard", keyboard_mod)
-    return importlib.import_module("sd_optim.utils.artifacts")
 
 
 def _old_payload_maps(
@@ -111,8 +99,6 @@ def test_recipe_rewrite_shows_bounds_assembled_into_recipe_payloads(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    artifacts = _import_artifacts_with_pynput_stub(monkeypatch)
-
     original_recipe = "\n".join(
         [
             "version 0.1.0",
@@ -198,8 +184,8 @@ def test_recipe_rewrite_shows_bounds_assembled_into_recipe_payloads(
 
     assert set(new_param_nodes) == {"alpha", "beta"}
 
-    new_node_strings, param_to_replacement = artifacts.serialize_nodes_for_rewrite(new_param_nodes)
-    rewritten = artifacts.rewrite_recipe_text(
+    new_node_strings, param_to_replacement = recipe_rewrite.serialize_nodes_for_rewrite(new_param_nodes)
+    rewritten = recipe_rewrite.rewrite_recipe_text(
         original_recipe_text=original_recipe,
         target_node_idx=2,
         new_node_strings=new_node_strings,
@@ -477,6 +463,86 @@ def test_prepare_param_recipe_args_accepts_graph_runtime_bundle(
         "TEXT_B": 0.4,
         "TEXT_C": 0.8,
     }
+
+
+def test_prepare_param_recipe_args_rejects_graph_params_unknown_to_merge_method(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    graph = {
+        "version": 1,
+        "nodes": [
+            {
+                "id": "unet_keys",
+                "type": "source",
+                "data": {
+                    "source_kind": "key",
+                    "component": "unet",
+                },
+            },
+            {
+                "id": "all_keys",
+                "type": "type",
+                "data": {"mode": "all"},
+            },
+            {
+                "id": "unknown_param",
+                "type": "param",
+                "data": {"name": "not_a_merge_kwarg"},
+            },
+            {
+                "id": "build_unknown",
+                "type": "build",
+                "data": {},
+            },
+        ],
+        "edges": [
+            {"from": "unet_keys", "to": "all_keys"},
+            {"from": "all_keys", "to": "unknown_param"},
+            {"from": "unknown_param", "to": "build_unknown"},
+        ],
+    }
+    graph_bundle = build_graph_runtime_bundle(
+        graph,
+        base_model_config=_FakeModelConfig(
+            "sdxl-sgm",
+            {
+                "unet": ["TEXT_A"],
+            },
+        ),
+        custom_block_config=None,
+    )
+
+    merger = SimpleNamespace(
+        cfg=OmegaConf.create(
+            {
+                "optimization_mode": "merge",
+                "merge": {"merge_method": "recipe_bounds_demo_for_tests"},
+                "optimization_guide": {},
+            }
+        ),
+        base_model_config=_FakeModelConfig(
+            "sdxl-sgm",
+            {
+                "unet": ["TEXT_A"],
+            },
+        ),
+        custom_block_config=None,
+        models_dir=tmp_path,
+        models=[],
+        _model_config_candidates_cache={},
+    )
+    monkeypatch.setattr(recipe_builder, "get_conversion_context_node", lambda _: object())
+
+    with pytest.raises(ValueError, match="Graph guide parameter.*not_a_merge_kwarg.*recipe_bounds_demo_for_tests"):
+        recipe_builder.prepare_param_recipe_args(
+            merger,
+            {
+                "TEXT_A_not_a_merge_kwarg": 0.2,
+            },
+            graph_bundle,
+            recipe_bounds_demo_for_tests,
+        )
 
 
 def test_prepare_param_recipe_args_rejects_custom_bounds_for_graph_runtime_bundle(

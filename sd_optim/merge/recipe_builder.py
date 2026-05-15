@@ -227,6 +227,12 @@ def prepare_param_recipe_args(
     Supports combining block and key configs using fallback merge semantics.
     """
     final_param_nodes: dict[str, recipe_nodes.RecipeNode] = {}
+    expected_kwargs = set(merge_method.get_params().kwargs.keys())
+    _validate_graph_runtime_method_params(
+        param_info,
+        expected_kwargs=expected_kwargs,
+        merge_method=merge_method,
+    )
     (
         block_based_values_per_param,
         key_based_values_per_param,
@@ -308,7 +314,6 @@ def prepare_param_recipe_args(
             logger.warning("No values found for base parameter '%s' - this shouldn't happen.", base_param)
 
     logger.debug("Checking for fixed keyword arguments using custom_bounds...")
-    expected_kwargs = set(merge_method.get_params().kwargs.keys())
 
     unhandled_kwargs = expected_kwargs - handled_base_params
     logger.debug("Expected Kwargs: %s", expected_kwargs)
@@ -327,7 +332,7 @@ def prepare_param_recipe_args(
         validated_custom_bounds = ParameterHandler.validate_custom_bounds(custom_bounds_config)
     recipe_target_params: set[str] = set()
     if merger.cfg.optimization_mode == "recipe":
-        target_params_raw = merger.cfg.recipe_optimization.get("target_params", [])
+        target_params_raw = merger.cfg.recipe_optimization.target_params
         if isinstance(target_params_raw, (list, ListConfig)):
             recipe_target_params = {str(name) for name in target_params_raw}
 
@@ -377,4 +382,29 @@ def _materialize_runtime_payloads(
     return materialize_payloads_from_legacy_bounds_info(
         params,
         param_info,
+    )
+
+
+def _validate_graph_runtime_method_params(
+    param_info: GuideRuntimeInput,
+    *,
+    expected_kwargs: set[str],
+    merge_method: MergeMethod,
+) -> None:
+    if not isinstance(param_info, GraphRuntimeBundle):
+        return
+
+    graph_params = {
+        binding.method_param_name
+        for binding in param_info.compiled_bindings
+    }
+    unknown_params = sorted(graph_params - expected_kwargs)
+    if not unknown_params:
+        return
+
+    raise ValueError(
+        "Graph guide parameter(s) "
+        f"{unknown_params} are not valid keyword parameters for merge method "
+        f"'{merge_method.identifier}'. Valid graph parameter names for this method: "
+        f"{sorted(expected_kwargs)}."
     )

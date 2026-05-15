@@ -19,7 +19,6 @@ def test_utils_package_root_is_importable_without_eager_submodule_imports() -> N
 
     for module_name in [
         "sd_optim.utils",
-        "sd_optim.utils.artifacts",
         "sd_optim.utils.config",
         "sd_optim.utils.conversions",
         "sd_optim.utils.hotkeys",
@@ -40,7 +39,6 @@ def test_utils_submodules_are_importable_directly() -> None:
     _install_pynput_stub()
 
     modules = [
-        importlib.import_module("sd_optim.utils.artifacts"),
         importlib.import_module("sd_optim.utils.config"),
         importlib.import_module("sd_optim.utils.conversions"),
         importlib.import_module("sd_optim.utils.hotkeys"),

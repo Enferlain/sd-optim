@@ -1,8 +1,12 @@
 from collections.abc import Iterable
 
+from sd_optim.guide_compiler import CompiledBinding
 from sd_optim.guide_runtime import (
+    GraphRuntimeBundle,
+    GraphRuntimeSummary,
     build_graph_runtime_bundle,
     materialize_target_space_payloads,
+    validate_graph_dependencies,
 )
 
 
@@ -278,3 +282,142 @@ def test_materialize_target_space_payloads_splits_block_and_key_targets() -> Non
         }
     }
     assert handled_method_params == {"alpha"}
+
+
+def test_validate_graph_dependencies_maps_matching_binding_scopes() -> None:
+    graph = {
+        "version": 1,
+        "nodes": [
+            {
+                "id": "unet_keys",
+                "type": "source",
+                "data": {
+                    "source_kind": "key",
+                    "component": "unet",
+                },
+            },
+            {
+                "id": "key_targets",
+                "type": "selection",
+                "data": {
+                    "mode": "regex",
+                    "patterns": ["model.diffusion_model.out.*"],
+                },
+            },
+            {
+                "id": "all_keys",
+                "type": "type",
+                "data": {"mode": "all"},
+            },
+            {
+                "id": "alpha",
+                "type": "param",
+                "data": {"name": "alpha"},
+            },
+            {
+                "id": "beta",
+                "type": "param",
+                "data": {"name": "beta"},
+            },
+            {
+                "id": "build_alpha",
+                "type": "build",
+                "data": {},
+            },
+            {
+                "id": "build_beta",
+                "type": "build",
+                "data": {},
+            },
+        ],
+        "edges": [
+            {"from": "unet_keys", "to": "key_targets"},
+            {"from": "key_targets", "to": "all_keys"},
+            {"from": "all_keys", "to": "alpha"},
+            {"from": "alpha", "to": "build_alpha"},
+            {"from": "all_keys", "to": "beta"},
+            {"from": "beta", "to": "build_beta"},
+        ],
+    }
+
+    bundle = build_graph_runtime_bundle(
+        graph,
+        base_model_config=_FakeModelConfig(
+            "sdxl-sgm",
+            {
+                "unet": [
+                    "model.diffusion_model.out.0.weight",
+                    "model.diffusion_model.out.2.weight",
+                    "model.diffusion_model.time_embed.weight",
+                ],
+            },
+        ),
+        custom_block_config=None,
+    )
+
+    dependencies = validate_graph_dependencies(
+        bundle,
+        [{"parent": "alpha", "child": "beta", "condition": "> 0", "default": 0.25}],
+    )
+
+    assert dependencies == {
+        "model.diffusion_model.out.0.weight_beta": {
+            "parent": "model.diffusion_model.out.0.weight_alpha",
+            "condition": "> 0",
+            "default": 0.25,
+        },
+        "model.diffusion_model.out.2.weight_beta": {
+            "parent": "model.diffusion_model.out.2.weight_alpha",
+            "condition": "> 0",
+            "default": 0.25,
+        },
+    }
+
+
+def test_validate_graph_dependencies_ignores_unmatched_scopes() -> None:
+    bundle = GraphRuntimeBundle(
+        compiled_bindings=(
+            CompiledBinding(
+                optimizer_param_name="first_alpha",
+                method_param_name="alpha",
+                component_name="unet",
+                strategy_label="graph_all",
+                target_space="key",
+                source_name="first_source",
+                targets=("model.diffusion_model.out.0.weight",),
+                bounds=(0.0, 1.0),
+                grouping="per_target",
+            ),
+            CompiledBinding(
+                optimizer_param_name="second_beta",
+                method_param_name="beta",
+                component_name="unet",
+                strategy_label="graph_all",
+                target_space="key",
+                source_name="second_source",
+                targets=("model.diffusion_model.out.0.weight",),
+                bounds=(0.0, 1.0),
+                grouping="per_target",
+            ),
+        ),
+        optimizer_bounds={
+            "first_alpha": (0.0, 1.0),
+            "second_beta": (0.0, 1.0),
+        },
+        summary=GraphRuntimeSummary(
+            source_count=2,
+            build_count=2,
+            binding_count=2,
+            compiled_parameter_count=2,
+            target_space_counts={"key": 2},
+            grouping_counts={"per_target": 2},
+            bounds_shape_counts={
+                "fixed": 0,
+                "categorical": 0,
+                "continuous": 2,
+                "default_bounds_used": 2,
+            },
+        ),
+    )
+
+    assert validate_graph_dependencies(bundle, [{"parent": "alpha", "child": "beta"}]) == {}

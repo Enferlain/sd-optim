@@ -17,8 +17,8 @@
 ## Current Focus
 - Start with the largest remaining holdouts:
   - `sd_optim/bounds.py`
-  - `sd_optim/utils/artifacts.py`
   - `sd_optim/core/optimizer_runtime.py`
+  - Beads-tracked cleanup and documentation follow-ups under `sd-optim-27w`
 
 ## Tasks
 - [x] Task: Audit the current post-reorg codebase and capture the remaining cleanup candidates worth tracking.
@@ -32,20 +32,27 @@
   - Note: Added `conductor/tracks/post_reorg_cleanup_20260503/graph_runtime_followup.md` to pin the next graph-native runtime slice: introduce a graph runtime bundle, wire recipe payload materialization directly from compiled bindings, branch optimizer startup away from `ParameterHandler` in graph mode, and keep `custom_bounds` / `BoundsInfo` legacy-only.
 - [x] Task: Add focused tests around bounds strategy processing, dependency mapping, and custom-bounds validation before any deeper structural split.
   - Note: Expanded the bounds test matrix to cover happy-path and defensive/error-path scenarios across strategy expansion, target-config resolution, conflict handling, dependency mapping, and custom-bounds validation. The bounds-focused suite now drives `sd_optim/bounds.py` to 100% coverage.
-- [ ] Task: Revisit `sd_optim/utils/artifacts.py` and separate recipe rewrite, serialization, and artifact-export concerns where the boundaries are now clear.
+- [x] Task: Revisit `sd_optim/utils/artifacts.py` and separate recipe rewrite, serialization, and artifact-export concerns where the boundaries are now clear.
+  - Note: Tracked as `sd-optim-27w.1`.
   - Note: Fixed a concrete artifact naming bug in `sd_optim/merge/artifacts.py` so long truncated stems preserve the trailing `-it_<n>` marker instead of silently dropping the iteration number from saved `.mecha` and reproducible-script filenames.
+  - Note: Split the old mixed `sd_optim/utils/artifacts.py` surface into merge-owned modules: recipe rewriting in `sd_optim/merge/recipe_rewrite.py`, recipe graph inspection in `sd_optim/merge/recipe_inspection.py`, and reproducible artifact export in `sd_optim/merge/reproducible_artifacts.py`.
 - [~] Task: Reduce `sd_optim/core/optimizer_runtime.py` by extracting non-core orchestration helpers into smaller focused modules.
   - Note: Add an explicit config toggle for cross-run cached image reuse so interrupted runs can still save manifests/artifacts without automatically reusing prior scoring results on reruns.
   - Note: Added `reuse_cached_results` as a runtime/base-level gate for universal reuse scanning and per-trial cache hits, with focused tests covering the disabled path.
   - Note: Extracted cache reuse classification plus cached full-hit / partial-hit handling into `sd_optim/core/optimizer_runtime_cache.py`, leaving `optimizer_runtime.py` more focused on trial orchestration, model processing, and sequential generation/scoring.
-- [ ] Task: Re-check `sd_optim/merger.py` for any remaining helper delegation or orchestration that can move cleanly into `sd_optim/merge/*`.
-- [ ] Task: Audit bundled experimental merge-method modules for dead commented blocks, duplicate helper logic, inconsistent naming, and any lingering lint or syntax problems.
-- [ ] Task: Narrow broad `except Exception` handling where newer package boundaries make more specific error handling practical.
-- [~] Task: Improve consistency of logging and config access in older modules, especially where dynamic `DictConfig.get(...)` usage still obscures required settings.
+- [x] Task: Re-check `sd_optim/merger.py` for any remaining helper delegation or orchestration that can move cleanly into `sd_optim/merge/*`.
+  - Note: Tracked as `sd-optim-27w.2`.
+  - Note: Moved merge-iteration orchestration out of `sd_optim/merger.py` into `sd_optim/merge/runtime.py`, leaving `Merger.merge()` as a thin delegating entrypoint alongside the existing recipe and layer-adjust delegations.
+- [x] Task: Narrow broad `except Exception` handling where newer package boundaries make more specific error handling practical.
+  - Note: Tracked as `sd-optim-27w.4`.
+  - Note: Narrowed the first merge-facing subset in `sd_optim/merge/model_selection.py` and `sd_optim/merge/layer_adjust.py` to explicit model-config inference, checkpoint load, state-dict mutation, and artifact save error families, with focused merger tests covering those boundaries.
+- [x] Task: Improve consistency of logging and config access in older modules, especially where dynamic `DictConfig.get(...)` usage still obscures required settings.
+  - Note: Remaining follow-up tracked as `sd-optim-27w.5`.
   - Note: Added the first dataclass-backed Hydra schema layer for stable runtime settings: root paths/model inputs, merge/runtime toggles, recipe optimization, optimizer configs, generator transport, scorer settings, and visualizations. The guide and payload surfaces intentionally remain dynamic while their authored model is still evolving.
   - Note: Moved the schema into an sd-scripts-style `sd_optim/config/` package with owned dataclass modules, explicit schema registration, and centralized semantic validation. Startup now selects optimizers from the narrow optimizer config section, uses direct structured access for extension paths/dashboard/trial counts, and runtime generation setup reads typed transport fields directly.
   - Note: Moved generation and scoring settings to nested `generation` and `scoring` config sections without preserving duplicate flat aliases. Core runtime, scorer setup, cache fingerprints, and Optuna study naming now read the nested sections directly.
   - Note: Moved path settings and merge/sd-mecha settings to nested `paths` and `merge` config sections without preserving duplicate flat aliases. Startup extension paths, optimizer startup, merger helpers, fallback/model selection, reproducible artifacts, scorer assets, cache fingerprints, Optuna study metadata, and focused tests now read the nested owners directly.
+  - Note: Continued the merge-side pass by replacing remaining structured config `.get(...)` access in touched modules such as `sd_optim/merge/artifacts.py`, `sd_optim/merge/reproducible_artifacts.py`, and `sd_optim/merge/recipe_builder.py`, while intentionally leaving the dynamic `optimization_guide` surface on ad hoc access.
 - [x] Task: Replace legacy-surface regression coverage with tests that target the intended long-term package boundaries where safe.
   - Note: Added a focused recipe-facing regression test that traces guide expansion through bounds metadata, merge parameter node construction, final recipe rewrite text, and deserialized `sd-mecha` payloads for both sparse `select` and whole-component `single` key targeting.
 - [~] Task: Build a clean-room graph-backed guide compiler against expected recipe artifacts instead of continuing only with incremental `ParameterHandler` reshaping.
@@ -63,7 +70,8 @@
   - Note: For the node mental model, the simplest useful authored flow is: choose a Source -> optionally narrow it with a Selection -> choose a Type such as all/group/exclude -> optionally override Domain or Param -> feed the branch into a Build. Build-wide resolution should handle exclusions, broad defaults, and narrower overrides before final compilation.
   - Note: `all`, `select`, `group`, and `single` are better treated as convenience presets over filtering/grouping behavior than as the long-term conceptual center of the system.
   - Note: Added `sd_optim/guide_runtime.py` as the first graph-native runtime bundle surface. It now compiles authored graph guides into a typed runtime bundle with optimizer bounds and summary metadata, and it can materialize block/key payload maps directly from compiled bindings without going through legacy `BoundsInfo`.
-  - Note: Wired the recipe stack and startup path to the new runtime bundle. `recipe_builder`, `merger`, and `recipe_optimization` now accept `GraphRuntimeBundle` directly, `optimizer_base` now recognizes `optimization_guide.graph` as an explicit graph-authored runtime path, and Optuna currently rejects legacy `dependencies` in graph mode instead of silently applying legacy mapping rules.
+  - Note: Wired the recipe stack and startup path to the new runtime bundle. `recipe_builder`, `merger`, and `recipe_optimization` now accept `GraphRuntimeBundle` directly, `optimizer_base` now recognizes `optimization_guide.graph` as an explicit graph-authored runtime path, and Optuna maps `optimization_guide.dependencies` through compiled graph binding scopes without calling legacy `ParameterHandler`.
+  - Note: Added graph merge-pipeline coverage so optimizer-proposed graph parameter names are passed through `run_trial_iteration()` into `Merger.merge()` with the `GraphRuntimeBundle`, and graph method parameters are validated against the selected merge method before recipe construction.
 - [~] Task: Define and document the graph-native guide serialization shape, including an explicit inactive/disabled way to keep guide fragments around without participating in the current run.
   - Note: The graph save format can be more structured than the text guide, but should still represent the same authored intent: source, optional selection, explicit type, optional domain/param overrides, and build target, not raw compiler internals.
   - Note: Graph complexity is mostly a presentation problem, not a reason to reject the model. The UI should favor authored rules by default and hide compiled detail behind collapse/filter/isolate/side-panel views.
@@ -74,7 +82,9 @@
 - [x] Task: Write a migration guide from the current text guide/legacy semantics to the graph-native guide model after the new serialization shape is settled.
   - Note: The migration guide should explain both directions: how current strategy-style guides map into the shared targeting/binding model, and how that same model appears in the future node editor and human text guide.
   - Note: Drafted `conductor/tracks/post_reorg_cleanup_20260503/legacy_to_graph_native_guide_migration.md` to cover legacy concepts, graph-native concepts, worked examples, and the intentionally transitional pieces that still remain in the live runtime.
-- [ ] Task: Refresh track docs and indexes that still describe deleted modules or stale pre-package layouts.
+- [x] Task: Refresh track docs and indexes that still describe deleted modules or stale pre-package layouts.
+  - Note: Tracked as `sd-optim-27w.6`.
+  - Note: Refreshed the active post-reorg track to remove stale `sd_optim/utils/artifacts.py` holdout references, marked completed cleanup slices done, and pointed the remaining active queue back at the Beads epic instead of leaving stale prose-only TODOs.
 
 ## Exit Criteria
 - [ ] The largest remaining holdout modules are smaller, better-factored, or have an explicit documented reason to remain large.

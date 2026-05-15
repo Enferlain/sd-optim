@@ -12,10 +12,8 @@ from sd_mecha import recipe_nodes
 from sd_mecha.recipe_nodes import RecipeNode
 
 from sd_optim.merge.fallback import build_recipe_for_artifacts
-from sd_optim.utils.artifacts import (
-    get_info_from_target_node,
-    save_merge_artifacts as save_runtime_artifacts,
-)
+from sd_optim.merge.recipe_inspection import get_info_from_target_node
+from sd_optim.merge.reproducible_artifacts import save_merge_artifacts as save_runtime_artifacts
 from sd_optim.utils.config import normalize_target_node_refs
 from sd_optim.utils.recipes import (
     finalize_recipe_with_model_dirs,
@@ -77,8 +75,8 @@ def create_model_output_name(
         combined_name = f"layer_adjusted-{model_name}-it_{iteration}"
     elif merger.cfg.optimization_mode == "recipe":
         if recipe_node is not None:
-            recipe_cfg = merger.cfg.get("recipe_optimization", {})
-            target_nodes_raw = recipe_cfg.get("target_nodes")
+            recipe_cfg = merger.cfg.recipe_optimization
+            target_nodes_raw = recipe_cfg.target_nodes
             target_node_ref = None
             if target_nodes_raw:
                 try:
@@ -100,7 +98,7 @@ def create_model_output_name(
 
                 combined_name = f"{name_part}-{method_name}-it_{iteration}"
             else:
-                recipe_name = Path(recipe_cfg.get("recipe_path", "unknown")).stem
+                recipe_name = Path(recipe_cfg.recipe_path).stem if recipe_cfg.recipe_path else "unknown"
                 combined_name = f"recipe_{recipe_name}-it_{iteration}"
         else:
             combined_name = f"recipe_fallback-it_{iteration}"
@@ -163,7 +161,7 @@ def save_recipe_artifacts(
     try:
         serialize_and_save_recipe(merger, final_recipe_node, model_path)
 
-        if merger.cfg.get("save_merge_artifacts", False):
+        if merger.cfg.save_merge_artifacts:
             artifact_recipe_node = build_recipe_for_artifacts(merger, final_recipe_node)
             save_runtime_artifacts(merger.cfg, merger, artifact_recipe_node, model_path, iteration)
     except Exception as error:

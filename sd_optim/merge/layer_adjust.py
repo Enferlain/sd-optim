@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import pickle
 
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -9,6 +10,7 @@ import safetensors.torch
 import torch
 
 from omegaconf import DictConfig
+from safetensors import SafetensorError
 
 from sd_optim.utils.images import modify_state_dict
 
@@ -16,6 +18,9 @@ if TYPE_CHECKING:
     from sd_optim.merger import Merger
 
 logger = logging.getLogger(__name__)
+LAYER_ADJUST_LOAD_ERRORS = (FileNotFoundError, OSError, SafetensorError, pickle.UnpicklingError, RuntimeError, ValueError)
+LAYER_ADJUST_MUTATION_ERRORS = (KeyError, RuntimeError, TypeError, ValueError)
+LAYER_ADJUST_SAVE_ERRORS = (FileNotFoundError, OSError, SafetensorError, RuntimeError, TypeError, ValueError)
 
 
 def resolve_layer_adjust_output_path(merger: Merger, cfg: DictConfig) -> Path:
@@ -76,7 +81,7 @@ def layer_adjust(merger: Merger, params: dict[str, Any], cfg: DictConfig) -> Pat
     logger.info("Loading model for layer adjustment: %s", model_path)
     try:
         state_dict = load_layer_adjust_state_dict(model_path, cfg.merge.device)
-    except Exception as error:
+    except LAYER_ADJUST_LOAD_ERRORS as error:
         logger.error("Failed to load model %s: %s", model_path, error, exc_info=True)
         raise
 
@@ -86,7 +91,7 @@ def layer_adjust(merger: Merger, params: dict[str, Any], cfg: DictConfig) -> Pat
     logger.info("Applying layer adjustments...")
     try:
         modified_state_dict = modify_state_dict(state_dict, params, is_xl_model)
-    except Exception as error:
+    except LAYER_ADJUST_MUTATION_ERRORS as error:
         logger.error("Error applying layer adjustments: %s", error, exc_info=True)
         raise
 
@@ -94,7 +99,7 @@ def layer_adjust(merger: Merger, params: dict[str, Any], cfg: DictConfig) -> Pat
     try:
         output_path.parent.mkdir(parents=True, exist_ok=True)
         safetensors.torch.save_file(modified_state_dict, output_path)
-    except Exception as error:
+    except LAYER_ADJUST_SAVE_ERRORS as error:
         logger.error("Failed to save adjusted model %s: %s", output_path, error, exc_info=True)
         raise
 

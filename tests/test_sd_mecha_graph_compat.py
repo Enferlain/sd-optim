@@ -199,12 +199,12 @@ def test_finalize_recipe_with_model_dirs_uses_registry_and_merge_preferences(mon
 
 
 def test_serialize_nodes_for_rewrite_inlines_singleton_literal_value_dict(monkeypatch) -> None:
-    artifacts = _import_utils_module_with_pynput_stub("sd_optim.utils.artifacts")
+    recipe_rewrite = _import_utils_module_with_pynput_stub("sd_optim.merge.recipe_rewrite")
 
-    monkeypatch.setattr(artifacts, "serialize_recipe_text", lambda node, **kwargs: "version 0.1.0\n")
+    monkeypatch.setattr(recipe_rewrite, "serialize_recipe_text", lambda node, **kwargs: "version 0.1.0\n")
     literal_node = sd_mecha.recipe_nodes.LiteralRecipeNode({"key": 0.75})
 
-    new_lines, replacements = artifacts.serialize_nodes_for_rewrite({"alpha": literal_node})
+    new_lines, replacements = recipe_rewrite.serialize_nodes_for_rewrite({"alpha": literal_node})
 
     assert new_lines == []
     assert replacements == {"alpha": "0.75"}
@@ -229,8 +229,8 @@ def test_relativize_model_paths_rewrites_paths_under_base_dir(tmp_path) -> None:
 
 
 def test_converter_finder_visit_literal_traverses_value_dict_nodes() -> None:
-    artifacts = _import_utils_module_with_pynput_stub("sd_optim.utils.artifacts")
-    finder = artifacts.ConverterFinder()
+    reproducible_artifacts = _import_utils_module_with_pynput_stub("sd_optim.merge.reproducible_artifacts")
+    finder = reproducible_artifacts.ConverterFinder()
     child = sd_mecha.weighted_sum(sd_mecha.literal(1.0), sd_mecha.literal(2.0))
 
     finder.visit_literal(sd_mecha.literal({"child": child}))

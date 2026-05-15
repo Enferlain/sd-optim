@@ -8,13 +8,14 @@ import sd_mecha
 
 from sd_mecha import recipe_nodes
 
-from sd_optim.utils.artifacts import ModelVisitor
+from sd_optim.merge.recipe_inspection import ModelVisitor
 from sd_optim.utils.recipes import get_model_config_candidates
 
 if TYPE_CHECKING:
     from sd_optim.merger import Merger
 
 logger = logging.getLogger(__name__)
+MODEL_CONFIG_INFERENCE_ERRORS = (AttributeError, OSError, RuntimeError, TypeError)
 
 
 def _sanitize_recipe_text_for_deserialize(recipe_text: str) -> str:
@@ -51,7 +52,7 @@ def is_adapter_model_config(merger: Merger, config: sd_mecha.extensions.model_co
     if callable(get_impl):
         try:
             implementation = get_impl()
-        except Exception:
+        except MODEL_CONFIG_INFERENCE_ERRORS:
             implementation = ""
     return identifier.endswith("_lora") or implementation.endswith("_lora")
 
@@ -76,7 +77,7 @@ def validate_node_is_not_lora(
         if raise_error:
             raise error
         raise
-    except Exception as error:
+    except MODEL_CONFIG_INFERENCE_ERRORS as error:
         logger.error("Could not verify model '%s' for LoRA check: %s", node.path, error)
         if raise_error:
             raise RuntimeError(f"Could not verify model '{node.path}'.") from error
@@ -105,7 +106,7 @@ def select_base_model(merger: Merger) -> recipe_nodes.ModelRecipeNode | None:
     except (ValueError, FileNotFoundError) as error:
         logger.error("Error during base model validation: %s", error)
         raise
-    except Exception as error:
+    except MODEL_CONFIG_INFERENCE_ERRORS as error:
         logger.error(
             "Unexpected error during base model config inference for LoRA check: %s",
             error,

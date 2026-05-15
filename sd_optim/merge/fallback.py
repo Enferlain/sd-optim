@@ -6,7 +6,7 @@ from sd_mecha.keys_map import KeyMapBuilder
 from sd_mecha.recipe_nodes import ModelRecipeNode
 from sd_mecha.streaming import StateDictKeyError
 
-from sd_optim.utils.artifacts import ModelVisitor
+from sd_optim.merge.recipe_inspection import ModelVisitor
 
 if TYPE_CHECKING:
     from sd_optim.merger import Merger

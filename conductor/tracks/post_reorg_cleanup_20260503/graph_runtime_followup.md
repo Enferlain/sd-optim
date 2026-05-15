@@ -260,3 +260,17 @@ The remaining useful implementation slice is:
 3. keep `custom_bounds` legacy-only and express graph domains with domain nodes
 
 That keeps graph runtime behavior direct without dragging legacy `custom_bounds` or `BoundsInfo` deeper into the new system.
+
+### UI workbench kickoff
+
+The first Svelte/Svelte Flow workbench now lives under [ui/](/D:/Projects/sd-optim/ui/). It is intentionally separate from the Python package and uses JSON-like sample graph data in [sampleGraph.ts](/D:/Projects/sd-optim/ui/src/lib/graph/sampleGraph.ts) to render the current guide mental model:
+
+- source nodes
+- selection nodes
+- method parameter nodes
+- dependency-shaped edges
+- a build/output node
+
+This is not the final authored graph config contract. Its immediate purpose is to let the dependency question be evaluated visually before deciding whether dependencies become first-class authored graph nodes or remain a transitional config sidecar.
+
+The next UI/backend bridge should exchange structured data rather than importing Python directly: authored UI graph in, compiled binding/dependency validation summary out.

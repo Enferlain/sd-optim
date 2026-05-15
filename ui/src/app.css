@@ -1,0 +1,75 @@
+:root {
+	color-scheme: light;
+	font-family:
+		'Segoe UI Variable',
+		'Segoe UI',
+		'Aptos',
+		system-ui,
+		-apple-system,
+		BlinkMacSystemFont,
+		sans-serif;
+	background: #faf9f7;
+	color: #17202a;
+	--panel: #ffffff;
+	--panel-soft: #f5f6f8;
+	--ink: #17202a;
+	--muted: #67717f;
+	--line: #dfe4ea;
+	--line-strong: #a9b3bf;
+	--amber: #f25f2c;
+	--green: #19a77b;
+	--blue: #4c7ff0;
+	--rose: #df6786;
+	--violet: #8c72f2;
+	--shadow: 0 18px 52px rgb(22 31 43 / 0.12);
+}
+
+* {
+	box-sizing: border-box;
+}
+
+html,
+body {
+	margin: 0;
+	min-width: 320px;
+	min-height: 100%;
+	background: #faf9f7;
+}
+
+body {
+	overflow: hidden;
+}
+
+button,
+input,
+textarea,
+select {
+	font: inherit;
+}
+
+button {
+	border: 0;
+}
+
+.xy-flow {
+	--xy-background-color: #fbfaf9;
+	--xy-node-border-default: transparent;
+	--xy-node-background-color-default: transparent;
+	--xy-edge-stroke: #b9c3cf;
+	--xy-edge-stroke-selected: #f25f2c;
+	--xy-controls-button-background-color: #ffffff;
+	--xy-controls-button-background-color-hover: #f2f4f7;
+	--xy-controls-button-color: #17202a;
+	--xy-controls-button-border-color: #d8dee7;
+	--xy-minimap-background-color: #f4f6f8;
+}
+
+.xy-flow__edge-path {
+	stroke: #bac5d0;
+	stroke-width: 1.6;
+	stroke-dasharray: 6 7;
+}
+
+.xy-flow__edge.selected .xy-flow__edge-path {
+	stroke: var(--amber);
+}

@@ -175,6 +175,16 @@ analysis_*/
 analysis_output/
 .hf-cache
 
+# --- Frontend / SvelteKit ---
+node_modules/
+.pnpm-store/
+ui/.svelte-kit/
+ui/build/
+ui/.vite/
+ui/.vite-dev*.log
+ui/test-results/
+ui/playwright-report/
+
 # --- Local Workspace / Setup Notes ---
 *.code-workspace
 UV_SETUP.md

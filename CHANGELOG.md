@@ -12,6 +12,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Added a practical migration note in `conductor/tracks/post_reorg_cleanup_20260503/legacy_to_graph_native_guide_migration.md` explaining how legacy strategy-style guides map into the graph-native authored model, including worked examples and current transitional limitations
 - Added `sd_optim/guide_runtime.py` as the first graph-native runtime bundle surface, with focused tests covering graph-authored optimizer bounds, runtime summary metadata, and direct block/key payload materialization from compiled bindings
 - Added merge-owned helper modules for recipe rewriting, recipe graph inspection, and merge runtime orchestration in `sd_optim/merge/recipe_rewrite.py`, `sd_optim/merge/recipe_inspection.py`, and `sd_optim/merge/runtime.py`
+- Added a pnpm-managed SvelteKit UI workspace under `ui/`, with a Svelte Flow graph workbench that visualizes guide sources, selections, method parameters, dependency-shaped edges, and build output nodes
 
 ### Changed
 
